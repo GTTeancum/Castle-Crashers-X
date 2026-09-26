@@ -279,6 +279,40 @@ static void __imp__XNotifyPositionUI(Context& ctx, Machine& base) {
 // execute the worker entry: sub_820B0E80 is an intentional infinite work loop.
 static void __imp__ExCreateThread(Context& ctx, Machine& base) {
   const uint32_t out_handle=ctx.r3.u32;
+  if (ctx.r7.u32 == 0x820D99B0u || ctx.r7.u32 == 0x820D9A78u) {
+    // WIP 022: the exact audio-driver init creates two suspended workers
+    // (start routines 0x820D99B0 and 0x820D9A78, no thunk, flags
+    // 0x10000001). The bounded scheduler records them exactly like the
+    // earlier workers; the asynchronous worker routines are never executed.
+    // Observed creation flags pin each worker to its own hardware thread
+    // (0x10000001 and 0x20000001) and create it suspended.
+    if (ctx.r4.u32!=0u || ctx.r5.u32!=0u || ctx.r6.u32!=0u ||
+        ctx.r8.u32!=0u ||
+        (ctx.r9.u32!=0x10000001u && ctx.r9.u32!=0x20000001u) ||
+        base.thread_count>=base.threads.size())
+      base.fail(Error::unsupported,0x8214A5E4u);
+    auto &t=base.threads[base.thread_count];
+    t.allocated=true; t.suspended=true; t.runnable=false;
+    t.handle=0xF1000001u+base.thread_count; t.object=0xF2000001u+base.thread_count;
+    t.startup_thunk=0u; t.start_routine=ctx.r7.u32; t.parameter=0u;
+    t.priority=0; t.affinity=0x3fu; ++base.thread_count;
+    base.store(out_handle,4,t.handle); ctx.r3.s64=0; return;
+  }
+  if (ctx.r7.u32 == 0x82070828u && ctx.r6.u32 == 0x820B79B8u) {
+    // WIP 022: creation of the game's main-loop thread (start routine
+    // 0x82070828 through the standard thunk). Recorded suspended like every
+    // other worker; the asynchronous routine itself is not run by the
+    // diagnostic.
+    if (ctx.r4.u32!=0u || ctx.r8.u32!=0u || ctx.r9.u32!=1u ||
+        base.thread_count>=base.threads.size())
+      base.fail(Error::unsupported,0x8214A5E4u);
+    auto &t=base.threads[base.thread_count];
+    t.allocated=true; t.suspended=true; t.runnable=false;
+    t.handle=0xF1000001u+base.thread_count; t.object=0xF2000001u+base.thread_count;
+    t.startup_thunk=ctx.r6.u32; t.start_routine=ctx.r7.u32; t.parameter=ctx.r8.u32;
+    t.priority=0; t.affinity=0x3fu; ++base.thread_count;
+    base.store(out_handle,4,t.handle); ctx.r3.s64=0; return;
+  }
   if (ctx.r6.u32 != 0x820B79B8u)
     base.fail(Error::unsupported, 0x8214A5E4u);
   if (ctx.r7.u32 == 0x820B0E80u) {
@@ -317,7 +351,13 @@ static void __imp__KeSetBasePriorityThread(Context& ctx, Machine& base) {
   auto *t=base.by_object(ctx.r3.u32);
   const bool startup=t && t->start_routine==0x820B0E80u && ctx.r4.s32==-1;
   const bool graphics=t && t->start_routine==0x820D7578u && ctx.r4.s32==17;
-  if (!startup && !graphics) base.fail(Error::unsupported, 0x8214A464u);
+  // WIP 022: the exact audio workers are raised to base priority 15, and the
+  // main-loop thread to base priority 1.
+  const bool audio=t && (t->start_routine==0x820D99B0u ||
+                         t->start_routine==0x820D9A78u) && ctx.r4.s32==15;
+  const bool mainloop=t && t->start_routine==0x82070828u && ctx.r4.s32==1;
+  if (!startup && !graphics && !audio && !mainloop)
+    base.fail(Error::unsupported, 0x8214A464u);
   const int32_t old=t->priority; t->priority=ctx.r4.s32; ctx.r3.s64=old;
 }
 static void __imp__ObDereferenceObject(Context& ctx, Machine& base) {
@@ -474,6 +514,10 @@ static void __imp__VdInitializeEngines(Context& ctx, Machine& base) {
   base.graphics_engines_initialized=true; ctx.r3.u64=0;
 }
 static void __imp__ExRegisterTitleTerminateNotification(Context& ctx, Machine& base) {
+  // WIP 022: the exact audio-driver init registers its own static terminate
+  // record from the image's data segment; accept exactly that one in
+  // addition to the two checkpoint-017 graphics records.
+  if (ctx.r3.u32==0x8223595Cu && ctx.r4.u32==1u) { ctx.r3.u64=0; return; }
   const uint32_t want = base.terminate_notifications==0 ? 0x821508E0u : 0x821508F0u;
   if (!base.graphics_engines_initialized || base.terminate_notifications>=2u ||
       ctx.r3.u32!=want || ctx.r4.u32!=1u)
@@ -984,7 +1028,13 @@ static void __imp__DbgPrint([[maybe_unused]] Context& ctx, Machine& base) { base
 static void __imp__sprintf([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported,0x8214A804u); }
 
 static uint32_t checkpoint020_mm_load_u32(Machine& base, uint32_t a) {
-  if (a>=0x7F000000u && a<0x80000000u) base.fail(Error::unsupported,a);
+  if (a>=0x7F000000u && a<0x80000000u) {
+    // WIP 022: exact sub_820DA1E8 snapshots the APU's XMA context-array
+    // register at power-on before any audio setup; the observed hardware
+    // reset value is zero. All other MMIO reads stay fail-closed.
+    if (a==0x7FEA1800u) return 0u;
+    base.fail(Error::unsupported,a);
+  }
   return uint32_t(base.load(a,4));
 }
 static void checkpoint020_mm_store_u32(Machine& base, uint32_t a, uint32_t v) {
@@ -1248,7 +1298,7 @@ static void __imp__VdGetSystemCommandBuffer(Context& ctx, Machine& base) {
 // no kernel MMU/physical mapper, so only the observed low-memory identity map
 // (frontbuffer virtual == deterministic fixture physical) is accepted.
 static void __imp__VdSwap(Context& ctx, Machine& base) {
-  // WIP 022: the observed swap call shape is frame-relative — the exact
+  // WIP 022: the observed swap call shape is frame-relative ??? the exact
   // caller (sub_820C7458 at lr=0x820C1014) always passes the fetch block at
   // r1+0x80, sysbuf tokens at r1+0xD0/r1+0x74, and metadata pointers at
   // r1+0x6C/0x70/0x68. Checkpoint 020's one-shot swap targeted the scaler
@@ -1464,6 +1514,213 @@ static void __imp__MmAllocatePhysicalMemoryEx(Context& ctx, Machine& base) {
 #include "generated/sub_820A7E80.inc"
 #include "generated/sub_820A8030.inc"
 #include "generated/sub_820A8010.inc"
+
+// WIP 022 caller-tail closures: worker notification (exact sub_82096828),
+// manager registration (exact sub_820756E0), and the semaphore-backed event
+// wrapper (exact sub_820B5F50 family). NtCreateSemaphore is observed-shape
+// bound below.
+static void __imp__NtCreateSemaphore(Context& ctx, Machine& base) {
+  // Bounded event/semaphore fixture: the exact sub_820B5F50 wrapper creates
+  // one semaphore (initial 0, limit 1) through the OBJECT_ATTRIBUTES block
+  // built by exact sub_820B73D0. Handles are opaque tokens; waits on them
+  // remain fail-closed.
+  if (ctx.r5.u32>ctx.r6.u32 || ctx.r6.u32==0u || ctx.r6.u32>0x7FFFFFFFu ||
+      g_semaphore_count>=8u)
+    base.fail(Error::unsupported, 0x8214A4A4u);
+  base.store(ctx.r3.u32,4,0x0F5E0001u+g_semaphore_count);
+  ++g_semaphore_count;
+  ctx.r3.u64=0u;
+}
+// WIP 022 notification-listener service creation (exact sub_820D7FD0 family).
+// KeInitializeSemaphore models the trusted kernel object initialization; the
+// other kernel entries observed on this path are bound elsewhere or fail
+// closed until observed.
+// Single-threaded diagnostic models of the raised-IRQL spinlock family used
+// by the exact audio-driver init. IRQL raise/lower and lock acquire/release
+// are balance-checked; contention cannot occur with one thread.
+static void __imp__KeRaiseIrqlToDpcLevel(Context& ctx, [[maybe_unused]] Machine& base) {
+  // Nested raises are legal; return the previous level and go to DISPATCH.
+  ctx.r3.u64=g_irql_level;
+  g_irql_level=2u;
+}
+static void __imp__KfLowerIrql(Context& ctx, Machine& base) {
+  if (ctx.r3.u32>2u) base.fail(Error::unsupported, 0x8214A80Cu);
+  g_irql_level=ctx.r3.u32;
+}
+static void __imp__KeAcquireSpinLockAtRaisedIrql(Context& ctx, Machine& base) {
+  if (g_irql_level==0u || uint32_t(base.load(ctx.r3.u32,4))!=0u)
+    base.fail(Error::unsupported, 0x8214A81Cu);
+  base.store(ctx.r3.u32,4,1u);
+}
+static void __imp__KeReleaseSpinLockFromRaisedIrql(Context& ctx, Machine& base) {
+  if (g_irql_level==0u || uint32_t(base.load(ctx.r3.u32,4))!=1u)
+    base.fail(Error::unsupported, 0x8214A794u);
+  base.store(ctx.r3.u32,4,0u);
+}
+// Trusted kernel contract: set the dispatcher event's SignalState and return
+// the previous state. No waiter dispatch occurs in the single-threaded
+// diagnostic; the exact worker threads are recorded but never run.
+static void __imp__KeSetEvent(Context& ctx, Machine& base) {
+  const uint32_t old=uint32_t(base.load(ctx.r3.u32+4,4));
+  base.store(ctx.r3.u32+4,4,1u);
+  ctx.r3.u64=old;
+}
+// Kernel XAudio render-driver boundary. Registration is observed-shape
+// bound; frame submission and unregistration stay fail-closed until the
+// diagnostic actually reaches them.
+static void __imp__XAudioRegisterRenderDriverClient(Context& ctx, Machine& base) {
+  // Bound to the single observed registration: callback 0x820E2B30 with the
+  // exact driver-object context. The fixture kernel never pumps the render
+  // callback (no audio hardware), matching the never-run worker model. The
+  // returned client token is opaque to the exact code.
+  if (uint32_t(base.load(ctx.r3.u32,4))!=0x820E2B30u || ctx.r4.u32==0u ||
+      g_xaudio_client_registered)
+    base.fail(Error::unsupported, 0x8214ABE4u);
+  g_xaudio_client_registered=true;
+  base.store(ctx.r4.u32,4,0x0A0D1001u);
+  ctx.r3.u64=0u;
+}
+static void __imp__XAudioSubmitRenderDriverFrame([[maybe_unused]] Context& ctx, Machine& base) {
+  base.fail(Error::unsupported, 0x8214AA24u);
+}
+static void __imp__XAudioUnregisterRenderDriverClient([[maybe_unused]] Context& ctx, Machine& base) {
+  base.fail(Error::unsupported, 0x8214AA34u);
+}
+static void __imp__KeInitializeSemaphore(Context& ctx, Machine& base) {
+  base.store(ctx.r3.u32+0,1,5u);            // SemaphoreObject type
+  base.store(ctx.r3.u32+1,1,0u);
+  base.store(ctx.r3.u32+2,2,20u/4u);        // size in dwords
+  base.store(ctx.r3.u32+4,4,ctx.r4.u32);    // SignalState = initial count
+  base.store(ctx.r3.u32+8,4,ctx.r3.u32+8);  // wait list head -> self
+  base.store(ctx.r3.u32+12,4,ctx.r3.u32+8);
+  base.store(ctx.r3.u32+16,4,ctx.r5.u32);   // Limit
+}
+static void __imp__KeResumeThread(Context& ctx, Machine& base) {
+  auto *t=base.by_object(ctx.r3.u32);
+  if (!t || !t->suspended)
+    base.fail(Error::unsupported, 0x8214A954u);
+  t->suspended=false;
+  t->runnable=true;
+  ctx.r3.u64=1u;
+}
+#define REX_MM_LOAD_U32(a) checkpoint020_mm_load_u32(base,uint32_t(a))
+#define REX_MM_STORE_U32(a,v) checkpoint020_mm_store_u32(base,uint32_t(a),uint32_t(v))
+// Generated mfmsr/mtmsrd interrupt-mask sequences: the single-threaded host
+// has no interrupts to mask, so the global lock is a no-op and the check
+// returns the context's MSR mirror (preserving the exact data flow).
+#define REX_CHECK_GLOBAL_LOCK() (ctx.msr)
+#define REX_ENTER_GLOBAL_LOCK() do {} while (0)
+#define REX_LEAVE_GLOBAL_LOCK() do {} while (0)
+#include "generated/sub_820D7FD0.inc"
+#include "generated/sub_820DA1E8.inc"
+#include "generated/sub_820DA0E8.inc"
+#include "generated/sub_820D9D48.inc"
+#include "generated/sub_820D9C40.inc"
+#include "generated/sub_820D8FA8.inc"
+#include "generated/sub_820E35E8.inc"
+#include "generated/sub_820E29D0.inc"
+#include "generated/sub_820E3040.inc"
+#include "generated/sub_820DB8B8.inc"
+#include "generated/sub_820D87C0.inc"
+#include "generated/sub_820DB880.inc"
+#include "generated/sub_820E2978.inc"
+#include "generated/sub_820E3548.inc"
+#include "generated/sub_820E3498.inc"
+#include "generated/sub_820E2700.inc"
+#include "generated/sub_820E2BF0.inc"
+#include "generated/sub_820E2EB8.inc"
+#include "generated/sub_820E4410.inc"
+#include "generated/sub_820DB6F8.inc"
+#include "generated/sub_820DB698.inc"
+#include "generated/sub_820DC848.inc"
+#include "generated/sub_820E0A48.inc"
+#include "generated/sub_820E4C88.inc"
+#include "generated/sub_820E40C0.inc"
+#include "generated/sub_820E4510.inc"
+#include "generated/sub_820E2688.inc"
+#include "generated/sub_820DB278.inc"
+#include "generated/sub_820E4278.inc"
+#include "generated/sub_820DB298.inc"
+#include "generated/sub_820E31D8.inc"
+#include "generated/sub_820A7480.inc"
+#include "generated/sub_820DBF00.inc"
+#include "generated/sub_820DCAF8.inc"
+#include "generated/sub_820E2D18.inc"
+#include "generated/sub_820E2D70.inc"
+#include "generated/sub_820E2F50.inc"
+#include "generated/sub_820E2960.inc"
+#include "generated/sub_820E3FD8.inc"
+#include "generated/sub_820E46A0.inc"
+#include "generated/sub_820E2B40.inc"
+#include "generated/sub_820E2838.inc"
+#include "generated/sub_820E0770.inc"
+#include "generated/sub_820E0790.inc"
+#include "generated/sub_820E07F8.inc"
+#include "generated/sub_820E0960.inc"
+#include "generated/sub_820E0988.inc"
+#include "generated/sub_820E0998.inc"
+#include "generated/sub_820E09A0.inc"
+#include "generated/sub_820E0B70.inc"
+#include "generated/sub_820E0C70.inc"
+#include "generated/sub_820E0D00.inc"
+#include "generated/sub_820E0D08.inc"
+#include "generated/sub_820E15E0.inc"
+#include "generated/sub_820EAAA8.inc"
+#include "generated/sub_820E26D0.inc"
+#include "generated/sub_820E15E8.inc"
+#include "generated/sub_820DBEE0.inc"
+#include "generated/sub_820DBEF0.inc"
+#include "generated/sub_820DCAE8.inc"
+#include "generated/sub_820E0978.inc"
+#include "generated/sub_820E2820.inc"
+#include "generated/sub_820E2A50.inc"
+#include "generated/sub_820E2BC0.inc"
+#include "generated/sub_820E4310.inc"
+#include "generated/sub_820E43D8.inc"
+#include "generated/sub_820E2A60.inc"
+#include "generated/sub_820E48C8.inc"
+#include "generated/sub_820E41A8.inc"
+#include "generated/sub_820D8C70.inc"
+
+#include "generated/sub_820E32D0.inc"
+#include "generated/sub_820E0388.inc"
+#include "generated/sub_820E3148.inc"
+#include "generated/sub_820E3160.inc"
+#include "generated/sub_820E32E8.inc"
+#include "generated/sub_820E32F8.inc"
+#include "generated/sub_820E8D30.inc"
+#include "generated/sub_820E0A00.inc"
+#include "generated/sub_820D8A48.inc"
+#include "generated/sub_820516F0.inc"
+#include "generated/sub_820E3300.inc"
+#include "generated/sub_820D8DF8.inc"
+#include "generated/sub_820E2808.inc"
+#include "generated/sub_820DB2B8.inc"
+#include "generated/sub_820D8E50.inc"
+#include "generated/sub_820D8A68.inc"
+#include "generated/sub_820D9D18.inc"
+#include "generated/sub_820E33D0.inc"
+#include "generated/sub_820E3448.inc"
+#include "generated/sub_820DC858.inc"
+#include "generated/sub_820D94F8.inc"
+#include "generated/sub_820E3248.inc"
+#include "generated/sub_820E1FD0.inc"
+#include "generated/sub_820B6020.inc"
+#include "generated/sub_820DB258.inc"
+#include "generated/sub_820D9470.inc"
+#include "generated/sub_820B7448.inc"
+#include "generated/sub_820B7428.inc"
+#undef REX_MM_STORE_U32
+#undef REX_MM_LOAD_U32
+
+#include "generated/sub_8213ACB0.inc"
+#include "generated/sub_8213AEE0.inc"
+#include "generated/sub_820D84A8.inc"
+#include "generated/sub_820D8580.inc"
+#include "generated/sub_820B73D0.inc"
+#include "generated/sub_820B5F50.inc"
+#include "generated/sub_820756E0.inc"
+#include "generated/sub_82096828.inc"
 #include "generated/sub_82070AC8_post_init.inc"
 
 // KeBugCheck is a terminal kernel failure; reaching it is never success.

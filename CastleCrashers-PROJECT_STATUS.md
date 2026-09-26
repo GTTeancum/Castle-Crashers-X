@@ -319,6 +319,14 @@ Also fixed: the per-thread block at `[r13+256]` is one structure (owner cookie +
 
 Focused result: `caller_post_init result=ok`, **591 executions / 2,264,597 memory operations**, ending after the completed present at `lr=0x82070C78`. Next: extend the slice to the next unrecovered caller call (`sub_82096828` etc.).
 
+### WIP 022 — notification listener, complete audio driver, and main-loop thread creation closed (2026-09-26)
+
+The post-init slice now extends to before `bl 0x820A1BF8` and runs, all through byte-exact recovered code (provenance now **519 exact bodies**): exact `sub_82096828` → the notification-listener service (`sub_820D8580/820D84A8/8213AEE0/8213ACB0`, static CS `0x82151A6C` pre-registered as loader-era fixture, allocator flag `0x608A2002`); exact `sub_820756E0` → renderer-vtable query `sub_820A7480`; the **complete XAudio driver initialization** (`sub_820D7FD0` family, ~70 bodies including the third/fourth audio vtables): APU register snapshot (`[0x7FEA1800]` power-on zero), two suspended audio workers (start routines `0x820D99B0`/`0x820D9A78`, flags `0x10000001`/`0x20000001`, base priority 15), mixing/voice buffers (allocator flags `0x61820005`/`0x61820006`), and the kernel **`XAudioRegisterRenderDriverClient`** registration (callback `0x820E2B30`, opaque client token; render pump never runs, submit/unregister fail-closed); exact `sub_820B5F50` event wrapper backed by a bounded `NtCreateSemaphore` token registry; and creation of the **game's main-loop thread** (start routine `0x82070828` via the standard thunk, created suspended, base priority 1) recorded by the bounded scheduler without running it.
+
+New/extended contracts: nested-IRQL level model with raised-IRQL spinlocks (`KeRaiseIrqlToDpcLevel`/`KfLowerIrql`/`KeAcquireSpinLockAtRaisedIrql`/`KeReleaseSpinLockFromRaisedIrql`), `KeInitializeSemaphore`/`KeSetEvent`/`KeResumeThread` trusted-kernel models, third `ExRegisterTitleTerminateNotification` record (`0x8223595C`), `Context` gained an `msr` mirror for generated `mfmsr/mtmsrd` sequences (no-op global lock on the single-threaded host), and the thread table grew to 12 slots.
+
+Focused result: `caller_post_init result=ok`, **767 executions / 2,268,979 memory operations**, `lr=0x82070D34` (last completed call `sub_8209BDD8`), 4,026 assertions, Release CTest 6/6, ASan/UBSan CTest 6/6 + widget/fixture. Next: `sub_820A1BF8` and the remaining `sub_82070AC8` tail (`sub_820757C8`, `sub_82075C88`, `sub_820759A8`, `sub_8212B180`, final indirect call, `sub_82070908`) — after which the game's init caller itself completes.
+
 ## 4. XBOX / XEMU STATUS
 
 ### Persistent Xbox/XEMU test kit

@@ -21,9 +21,19 @@ void set_game_root(const char* p) noexcept { g_game_root = p ? p : ""; }
 // sections created by exact code, and the virtual-memory cursor backing the
 // exact CRT heap's reservations.
 static uint32_t g_tls_slots[64]{};
-static std::vector<uint32_t> g_registered_cs;
-static std::vector<bool> g_registered_cs_locked;
+// Statically allocated critical sections in the sealed image's data segment
+// (initialized by XAPI process startup on hardware, not by any code on the
+// recovered path): the notification-listener lock used by exact
+// sub_820D84A8. Registered up front like a loader fixture.
+static std::vector<uint32_t> g_registered_cs = { 0x82151A6Cu };
+static std::vector<bool> g_registered_cs_locked = { false };
 [[maybe_unused]] static uint32_t g_valloc_cursor = 0x04000000u;
+// Raised-IRQL balance flag for the single-threaded spinlock model.
+static uint32_t g_irql_level = 0; // 0=PASSIVE, 2=DISPATCH
+// One-shot XAudio render-driver client registration.
+static bool g_xaudio_client_registered = false;
+// Bounded semaphore-token registry for the exact event wrappers.
+static uint32_t g_semaphore_count = 0;
 // The physical graphics allocator is one durable kernel-side allocator: its
 // sequence position and cursor survive between diagnostic invocations exactly
 // as physical allocations do on hardware.
@@ -50,7 +60,7 @@ struct Machine {
   AddressSpace &memory;
   Sink sink;
   Result result{};
-  std::array<ThreadSlot,8> threads{};
+  std::array<ThreadSlot,12> threads{};
   uint32_t thread_count{};
   // Checkpoint 020's graphics allocator is a deliberately tiny platform/runtime
   // contract. It accepts only the fifteen allocation shapes reached by the sealed
@@ -119,7 +129,19 @@ struct Machine {
       const bool resource_header_shape = flags == 0x64800000u && size == 52u;
       const bool resource_backing_shape =
           flags == 0xBC800000u && size == 0x12C000u;
-      if (!shader_shape && !resource_header_shape && !resource_backing_shape)
+      // WIP 022: exact sub_8213ACB0 allocates its small notification-
+      // listener records (8- and 60-byte shapes observed) with this exact
+      // flag word.
+      const bool notify_record_shape =
+          flags == 0x608A2002u && size >= 8u && size <= 256u;
+      // WIP 022: the exact XAudio driver init (sub_820E35E8 family)
+      // allocates its mixing/XMA work buffers with this exact flag word.
+      const bool audio_buffer_shape =
+          (flags == 0x61820005u || flags == 0x61820006u) &&
+          size >= 0x1000u && size <= 0x40000u;
+      if (!shader_shape && !resource_header_shape &&
+          !resource_backing_shape && !notify_record_shape &&
+          !audio_buffer_shape)
         fail(Error::unsupported, 0x82136670u);
       const uint32_t p=(g_graphics_alloc_cursor + 15u) & ~15u;
       if (p > 0xffffffffu-size || memory.check(p,size,3) != cc::xbox::MemoryError::ok)

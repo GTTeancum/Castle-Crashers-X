@@ -124,20 +124,18 @@ print('PASS platform post-graphics slice source=820A7990 range=820A7B34..return 
 orig=expected('sub_82070AC8').decode()
 call='\tsub_820A7990(ctx, base);\n'
 st=orig.index(call)+len(call)
-en=orig.index('ctx.lr = 0x82070C78;', st)
-en=orig.index('REX_CALL_INDIRECT_FUNC(ctx.ctr.u32);', en)
-en=orig.index(chr(10), en)+1
+en=orig.index('\t// bl 0x820a1bf8\n',st)
 frag=orig[st:en]
 want=('DEFINE_REX_FUNC(sub_82070AC8_post_init) {\n'
       '\tREX_FUNC_PROLOGUE();\n'
       '\tPPCRegister temp{};\n'
       '\t(void)temp;\n'+frag+
-      '\t// Diagnostic continuation stop: next original instruction is the unresolved indirect dispatch result at lr=0x82070C78.\n'
+      '\t// Diagnostic continuation stop: next original instruction is bl 0x820A1BF8.\n'
       '\treturn;\n}\n')
 actual=(root/'runtime021/generated/sub_82070AC8_post_init.inc').read_text()
 if actual!=want:
     print('FAIL caller post-init slice differs from sealed sub_82070AC8',file=sys.stderr);sys.exit(1)
-print('PASS caller post-init slice source=82070AC8 range=82070BA4..through_82070C78 bytes=%d sha256=%s' %
+print('PASS caller post-init slice source=82070AC8 range=82070BA4..before_820A1BF8 bytes=%d sha256=%s' %
       (len(frag.encode()),hashlib.sha256(frag.encode()).hexdigest()))
 
 # Bind immutable constants and the 10,500-object virtual initializer to the

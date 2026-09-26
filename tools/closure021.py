@@ -14,10 +14,19 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
 gen = root / 'runtime021/generated'
-bodies = (root / 'runtime021/bodies.inc').read_text()
-included = set(re.findall(r'#include "generated/([^"]+)\.inc"', bodies))
-defined = set(re.findall(r'static void (\w+)\(', bodies))
-defined |= set(re.findall(r'HARD_\w+\((\w+),', bodies))
+# The bridge translation unit includes runtime008/010/011 bodies before
+# runtime021's, so anything those include or define is already present.
+included = set()
+defined = set()
+for rt in ('runtime008', 'runtime010', 'runtime011', 'runtime021'):
+    bodies_path = root / rt / 'bodies.inc'
+    if not bodies_path.exists():
+        continue
+    bodies = bodies_path.read_text()
+    for name in re.findall(r'#include "generated/([^"]+)\.inc"', bodies):
+        included.add(name)
+    defined |= set(re.findall(r'static void (\w+)\(', bodies))
+    defined |= set(re.findall(r'HARD_\w+\((\w+),', bodies))
 have = {p.stem: p for p in gen.glob('*.inc')}
 
 todo = list(sys.argv[1:])

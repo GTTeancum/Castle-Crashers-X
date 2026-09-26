@@ -136,6 +136,11 @@ struct Context {
   Register f30{};
   Register f31{};
   uint64_t lr{};
+  // Machine-state register mirror for generated mfmsr/mtmsrd interrupt-mask
+  // sequences (WIP 022 audio-driver family). The single-threaded host makes
+  // the mask itself semantically inert; the field only preserves the exact
+  // generated data flow.
+  uint64_t msr{0x8020};
   Register ctr{};
   XER xer{};
   Register reserved{};
