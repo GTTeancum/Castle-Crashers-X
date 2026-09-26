@@ -11,6 +11,9 @@ eeprom.bin
 
 # Host build outputs
 build/
+build-release/
+build-asan/
+build-*/
 out/
 CMakeFiles/
 CMakeCache.txt

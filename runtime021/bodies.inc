@@ -352,6 +352,7 @@ static void __imp__XGetVideoMode(Context& ctx, Machine& base) {
 }
 #include "generated/sub_820A7990_platform_prefix.inc"
 #include "generated/sub_820A7990_platform_post_graphics.inc"
+#include "generated/sub_820A85E8.inc"
 
 
 

@@ -144,6 +144,7 @@ static void __imp__NtResumeThread(Context&, Machine&);
 static void sub_82070AC8_renderer_prefix(Context&, Machine&);
 static void sub_820A7990_platform_prefix(Context&, Machine&);
 static void sub_820A7990_platform_post_graphics(Context&, Machine&);
+static void sub_820A85E8(Context&, Machine&);
 static void __imp__XGetVideoMode(Context&, Machine&);
 static void __savegprlr_18(Context&, Machine&);
 static void __restgprlr_18(Context&, Machine&);

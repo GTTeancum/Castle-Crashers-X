@@ -254,6 +254,21 @@ XEMU was **not** re-run for this increment. The currently reusable runnable ISO 
 
 Sanitizer re-validation for the newer WIP 021 suffix and the full inherited renderer/widget/fixture sealing matrix remain pending. Therefore this WIP must not yet be promoted to Checkpoint 021.
 
+### WIP 021 continuation — exact sub_820A85E8 closed (2026-09-25, Windows environment)
+
+The project moved to a Windows 11 host and is now a git repository pushed to the private GitHub remote `GTTeancum/Castle-Crashers-X` (the retail LIVE package and emulator firmware are excluded by `.gitignore`; `.gitattributes` disables all line-ending conversion because sources are checksum-sealed). Toolchain: Clang 22.1.2 (`x86_64-pc-windows-msvc`), CMake 4.3.1, VS 2022-bundled Ninja, `-D_CRT_SECURE_NO_WARNINGS` added via `CMAKE_CXX_FLAGS` (CRT deprecation warnings under `-Werror`; no source edits). The full prior WIP 021 state was reproduced exactly on this toolchain before editing: `dispatch@820A85E8`, 964/21,113, 3,974 assertions, Release CTest 6/6.
+
+New closure:
+
+- exact `sub_820A85E8` recovered byte-for-byte from sealed `pc/generated/default/castle_crashers_recomp.4.cpp`: **2,317 bytes**, SHA-256 `b8c496093f943ce7276b65c6662f0a9872e8bfc21d8b4ed07105e2d42e589e5c`; registered in `bodies.inc`/`decls.inc`/`dispatch.inc` with no semantic edits;
+- on the observed state the guard byte `renderer+28715` is still **0** (original code only stores it later at `stb r29,28715(r31)` after the 17-iteration loop), so the exact body takes its `beqlr cr6` early return: **no stores, no indirect dispatch**; the color-byte path to `renderer+28736..28739` was not taken and those bytes are acceptance-bound as still zero;
+- focused Release result: `platform_post_graphics result=ok`, **965 generated/helper executions, 21,114 guest-memory operations** (exactly +1/+1 over the prior boundary);
+- focused Release `update_boundary`: **3,976 assertions** (two new observed-branch bindings);
+- Release CTest **6/6**; local provenance now **339 exact generated bodies**;
+- ASan/UBSan matrix re-validated on this increment: CTest **6/6**, widget FMA + software-FMA **1,922 assertions each**, fixture **12,047 checks + 6,000 mutations**. Windows notes: ASan requires the release CRT (`CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL`) and `-D_DISABLE_STRING_ANNOTATION -D_DISABLE_VECTOR_ANNOTATION` (VS ASan STL-annotation lib not installed); sanitizer coverage of the generated/game code itself is unaffected.
+
+The dispatch boundary at the renderer vtable is therefore closed. The new boundary is the original caller continuation at `lr=0x820A7BC8` inside `sub_820A7990`: the diagnostic post-graphics slice still ends at the indirect call, and the first unrecovered original call beyond it is `sub_820AA5B8` (17-iteration loop), followed by `sub_82129FA0`*, `sub_82129A70`*, `sub_820A8190`, `sub_820BB6A8`*, `sub_820BFEE8`, `sub_820BFC30`, `sub_820C00B8`, `sub_820BD0F8`* (* = already recovered).
+
 ## 4. XBOX / XEMU STATUS
 
 ### Persistent Xbox/XEMU test kit
@@ -362,6 +377,8 @@ WIP 021 now closes the observed `VdPersistDisplay`, exact `MmFreePhysicalMemory(
 
 A provenance-checked continuation of original `sub_820A7990` resumes at the already-proven success label `0x820A7B34`, executes the first suffix setter/restoration chain and the second `sub_820C2C98`, then reaches:
 
+**UPDATE 2026-09-25: exact `sub_820A85E8` is now closed (see the WIP 021 continuation subsection above). The live boundary is the original caller continuation at `lr=0x820A7BC8`, first unrecovered call `sub_820AA5B8`. The historical boundary description below is retained for provenance:**
+
 **renderer vtable target `sub_820A85E8` at `0x820A85E8`**
 
 - outer path: exact `sub_820A7990` success continuation → exact `sub_820C2C98` → exact `sub_820C13B8` → exact `sub_820C0DA8` → exact `sub_820CF9D0` → exact `sub_820CF858` → exact `sub_821368C0` → return through exact suffixes → second exact `sub_820C2C98` → renderer vtable slot `+28`;
@@ -382,26 +399,26 @@ The original `PlatformRenderer::Init` call has therefore **not returned yet**. D
 
 Do **not** describe WIP 021 as sealed Checkpoint 021 or completed `PlatformRenderer::Init`.
 
-Do **not** replace `sub_820A85E8` with a synthetic success stub. Recover its byte-exact generated body from the sealed corpus and keep unknown downstream behavior fail-closed.
+`sub_820A85E8` was recovered byte-exact, not stubbed. Do **not** replace `sub_820AA5B8` or any later suffix call with a synthetic success stub. Recover byte-exact generated bodies from the sealed corpus and keep unknown downstream behavior fail-closed.
 
 ## 6. NEXT_ACTION
 
-**Resume at exact `sub_820A85E8` (`0x820A85E8`). Keep the next turn small: recover its byte-exact generated body, execute only the observed path from the live renderer-vtable call, and stop at the first next real platform/unmapped/game-side boundary.**
+**Exact `sub_820A85E8` is closed. Resume at the original `sub_820A7990` caller continuation beyond `lr=0x820A7BC8`: extend the provenance-checked post-graphics slice past the indirect call through the presentation-state stores, and stop before the first `bl 0x820AA5B8`. Then recover exact `sub_820AA5B8` in a following increment.**
 
 Concrete sequence:
 
-1. Recover sealed Checkpoint 020 and overlay `CastleCrashers-WIP-021-85e8.zip`; verify WIP SHA-256 `7f950085e0911ae002c809507c0353a3b7cd934f0c0ad15002b0447150e4f67c`. The WIP is self-contained relative to Checkpoint 020.
-2. Reproduce `dispatch@820A85E8`, **964 / 21,113**, and **3,974 assertions** using Clang.
-3. Confirm exact `sub_821368C0` remains byte-exact at **659 bytes**, SHA-256 `3f548f0368b98565f5d7a2d09f7f2fb8cd77f51d9744a904e4f9b7c14108f48d`; confirm CF858, CF9D0, and CF728 hashes remain unchanged.
+1. Working tree is the git repository at `D:\Programming\GitHub\Castle-Crashers-X` (private remote `GTTeancum/Castle-Crashers-X`); the WIP/checkpoint ZIP recovery flow is superseded by git history.
+2. Reproduce `platform_post_graphics result=ok`, **965 / 21,114**, and **3,976 assertions** using Clang (Windows: Clang 22.1.2, VS Ninja, `-D_CRT_SECURE_NO_WARNINGS`).
+3. Confirm exact `sub_820A85E8` remains byte-exact at **2,317 bytes**, SHA-256 `b8c496093f943ce7276b65c6662f0a9872e8bfc21d8b4ed07105e2d42e589e5c`; CF858/CF9D0/CF728/821368C0 hashes unchanged.
 4. Preserve the distinct retrain contracts and all persist/free/ring/resource/tile/CF9D0 invariants. Do not broaden platform shims.
-5. Recover exact generated `sub_820A85E8` from sealed `pc/generated/default/castle_crashers_recomp.4.cpp` and add it without semantic edits.
-6. Execute only its actually reached branch from `r1=0x0003ED30`, `lr=0x820A7BC8`, `r3=0x00501060`, with the exact 640×480 caller state above. Do not fabricate indirect calls or platform returns.
-7. Stop at the first new real boundary and bind only durable renderer/device/ring or live-stack state produced before that stop.
-8. Run focused Release acceptance and complete Release CTest. Preserve provenance and generated-seal checks.
-9. Use XEMU when a fresh nxdk/Xbox artifact containing current WIP logic is available; do not re-run the older Widget011 ISO as if it validates this code.
+5. Extend `sub_820A7990_platform_post_graphics` byte-for-byte from the sealed corpus through the stores after the indirect call (`renderer+28756/28760` from f30/f31, `renderer+29124/28740/28744` = 0, `renderer+28748`=640, `renderer+28752`=480) and stop fail-closed before `bl 0x820AA5B8`; update `verify_provenance.py`'s slice contract to the new cut point.
+6. Bind the new durable renderer fields; update focused acceptance counts.
+7. Then recover exact `sub_820AA5B8` from the sealed corpus, execute only the observed 17-iteration loop path, and continue boundary-by-boundary through the remaining `sub_820A7990` suffix calls (`sub_820A8190`, `sub_820BFEE8`, `sub_820BFC30`, `sub_820C00B8`, ...), stopping at each first genuine unknown.
+8. Run focused Release acceptance, complete Release CTest, and the ASan/UBSan matrix after meaningful closure.
+9. Use XEMU (local Windows copy under `C:\Games\Emulators`) only once a fresh nxdk/Xbox artifact containing current WIP logic exists; do not re-run the older Widget011 ISO as if it validates this code.
 10. Update this handoff and re-read it completely before reporting.
 
-Preferred next milestone: **close only exact `sub_820A85E8` far enough to identify the immediately following genuine boundary.**
+Preferred next milestone: **complete the `sub_820A7990` suffix far enough that the original `PlatformRenderer::Init` frame actually returns to `sub_82070AC8`, then seal Checkpoint 021.**
 
 ## 7. Important non-regression history
 

@@ -563,16 +563,20 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // the verified successful post-graphics branch (0x820A7B34), rather than
   // manually stepping the first setter/restoration calls. The provenance-bound
   // continuation executes the original first sub_820C2C98, exact sub_820C13B8
-  // (including exact sub_821368C0), the second sub_820C2C98, then stops at the
-  // first unresolved original indirect renderer-vtable call.
+  // (including exact sub_821368C0), the second sub_820C2C98, then the resolved
+  // renderer-vtable slot +28 target: exact sub_820A85E8. On the observed state
+  // its guard byte renderer+28715 is still zero, so the exact body takes its
+  // beqlr-cr6 early return without any store or further dispatch, and the
+  // diagnostic slice stops at its fail-closed return before the original
+  // caller continuation at lr=0x820A7BC8 (first unrecovered call: 0x820AA5B8).
   c.r3.u32=0u; c.lr=0x820A7B18u;
   auto ps=invoke(0x820a7b34,c,m,sink(),400000);
   std::printf("platform_post_graphics result=%s@%08x funcs=%u memops=%u r1=%08x lr=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r8=%08x r9=%08x r10=%08x ctr=%08x\n",
               name(ps.error),ps.address,ps.functions,ps.memory_ops,c.r1.u32,uint32_t(c.lr),c.r3.u32,c.r4.u32,c.r5.u32,c.r6.u32,c.r7.u32,c.r8.u32,c.r9.u32,c.r10.u32,c.ctr.u32);
-  CHECK(ps.error==Error::dispatch);
-  CHECK(ps.address==0x820A85E8u);
-  CHECK(ps.functions==964u);
-  CHECK(ps.memory_ops==21113u);
+  CHECK(ps.error==Error::ok);
+  CHECK(ps.address==0u);
+  CHECK(ps.functions==965u);
+  CHECK(ps.memory_ops==21114u);
   CHECK(c.r1.u32==0x0003ed30u);
   CHECK(uint32_t(c.lr)==0x820A7BC8u);
   CHECK(c.r3.u32==renderer);
@@ -580,6 +584,12 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   CHECK(c.r6.u32==0x820A85E8u && c.ctr.u32==0x820A85E8u);
   CHECK(c.r7.u32==480u && c.r8.u32==640u);
   CHECK(c.r9.u32==0x82042048u && c.r10.u32==0x82040000u);
+  // Exact sub_820A85E8 observed-branch evidence: the guard byte is still zero,
+  // so the color-conversion path was not taken and renderer+28736..28739 remain
+  // untouched. Do not treat these as durable color state until original code
+  // actually writes them.
+  CHECK(m.load_be(renderer+28715,1,v)==cc::xbox::MemoryError::ok && v==0u);
+  CHECK(m.load_be(renderer+28736,4,v)==cc::xbox::MemoryError::ok && v==0u);
   CHECK(m.load_be(renderer+4,4,v)==cc::xbox::MemoryError::ok && v==device);
   // Allocation/object publication contract from sub_820BEF28/sub_820CC088.
   CHECK(m.load_be(device-4,4,v)==cc::xbox::MemoryError::ok && v==0x02000000u);
@@ -846,7 +856,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   CHECK(m.load_be(device+14940u,4,s14940)==cc::xbox::MemoryError::ok && s14940==13u);
   CHECK(m.load_be(device+52u,4,d52)==cc::xbox::MemoryError::ok && d52==0x0202f37cu);
   CHECK(m.load_be(device+56u,4,d56)==cc::xbox::MemoryError::ok && d56==0x0202f2dcu);
-  std::printf("post_restore_ring s14912=%08x s14916=%08x s14928=%08x s14932=%08x s14940=%08x d52=%08x d56=%08x next=820A85E8\n",
+  std::printf("post_restore_ring s14912=%08x s14916=%08x s14928=%08x s14932=%08x s14940=%08x d52=%08x d56=%08x next=820A7BC8_before_820AA5B8\n",
               uint32_t(s14912),uint32_t(s14916),uint32_t(s14928),uint32_t(s14932),uint32_t(s14940),uint32_t(d52),uint32_t(d56));
   std::printf("post_c0bc0 device21544=%u device21548=%u device21552=%u wptr=%08x packet=%08x..%08x\n",
               uint32_t(di44),uint32_t(di48),uint32_t(di52),uint32_t(wptr),c0bc0_addr,c0bc0_addr+60u);
@@ -913,9 +923,9 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   for (uint32_t i=0;i<16u;++i)
     CHECK(m.load_be(scaler_copy_start+(184u+i)*4u,4,q)==cc::xbox::MemoryError::ok &&
           q==scaler_tail[i]);
-  std::printf("post_scaler_init final_wptr=%08x copy_start=%08x nops=184 tail_words=16 persist_free=closed second_retrain=closed next=820A85E8\n",
+  std::printf("post_scaler_init final_wptr=%08x copy_start=%08x nops=184 tail_words=16 persist_free=closed second_retrain=closed next=820A7BC8_before_820AA5B8\n",
               uint32_t(wptr),scaler_copy_start);
-  std::printf("vdswap_packet addr=%08x frontbuffer=%08x size=%ux%u persist_free=closed second_retrain=closed next=820A85E8\n",
+  std::printf("vdswap_packet addr=%08x frontbuffer=%08x size=%ux%u persist_free=closed second_retrain=closed next=820A7BC8_before_820AA5B8\n",
               swap_addr,swap_head[9],swap_head[10],swap_head[11]);
 
   std::printf("graphics_state device=%08x ring=%08x secondary=%08x descriptor=%08x workers=2 resources=%08x,%08x,%08x output_published=%08x hsio=ok\n",
@@ -958,6 +968,6 @@ int main(int argc,char** argv) {
   startup_full_controls(argv[2]);
   renderer_caller_prefix_controls(argv[2]);
   captured_startup_boundary(argv[1]);
-  std::printf("PASS update_boundary assertions=%llu full_synthetic_update=ok startup_full=820701D0..return renderer_prefix=82070AC8..before_820A7990 manager_writer=820701D0@82070434 workers=5 lookup_entries=613 originals=8209CC98,8209DE50,82097720,820915F0,820772B0 platform_init_prefix=820A7990..before_820BEFD0 graphics_init_chain=820BEFD0..return gfx_workers=2 resources=3 output_published=1 next_host_graphics_boundary=820A85E8_renderer_vtable_call next_real_capture_boundary=8225E62C\n",
+  std::printf("PASS update_boundary assertions=%llu full_synthetic_update=ok startup_full=820701D0..return renderer_prefix=82070AC8..before_820A7990 manager_writer=820701D0@82070434 workers=5 lookup_entries=613 originals=8209CC98,8209DE50,82097720,820915F0,820772B0 platform_init_prefix=820A7990..before_820BEFD0 graphics_init_chain=820BEFD0..return gfx_workers=2 resources=3 output_published=1 next_host_graphics_boundary=820A7BC8_caller_continuation_before_820AA5B8 next_real_capture_boundary=8225E62C\n",
               (unsigned long long)assertions);
 }
