@@ -1321,6 +1321,10 @@ static void __imp__NtWaitForSingleObjectEx([[maybe_unused]] Context& ctx, Machin
 #include "generated/sub_820C0330.inc"
 #include "generated/sub_820C00D0.inc"
 #include "generated/sub_820C01C0.inc"
+#include "generated/sub_820A8190.inc"
+#include "generated/sub_820BFEE8.inc"
+#include "generated/sub_820BFC30.inc"
+#include "generated/sub_820C00B8.inc"
 
 // KeBugCheck is a terminal kernel failure; reaching it is never success.
 static void __imp__KeBugCheck([[maybe_unused]] Context& ctx, Machine& base) {

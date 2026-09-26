@@ -550,3 +550,7 @@ static void sub_820BFDF0(Context&, Machine&);
 static void sub_82138200(Context&, Machine&);
 static void sub_820C00D0(Context&, Machine&);
 static void __imp__RtlNtStatusToDosError(Context&, Machine&);
+static void sub_820A8190(Context&, Machine&);
+static void sub_820BFEE8(Context&, Machine&);
+static void sub_820BFC30(Context&, Machine&);
+static void sub_820C00B8(Context&, Machine&);

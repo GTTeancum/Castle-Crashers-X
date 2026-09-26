@@ -619,11 +619,20 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // container-absent names (SobelEdge.xpu, VertexColorFillPS.xpu) take the
   // original error path. The slice then runs the post-loop setup and stops
   // before the first still-unrecovered call bl 0x820A8190.
-  CHECK(ps.functions==2231u);
-  CHECK(ps.memory_ops==66888u);
-  CHECK(c.r1.u32==0x0003ed30u);
-  CHECK(uint32_t(c.lr)==0x820A7CA4u); // last completed original call: sub_82129A70
-  CHECK(c.r3.u32==renderer);
+  // The slice now runs the complete remaining sub_820A7990 suffix: exact
+  // sub_820A8190, the SetVertexShader/SetPixelShader/SetVertexDeclaration
+  // chain (sub_820BFEE8/sub_820BFC30/sub_820C00B8), exact sub_820BB6A8,
+  // sub_820BD0F8, sub_820BCF50, the final sub_820C44A0 640x480 resource
+  // published at renderer+8, the success result store, and the original
+  // epilogue. PlatformRenderer::Init has therefore returned to the still-live
+  // original sub_82070AC8 frame.
+  CHECK(ps.functions==2277u);
+  CHECK(ps.memory_ops==67387u);
+  CHECK(c.r1.u32==0x0003eee0u);       // caller sub_82070AC8 frame restored
+  CHECK(c.r3.u32==0x0003ef50u);       // original result-struct argument returned
+  CHECK(m.load_be(0x0003ef50u,4,v)==cc::xbox::MemoryError::ok && v==0u); // Init result: success
+  CHECK(m.load_be(0x0003ef54u,4,v)==cc::xbox::MemoryError::ok && v==0u);
+  CHECK(m.load_be(renderer+8,4,v)==cc::xbox::MemoryError::ok && v!=0u); // tail sub_820C44A0 resource
   // Durable presentation-state stores executed after the vtable call and
   // before the fail-closed loc_820A7BF0 loop stop.
   std::printf("post_vtable_presentation f30=%08x f31=%08x r28=%08x fields=[28740..28752]\n",
@@ -751,9 +760,11 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // cached GPU state after the Checkpoint 020 invalidation baseline. Bind the
   // exact deterministic post-setter values rather than retaining the older
   // pre-suffix invalidation values.
+  // Word 2 gains the shader/declaration dirty bits set by the exact
+  // descriptor-loop creations (0x...101e0fe8 -> 0x...181e0fef).
   const uint64_t post_suffix_state64[5] = {
     0xffffffffffffffffull, 0xffffffffffffffffull,
-    0xff8013a0101e0fe8ull, 0xff80000bffffffffull,
+    0xff8013a0181e0fefull, 0xff80000bffffffffull,
     0xffffffd000080000ull
   };
   for (uint32_t i=0;i<5u;++i)
@@ -1052,6 +1063,6 @@ int main(int argc,char** argv) {
   startup_full_controls(argv[2]);
   renderer_caller_prefix_controls(argv[2]);
   captured_startup_boundary(argv[1]);
-  std::printf("PASS update_boundary assertions=%llu full_synthetic_update=ok startup_full=820701D0..return renderer_prefix=82070AC8..before_820A7990 manager_writer=820701D0@82070434 workers=5 lookup_entries=613 originals=8209CC98,8209DE50,82097720,820915F0,820772B0 platform_init_prefix=820A7990..before_820BEFD0 graphics_init_chain=820BEFD0..return gfx_workers=2 resources=3 output_published=1 next_host_graphics_boundary=820A7990_suffix_before_820A8190 next_real_capture_boundary=8225E62C\n",
+  std::printf("PASS update_boundary assertions=%llu full_synthetic_update=ok startup_full=820701D0..return renderer_prefix=82070AC8..before_820A7990 manager_writer=820701D0@82070434 workers=5 lookup_entries=613 originals=8209CC98,8209DE50,82097720,820915F0,820772B0 platform_init_prefix=820A7990..before_820BEFD0 graphics_init_chain=820BEFD0..return gfx_workers=2 resources=3 output_published=1 next_host_graphics_boundary=platform_renderer_init_returned_820A7990_complete next_real_capture_boundary=8225E62C\n",
               (unsigned long long)assertions);
 }

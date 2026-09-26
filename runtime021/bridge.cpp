@@ -103,10 +103,18 @@ struct Machine {
       // WIP 021 shader-creation phase: after the fifteen sealed device-init
       // shapes, exact sub_820C0440/sub_820C0330/sub_820C01C0 allocate shader
       // and declaration objects (flag 0x24800000) and their physical
-      // microcode blocks (flag 0xB5800000), with small sizes derived from the
-      // container's shader files. Only those shapes are accepted.
-      if ((flags != 0x24800000u && flags != 0xB5800000u) ||
-          size < 16u || size > 65536u)
+      // microcode blocks (flag 0xB5800000) with small sizes derived from the
+      // container's shader files, and the Init tail's exact sub_820C44A0
+      // creates one more 640x480 resource (52-byte header, flag 0x64800000,
+      // plus its 0x12C000-byte backing, flag 0xBC800000). Only those shapes
+      // are accepted.
+      const bool shader_shape =
+          (flags == 0x24800000u || flags == 0xB5800000u) &&
+          size >= 16u && size <= 65536u;
+      const bool resource_header_shape = flags == 0x64800000u && size == 52u;
+      const bool resource_backing_shape =
+          flags == 0xBC800000u && size == 0x12C000u;
+      if (!shader_shape && !resource_header_shape && !resource_backing_shape)
         fail(Error::unsupported, 0x82136670u);
       const uint32_t p=(g_graphics_alloc_cursor + 15u) & ~15u;
       if (p > 0xffffffffu-size || memory.check(p,size,3) != cc::xbox::MemoryError::ok)

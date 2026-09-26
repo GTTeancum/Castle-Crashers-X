@@ -279,6 +279,23 @@ The exact CRT heap is now created by original code (`sub_820B7880` executed as h
 
 Observed and bound original behavior: 15 of 17 shader pairs load and create vertex/pixel shaders and vertex declarations; the sealed name table's `SobelEdge.xpu` and `VertexColorFillPS.xpu` are absent from the retail container (per the sealed container manifest), so those iterations take the original `STATUS_OBJECT_NAME_NOT_FOUND` error path, exactly as on hardware. Durable bindings include the descriptor table at `renderer+29836` (slot 0 success with nonzero shader/declaration pointers), `renderer+30176/30208`, guard byte `renderer+28715=1`, and the copied microcode header words at `0x0233DE68`.
 
+### CHECKPOINT 021 SEALED — `PlatformRenderer::Init` COMPLETE (2026-09-26)
+
+The continuation slice now covers sealed `sub_820A7990` byte-for-byte from `loc_820A7B34` **through the original function return**: after the shader-descriptor loop it executes exact `sub_820A8190`, the exact `SetVertexShader`/`SetPixelShader`/`SetVertexDeclaration` chain (`sub_820BFEE8`/`sub_820BFC30`/`sub_820C00B8`, newly recovered byte-exact), exact `sub_820BB6A8`/`sub_820BD0F8`/`sub_820BCF50`, a final exact `sub_820C44A0` 640×480 resource published at `renderer+8` (allocator shapes 52/`0x64800000` and `0x12C000`/`0xBC800000`), the success result store, and the original epilogue.
+
+**The original `PlatformRenderer::Init` call has returned.** The live frame unwinds to the original `sub_82070AC8` caller (`r1=0x0003EEE0`), returns the original result-struct argument (`r3=0x0003EF50`, `[r3]=0` success, `[r3+4]=0`).
+
+Sealing acceptance on this exact state:
+
+- focused Release: `platform_post_graphics result=ok`, **2,277 generated/helper executions, 67,387 guest-memory operations**;
+- Release `update_boundary`: **4,001 assertions**; Release CTest **6/6**;
+- ASan/UBSan CTest **6/6**, widget FMA + software-FMA **1,922 assertions each**, fixture **12,047 checks + 6,000 mutations**, visibility **43,528 checks**;
+- provenance: **395 byte-exact local generated bodies** (`verify_provenance.py`), continuation slice verified `820A7B34..return` (10,663 fragment bytes, SHA-256 `ab6f5d6008f6282cbb05a6670c23cb5cfcd2b8cd3297a8e0d3e1b35b1bcbd6ae`).
+
+Checkpoint 021's sealed artifact is the git history of this repository (private remote `GTTeancum/Castle-Crashers-X`); ZIP checkpoint archives are superseded by git. XEMU has **not** been re-run for Checkpoint 021 and no fresh nxdk XBE exists yet containing this logic; that remains the top follow-up.
+
+New boundary: the original `sub_82070AC8` caller continuation immediately after `bl 0x820A7990` (the renderer-prefix slice still stops before that call; it must now be extended through the Init call's return and onward to the next genuine boundary).
+
 ## 4. XBOX / XEMU STATUS
 
 ### Persistent Xbox/XEMU test kit
@@ -413,7 +430,7 @@ Do **not** describe WIP 021 as sealed Checkpoint 021 or completed `PlatformRende
 
 ## 6. NEXT_ACTION
 
-**The full shader-descriptor loop is closed (see the 2026-09-26 subsection). Resume at the `sub_820A7990` suffix beyond the slice stop: recover exact `sub_820A8190`, extend the slice through it and the subsequent calls (`sub_820BB6A8`*, `sub_820BFEE8`, `sub_820BFC30`, `sub_820C00B8`, `sub_820BD0F8`*, ...), and continue until the original `PlatformRenderer::Init` frame actually returns to `sub_82070AC8`. Reproduce first: `platform_post_graphics ok`, 2,231 / 66,888, 3,999 assertions, CTest 6/6, provenance 391 exact bodies.**
+**Checkpoint 021 is sealed: `PlatformRenderer::Init` is complete and returns to the original `sub_82070AC8` frame. Resume at the `sub_82070AC8` caller continuation: extend the renderer caller prefix (currently `entry..before_820A7990`) through the Init call's return, execute only the observed path, and stop at the first next genuine boundary. Reproduce first: `platform_post_graphics ok`, 2,277 / 67,387, 4,001 assertions, Release+ASan CTest 6/6, provenance 395 exact bodies. In parallel, a fresh nxdk XBE/ISO containing WIP/Checkpoint 021 logic plus a XEMU run (local emulator under `C:\Games\Emulators`) is the top validation follow-up.**
 
 Concrete sequence:
 
