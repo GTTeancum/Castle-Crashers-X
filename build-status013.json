@@ -1,0 +1,199 @@
+{
+  "checkpoint": "CastleCrashers-Checkpoint-013",
+  "date_utc": "2026-09-23",
+  "scope": "Original update wrapper now traverses an unchanged ordered-map hit and enters the unchanged timeline/update owner body. Host verified; no fresh Xbox target build/xemu run.",
+  "baseline": {
+    "base_checkpoint": "012",
+    "last_verified_native_checkpoint": "011",
+    "base_full_policy_retained": true
+  },
+  "original_game": {
+    "container_sha256": "2863b8019806a300dc2449b84cf5599fc4a7a949e61b2817ddbda5a2cdf5ca1c",
+    "title_id": "584108B7",
+    "container_available_in_current_scratch": false
+  },
+  "tool_revisions": {
+    "rexglue_sdk": "0.10.0",
+    "rexglue_source": "f5337cdc947ff6d4c4196737e2c807a48f2a1fc2",
+    "nxdk": "58427c078b4ccb0121f359b6b6c536b3b2914976",
+    "llvm": "20.1.8",
+    "xemu": "0.8.136"
+  },
+  "exact_original_bodies": [
+    {
+      "symbol": "__savegprlr_29",
+      "generated_body": {
+        "bytes": 342,
+        "sha256": "fa21b0c03f2eb05342ebfbbec2487ac4fd8d1d62ad51a57af91179d736ef1454"
+      }
+    },
+    {
+      "symbol": "__restgprlr_29",
+      "generated_body": {
+        "bytes": 375,
+        "sha256": "9f85104a5bf50cabd67f5d1914296c9de3f31c2068ed13e7d7d01b28fa9a5e94"
+      }
+    },
+    {
+      "symbol": "sub_8208C5D8",
+      "generated_body": {
+        "bytes": 74,
+        "sha256": "b5c4c96430191a6dc962dcc9918138d71d0f2486ab66c596ea78cee662faafb5"
+      }
+    },
+    {
+      "symbol": "sub_8209CC98",
+      "generated_body": {
+        "bytes": 1792,
+        "sha256": "28d200bf565ff0ce5a73982fbad34ddb368b95a1d6f2cf32bb8529c0e17bd016"
+      }
+    },
+    {
+      "symbol": "sub_8209DE50",
+      "generated_body": {
+        "bytes": 4074,
+        "sha256": "ccf8e40e99c1ea313255fc49721f6fb442b59259ef882d677e89786d80f4abb6"
+      }
+    },
+    {
+      "symbol": "sub_82097720",
+      "generated_body": {
+        "bytes": 4387,
+        "sha256": "ce3714837a3b40d5fc404a45242c342b65d5a1875946eadc2a079068188487d2"
+      }
+    },
+    {
+      "symbol": "sub_820915F0",
+      "generated_body": {
+        "bytes": 20449,
+        "sha256": "1b2e8d2e8e8bb1d35d72f14e5cb08b89ee1dedcf8625489f06383868bf3d044d"
+      }
+    }
+  ],
+  "new_013_originals": {
+    "sub_82097720": {
+      "bytes": 4387,
+      "sha256": "ce3714837a3b40d5fc404a45242c342b65d5a1875946eadc2a079068188487d2",
+      "verified_path": "ordered-map hit, no insertion/allocation helper called"
+    },
+    "sub_820915F0": {
+      "bytes": 20449,
+      "sha256": "1b2e8d2e8e8bb1d35d72f14e5cb08b89ee1dedcf8625489f06383868bf3d044d",
+      "verified_path": "active owner timeline increment through first movie virtual dispatch; initialization path reaches real 0x82094420 boundary"
+    }
+  },
+  "synthetic_chain": {
+    "path": [
+      "0x8209DE50",
+      "0x82097720 map hit",
+      "0x820915F0",
+      "movie vtable +12"
+    ],
+    "map_hit_return": "0x00061110",
+    "timeline_start_bits": "0x40000000",
+    "timeline_after_bits": "0x40011111",
+    "intentional_unknown_virtual": "0xDEAD1000",
+    "result": "dispatch hard failure at unknown virtual, not a success stub",
+    "shared_target_selftest_mask": "7/7"
+  },
+  "captured_startup": {
+    "root": "0x4012A260",
+    "head": "0x405EFA20",
+    "vtable": "0x8204043C",
+    "update_slot": "0x8209DE50",
+    "still_missing_live_state": "0x8225E62C update-manager global",
+    "result": "memory hard failure after one real update dispatch"
+  },
+  "explicit_unimplemented_direct_boundaries": [
+    "0x82099A80",
+    "0x82099968",
+    "0x82097AC8",
+    "0x82099680",
+    "0x82094420",
+    "0x820B0F18",
+    "0x82084BE8",
+    "0x82053A00",
+    "0x82084D18",
+    "0x82084DB8",
+    "0x8208AE78"
+  ],
+  "boundary_policy": "All listed direct dependencies hard-fail Error::unsupported; none returns fake success. Unknown virtuals hard-fail Error::dispatch.",
+  "pc_update_capture": {
+    "implemented": true,
+    "executed_this_checkpoint": false,
+    "entry": "0x8209DE50",
+    "marker": "capture-update-next",
+    "env": "CC_UPDATE_CAPTURE",
+    "generated_translation_units_unchanged": 17,
+    "purpose": "capture actual manager/owner/vtable state and observed movie virtual target before extending the active path"
+  },
+  "tests": {
+    "asan_ctest": "5/5 passed",
+    "release_ctest": "5/5 passed",
+    "update_boundary_assertions": 92,
+    "visibility_property_checks": 43528,
+    "visibility_inputs": 4352,
+    "widget_assertions_per_variant": 1922,
+    "roots": 239,
+    "draws": 418,
+    "tree_visits": 125,
+    "checked_store_bytes": 42499,
+    "fixture_checks_per_build": 12047,
+    "fixture_mutations": 6000,
+    "fixture_accepted_restore_only": 1878,
+    "fixture_rejected": 4122,
+    "generated_translation_units_sealed": 17
+  },
+  "native_target": {
+    "source_target": "nxdk-update013",
+    "synthetic_chain_selftest_prepared": true,
+    "captured_boundary_selftest_prepared": true,
+    "fresh_xbe_built": false,
+    "fresh_iso_built": false,
+    "fresh_xemu_run": false,
+    "native_status": "SKIPPED: prepared nxdk tree not present at /mnt/data/cc011/work/buildkit/sources/nxdk",
+    "last_genuine_target_evidence": "Checkpoint 011",
+    "blocker": "prepared nxdk/build-kit tree is absent; scratch runtime cannot clone/download the pinned nxdk archive"
+  },
+  "host_binaries": {
+    "cc_fixture_tests": {
+      "bytes": 62760,
+      "sha256": "a4df7c0095411d118c817209d897da340ad4f61e5524deb0eba0dcb96aeaf95b"
+    },
+    "cc_update_boundary_tests": {
+      "bytes": 228512,
+      "sha256": "cf6f65ef93ef55c4b0fe2b94ec0067197094a9427ef8e74e4ddb49a96b32632c"
+    },
+    "cc_visibility_tests": {
+      "bytes": 202792,
+      "sha256": "53af86d0e0c11ade885871e5b16995595e44c34267c73c9cd6e45c05ea4599c1"
+    },
+    "cc_widget_tests": {
+      "bytes": 217080,
+      "sha256": "e3d82bdf21045c1f6611e29b13660f992136aed772c7e936a4640c6631192ea4"
+    },
+    "cc_widget_tests_soft": {
+      "bytes": 217192,
+      "sha256": "89fe9d49da034f0b1350b5090e0bbd5c7ff6cc254e9c0e14e4225d55857065cc"
+    }
+  },
+  "next_boundary": {
+    "required_evidence": "live update trace from real PC reference",
+    "specific_unknowns": [
+      "0x8225E62C manager object/tree state",
+      "owner+0 movie object pointer",
+      "movie vtable +12 target",
+      "owner+72 object virtual slots +84/+88 and later observed timeline calls"
+    ],
+    "reason": "static extension past this point would guess scene-specific object identity"
+  },
+  "limits": {
+    "xbox_live_gameplay": false,
+    "original_resource_construction": false,
+    "interactive_xbox_input": false,
+    "audible_audio": false,
+    "save_roundtrip": false,
+    "physical_hardware_test": false,
+    "full_game_ram_fit_proven": false
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "input_sha256": "825e9c8cb951d62ce954901488c5b783349c98cc5c03bd08ea0739df3af5d9ad",
+  "hashed_compressed_blocks": 14,
+  "lzx_frames": 90,
+  "compressed_bytes": 740802,
+  "image_size": 2949120,
+  "image_sha256": "964aa6b9d993beb8ad9a986d0555e47c36b4b5716b0b8377c6631ae8b39c03ab",
+  "decompression": "libarchive CAB/LZX adapter",
+  "method": "AES-CBC then XEX hash-chain validation and LZX",
+  "rsa_signature_checked": false,
+  "note": "Mapped PowerPC image; not a PC executable. Per-page security descriptors were not validated."
+}

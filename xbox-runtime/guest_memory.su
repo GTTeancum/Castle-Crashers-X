@@ -1,0 +1,8 @@
+../xbox-runtime/guest_memory.cpp:6:?map@AddressSpace@xbox@cc@@QAE?AW4MemoryError@23@IIPAXI@Z	24	static
+../xbox-runtime/guest_memory.cpp:19:?find@AddressSpace@xbox@cc@@ABEPBURegion@23@I@Z	16	static
+../xbox-runtime/guest_memory.cpp:26:?check@AddressSpace@xbox@cc@@QBE?AW4MemoryError@23@III@Z	28	static
+../xbox-runtime/guest_memory.cpp:39:?contiguous@AddressSpace@xbox@cc@@QBEPAEIII@Z	16	static
+../xbox-runtime/guest_memory.cpp:45:?read@AddressSpace@xbox@cc@@QBE?AW4MemoryError@23@IPAXI@Z	32	static
+../xbox-runtime/guest_memory.cpp:54:?write@AddressSpace@xbox@cc@@QAE?AW4MemoryError@23@IPBXI@Z	32	static
+../xbox-runtime/guest_memory.cpp:64:?load_be@AddressSpace@xbox@cc@@QBE?AW4MemoryError@23@IIAA_K@Z	20	static
+../xbox-runtime/guest_memory.cpp:69:?store_be@AddressSpace@xbox@cc@@QAE?AW4MemoryError@23@II_K@Z	20	static

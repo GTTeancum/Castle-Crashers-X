@@ -1,0 +1,16 @@
+{
+  "observed_owner_entry": "0x82091248",
+  "upper_caller": {
+    "return_address": "0x8209dfac",
+    "call_address": "0x8209dfa8",
+    "instruction": "4bff32a1",
+    "enclosing_pdata": [
+      {
+        "address": "0x8209df48",
+        "bytes": 160
+      }
+    ]
+  },
+  "next_candidate": "sub_8209DF48",
+  "status": "Original call instruction verified; not executing in the native adapter."
+}

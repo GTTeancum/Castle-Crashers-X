@@ -1,0 +1,74 @@
+[
+  {
+    "name": ".rdata",
+    "virtual_size": 272180,
+    "rva": 1024,
+    "raw_size": 272384,
+    "raw_offset": 1024,
+    "flags": "40000040"
+  },
+  {
+    "name": ".pdata",
+    "virtual_size": 19872,
+    "rva": 273408,
+    "raw_size": 19968,
+    "raw_offset": 273408,
+    "flags": "40000040"
+  },
+  {
+    "name": ".text",
+    "virtual_size": 1027604,
+    "rva": 327680,
+    "raw_size": 1028096,
+    "raw_offset": 293376,
+    "flags": "60000020"
+  },
+  {
+    "name": ".data",
+    "virtual_size": 1313976,
+    "rva": 1376256,
+    "raw_size": 918528,
+    "raw_offset": 1321472,
+    "flags": "C0000040"
+  },
+  {
+    "name": ".XBMOVIE",
+    "virtual_size": 12,
+    "rva": 2690560,
+    "raw_size": 512,
+    "raw_offset": 2240000,
+    "flags": "C0000040"
+  },
+  {
+    "name": ".XEXID",
+    "virtual_size": 4,
+    "rva": 2691072,
+    "raw_size": 512,
+    "raw_offset": 2240512,
+    "flags": "C2000040"
+  },
+  {
+    "name": ".idata",
+    "virtual_size": 942,
+    "rva": 2752512,
+    "raw_size": 1024,
+    "raw_offset": 2241024,
+    "flags": "C0000040"
+  },
+  {
+    "name": ".XBLD",
+    "virtual_size": 208,
+    "rva": 2818048,
+    "raw_size": 512,
+    "raw_offset": 2242048,
+    "flags": "42000040"
+  },
+  {
+    "name": ".reloc",
+    "virtual_size": 63184,
+    "rva": 2818560,
+    "raw_size": 63488,
+    "raw_offset": 2242560,
+    "flags": "42000040"
+  }
+]

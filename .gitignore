@@ -1,0 +1,26 @@
+# Retail Xbox 360 LIVE/STFS game package — never commit game content
+/Castle Crashers
+
+# Emulator runtime material (BIOS, MCPX, EEPROM, HDD images, AppImages)
+*.AppImage
+Complex_*.bin
+mcpx_*.bin
+eeprom.bin
+*.qcow2
+*.vhd
+
+# Host build outputs
+build/
+out/
+CMakeFiles/
+CMakeCache.txt
+*.o
+*.obj
+*.exe
+*.pdb
+
+# Editor/OS noise
+.vs/
+*.swp
+Thumbs.db
+Desktop.ini

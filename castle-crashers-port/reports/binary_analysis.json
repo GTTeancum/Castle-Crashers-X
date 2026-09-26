@@ -1,0 +1,125 @@
+{
+  "xex_sha256": "825e9c8cb951d62ce954901488c5b783349c98cc5c03bd08ea0739df3af5d9ad",
+  "image_sha256": "964aa6b9d993beb8ad9a986d0555e47c36b4b5716b0b8377c6631ae8b39c03ab",
+  "machine": "0x01F2",
+  "image_base": "0x82000000",
+  "entry_point": "0x820B7090",
+  "xex_declared_image_bytes": 2949120,
+  "pe_size_of_image": 3006976,
+  "text_bytes": 1027604,
+  "pdata_record_count": 2484,
+  "pdata_candidates_in_text": 2484,
+  "unique_library_ordinal_dependencies": 206,
+  "libraries": [
+    {
+      "library": "xam.xex",
+      "records": 146,
+      "unique_ordinals": 73
+    },
+    {
+      "library": "xboxkrnl.exe",
+      "records": 255,
+      "unique_ordinals": 133
+    }
+  ],
+  "static_libraries": [
+    {
+      "name": "XAPILIB",
+      "major": 2,
+      "minor": 0,
+      "build": 7645,
+      "qfe_approval_raw": "4000"
+    },
+    {
+      "name": "D3D9",
+      "major": 2,
+      "minor": 0,
+      "build": 7645,
+      "qfe_approval_raw": "4000"
+    },
+    {
+      "name": "XGRAPHC",
+      "major": 2,
+      "minor": 0,
+      "build": 7645,
+      "qfe_approval_raw": "4000"
+    },
+    {
+      "name": "XBOXKRNL",
+      "major": 2,
+      "minor": 0,
+      "build": 7645,
+      "qfe_approval_raw": "4000"
+    },
+    {
+      "name": "XNET",
+      "major": 2,
+      "minor": 0,
+      "build": 7645,
+      "qfe_approval_raw": "4000"
+    },
+    {
+      "name": "XAUD",
+      "major": 2,
+      "minor": 0,
+      "build": 7645,
+      "qfe_approval_raw": "4000"
+    },
+    {
+      "name": "XMP",
+      "major": 2,
+      "minor": 0,
+      "build": 7645,
+      "qfe_approval_raw": "4000"
+    },
+    {
+      "name": "XONLINE",
+      "major": 2,
+      "minor": 0,
+      "build": 7645,
+      "qfe_approval_raw": "4000"
+    },
+    {
+      "name": "QNET",
+      "major": 2,
+      "minor": 0,
+      "build": 7645,
+      "qfe_approval_raw": "4000"
+    },
+    {
+      "name": "XRNSS",
+      "major": 2,
+      "minor": 0,
+      "build": 7645,
+      "qfe_approval_raw": "4000"
+    },
+    {
+      "name": "XRNMS",
+      "major": 2,
+      "minor": 0,
+      "build": 7645,
+      "qfe_approval_raw": "4000"
+    },
+    {
+      "name": "LIBCPMT",
+      "major": 2,
+      "minor": 0,
+      "build": 7645,
+      "qfe_approval_raw": "4000"
+    },
+    {
+      "name": "XHV",
+      "major": 2,
+      "minor": 0,
+      "build": 7645,
+      "qfe_approval_raw": "4000"
+    }
+  ],
+  "not_a_pc_executable": true,
+  "caveats": [
+    ".pdata entries are candidate function starts, not an exhaustive recovered function list.",
+    "PE section raw offsets differ from mapped-image RVAs. Use RVAs with default.image.bin.",
+    "Strings are identifiers/diagnostics, not recovered C++ symbols or available source.",
+    "Image size is not runtime memory consumption or a recompiled-size estimate."
+  ]
+}

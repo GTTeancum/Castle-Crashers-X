@@ -1,0 +1,132 @@
+[
+  {
+    "image_offset": "0x3DCE0",
+    "guest_address": "0x8203DCE0",
+    "text": "GetFlashGlobal"
+  },
+  {
+    "image_offset": "0x3DD68",
+    "guest_address": "0x8203DD68",
+    "text": "SetFlashController"
+  },
+  {
+    "image_offset": "0x3DD7C",
+    "guest_address": "0x8203DD7C",
+    "text": "SetFlashGlobal"
+  },
+  {
+    "image_offset": "0x3E178",
+    "guest_address": "0x8203E178",
+    "text": "ActionScript::CallCustomFunction(): Function not found: %s"
+  },
+  {
+    "image_offset": "0x3E1B4",
+    "guest_address": "0x8203E1B4",
+    "text": "ActionScript::CallCustomFunction(): Opcode 0 in %s:%d"
+  },
+  {
+    "image_offset": "0x3E1F8",
+    "guest_address": "0x8203E1F8",
+    "text": "ActionScript::ProcessEndOfFrameAction(): Opcode 0 in Clip%d(%s):Script%d:%d"
+  },
+  {
+    "image_offset": "0x3E248",
+    "guest_address": "0x8203E248",
+    "text": "ActionScript::OnLoad(): Opcode 0 in Clip%d(%s):Script %d"
+  },
+  {
+    "image_offset": "0x3E284",
+    "guest_address": "0x8203E284",
+    "text": "ActionScript::OnEnterFrame(): Opcode 0 in Clip%d(%s)Script %d"
+  },
+  {
+    "image_offset": "0x3E2C4",
+    "guest_address": "0x8203E2C4",
+    "text": "ActionScript::ActionCloneSprite(): Null clip!"
+  },
+  {
+    "image_offset": "0x3E2F4",
+    "guest_address": "0x8203E2F4",
+    "text": "ActionScript::ActionCloneSprite(): Undefined source!"
+  },
+  {
+    "image_offset": "0x3E340",
+    "guest_address": "0x8203E340",
+    "text": "ActionScript::ActionRandomNumber(): Got zero for maxVal"
+  },
+  {
+    "image_offset": "0x3E37C",
+    "guest_address": "0x8203E37C",
+    "text": "ActionScript::ActionSetMember(): Array index %d out of range"
+  },
+  {
+    "image_offset": "0x3E5C4",
+    "guest_address": "0x8203E5C4",
+    "text": "FlashParser::RunTagFunc(): No function defined for tag %d"
+  },
+  {
+    "image_offset": "0x3EF14",
+    "guest_address": "0x8203EF14",
+    "text": "FlashParser::FlashParser(): Couldn't read header"
+  },
+  {
+    "image_offset": "0x3F424",
+    "guest_address": "0x8203F424",
+    "text": "FlashParser::Tick(): Possible infinite goto loop!"
+  },
+  {
+    "image_offset": "0x3FF28",
+    "guest_address": "0x8203FF28",
+    "text": "VectorRender"
+  },
+  {
+    "image_offset": "0x3FF68",
+    "guest_address": "0x8203FF68",
+    "text": "InternalFlash"
+  },
+  {
+    "image_offset": "0x3FF90",
+    "guest_address": "0x8203FF90",
+    "text": "PlatformRenderer"
+  },
+  {
+    "image_offset": "0x400AC",
+    "guest_address": "0x820400AC",
+    "text": "Clip_CharToFunc_InternalFlash"
+  },
+  {
+    "image_offset": "0x40284",
+    "guest_address": "0x82040284",
+    "text": "PreMultipliedAlphaSprite"
+  },
+  {
+    "image_offset": "0x41EE4",
+    "guest_address": "0x82041EE4",
+    "text": "PlatformRenderer::Init(): Failed to create D3D device"
+  },
+  {
+    "image_offset": "0x41F1C",
+    "guest_address": "0x82041F1C",
+    "text": "PlatformRenderer::PushShader(): Stack overflow"
+  },
+  {
+    "image_offset": "0x41F4C",
+    "guest_address": "0x82041F4C",
+    "text": "PlatformRenderer::PushShader(): Stack underflow"
+  },
+  {
+    "image_offset": "0x41F80",
+    "guest_address": "0x82041F80",
+    "text": "PlatformRenderer::SetTexturing(): Unknown texture format %d"
+  },
+  {
+    "image_offset": "0x424CC",
+    "guest_address": "0x820424CC",
+    "text": "VectorRenderer::CreateTextureFromData"
+  },
+  {
+    "image_offset": "0x42734",
+    "guest_address": "0x82042734",
+    "text": "c:\\Castle\\gamecode\\xbox360\\Project Files\\Release\\default.pdb"
+  }
+]

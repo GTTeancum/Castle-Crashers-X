@@ -1,0 +1,92 @@
+{
+    "format":  "cc-buildkit-volumes-v1",
+    "created_utc":  "2026-09-21T08:11:21.7119197Z",
+    "payload_bytes":  2305397897,
+    "payload_sha256":  "6cdd59fa5923414a24d95ec58b73ea6e46033587c41345e08d4b1e34404e32f4",
+    "parts":  [
+                  {
+                      "zip":  "CastleCrashers-BuildKit-001.zip",
+                      "entry":  "payload.part0001",
+                      "bytes":  199229440,
+                      "sha256":  "efcd48d2b4752c90dbe79c1ccab2a241d3eee7c5bdc74c819cf3bf5018b51ae8",
+                      "zip_sha256":  "ffdde0b84ab60fb4fba1980d94577de172b9c9f5b9a3101747b8d0d03f8a9548"
+                  },
+                  {
+                      "zip":  "CastleCrashers-BuildKit-002.zip",
+                      "entry":  "payload.part0002",
+                      "bytes":  199229440,
+                      "sha256":  "7d5de573be5022fea78b9ad8b1c0dce332487a269a42d2cf01951b98aedfa2f2",
+                      "zip_sha256":  "0bae90f61d19d3384027aa3d7cf0f72ecdac92db3bef9cb5669bb01427095859"
+                  },
+                  {
+                      "zip":  "CastleCrashers-BuildKit-003.zip",
+                      "entry":  "payload.part0003",
+                      "bytes":  199229440,
+                      "sha256":  "34ba0da704dd968c3629cf4318300072f66c80fcee1f7068802ebf7b131bf2f4",
+                      "zip_sha256":  "b3d9692265180dc6dd937fe8f18457072a05c877ab827574bc864ecf34671b4d"
+                  },
+                  {
+                      "zip":  "CastleCrashers-BuildKit-004.zip",
+                      "entry":  "payload.part0004",
+                      "bytes":  199229440,
+                      "sha256":  "5ab15b954272aa09557b3a53833c27b22e0e2d760a95bd769bb94263676bade8",
+                      "zip_sha256":  "62bd96a345785961cb391ca7dac0334c0da249bb29becbdbf434c194e57b2040"
+                  },
+                  {
+                      "zip":  "CastleCrashers-BuildKit-005.zip",
+                      "entry":  "payload.part0005",
+                      "bytes":  199229440,
+                      "sha256":  "3cfdafc36dc2e8441261d1d94982d472821556a6145412b09397831607a8e8e7",
+                      "zip_sha256":  "aac52290a517a0476590bdd7387d83744be19bf7193fb82b411784bebbaa530e"
+                  },
+                  {
+                      "zip":  "CastleCrashers-BuildKit-006.zip",
+                      "entry":  "payload.part0006",
+                      "bytes":  199229440,
+                      "sha256":  "59e10cd812521f0fd3756367384463525c0053cf70a0242760e588cb023e71ba",
+                      "zip_sha256":  "c9db546550fd96b3a9401bcfbb039a730569dcc415188c0146554298575cb3f4"
+                  },
+                  {
+                      "zip":  "CastleCrashers-BuildKit-007.zip",
+                      "entry":  "payload.part0007",
+                      "bytes":  199229440,
+                      "sha256":  "94f147c145068145cc78ff096f92befac743d63979a6da096cbead6572d27903",
+                      "zip_sha256":  "1ddf97ed1cb8a4a70405c3320abe68fefd308c8b51b5256298755c872774af28"
+                  },
+                  {
+                      "zip":  "CastleCrashers-BuildKit-008.zip",
+                      "entry":  "payload.part0008",
+                      "bytes":  199229440,
+                      "sha256":  "b81a9687c1dba2982d71408b025c31b4b4c5fb4ced884c3d598e61967bb70a42",
+                      "zip_sha256":  "332e1ec771ab03181286cf496bcd240fae2cd7697a8f65219b7bbdc1081ba149"
+                  },
+                  {
+                      "zip":  "CastleCrashers-BuildKit-009.zip",
+                      "entry":  "payload.part0009",
+                      "bytes":  199229440,
+                      "sha256":  "98bd9a683ad1496bf0b7d308439cda754da00898c17e9d590799c14c515619ad",
+                      "zip_sha256":  "b9b9ce28f2ac15ad9d4a840a7f0b39b9938e32f8e2bde3752e24fec0f1462d94"
+                  },
+                  {
+                      "zip":  "CastleCrashers-BuildKit-010.zip",
+                      "entry":  "payload.part0010",
+                      "bytes":  199229440,
+                      "sha256":  "2dcbc8561acba2ffdc34fd4b67dbb111ebc1f5cda3803b30882b297cba5fa6b4",
+                      "zip_sha256":  "3bb964179ffa99f14420767476d85f907f3fe222202cd0aa2f3476e6e9658d9d"
+                  },
+                  {
+                      "zip":  "CastleCrashers-BuildKit-011.zip",
+                      "entry":  "payload.part0011",
+                      "bytes":  199229440,
+                      "sha256":  "53e030d45b0ffc6d6a258fdf175c1985d58a64d99f1f1a13d6f8b0afdeb25b53",
+                      "zip_sha256":  "a2210cd0a7fea175f6e11e22bccc9434ab2a93c9c695f1473a473c2bf17a2cc8"
+                  },
+                  {
+                      "zip":  "CastleCrashers-BuildKit-012.zip",
+                      "entry":  "payload.part0012",
+                      "bytes":  113874057,
+                      "sha256":  "1912d638fdb01de3cccbfe8856ba527c68693145efc3556a81a04997e53d58ef",
+                      "zip_sha256":  "d1f4bd5765ae156987bd753254775c3bbc51324dd81e54ba1b41296bcd1c0a5f"
+                  }
+              ]
+}

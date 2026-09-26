@@ -1,0 +1,27 @@
+TRACE020 fail error=10 address=00021000 last=sub_8209CC98 funcs=0 memops=5 recent=,sub_8209CC98@00010800
+TRACE020 fail error=4 address=820a85e8 last=__restgprlr_27 funcs=964 memops=21113 recent=sub_820D4630@0003eb20,__savegprlr_26@0003eb20,__restgprlr_26@0003eb20,sub_82129A70@0003eb20,sub_82129A70@0003eb20,sub_820C1F58@0003eb20,__savegprlr_14@0003eb20,sub_820D4298@0003e9f0,__savegprlr_20@0003e9f0,__restgprlr_20@0003e9f0,sub_820C4AF8@0003e9f0,__savegprlr_27@0003e9f0,__restgprlr_27@0003e9f0,sub_820C1CB8@0003e9f0,__savegprlr_21@0003e9f0,sub_820C19C8@0003e8d0,__savegprlr_23@0003e8d0,sub_820C64C0@0003e800,sub_820C6290@0003e790,__savegprlr_29@0003e790,sub_820C5E50@0003e720,__savegprlr_29@0003e720,__restgprlr_29@0003e720,__restgprlr_29@0003e790,__restgprlr_23@0003e8d0,__restgprlr_21@0003e9f0,__restgprlr_14@0003eb20,sub_820BB3B8@0003eb20,__savegprlr_21@0003eb20,__restgprlr_21@0003eb20,__restgprlr_19@0003ec20,__restgprlr_27@0003ed30
+TRACE020 fail error=3 address=8225e62c last=__savegprlr_29 funcs=3 memops=25 recent=,sub_8209CC98@7018fb50,sub_8209DE50@7018fae0,__savegprlr_29@7018fae0
+init_chain result=ok funcs=19 inserted_key=1
+active_chain result=ok@00000000 funcs=58 dispatches=3
+synthetic_chain manager=00071010 root_value=00071150 timeline_result=ok timeline_bits=40011111
+manager_init result=ok@00000000 funcs=48 memops=583 global=00071010
+manager_init global=00071010 sentinel=000710b0 root=00071140 value=00071150 nested_sentinel=00071170
+manager_second_insert result=ok@00000000 funcs=42 memops=494 ret=000711b0
+startup_full result=ok@00000000 funcs=182963 dispatch=10501 memops=2670630 r1=0003f000 r31=00000000
+startup_full globals label=00071010 small=00071100 input=00071130 hash=000718d0 pool=000718f0 manager=000758f0 async=000759c0 event=000759f0 game_manager=00075df0 state_pool=00076390 system_state=004e0da0 workers=005003e0 lookup=00500410 state_block=00091b34 sentinel=00075990 root=00075a20
+renderer_prefix result=ok@00000000 funcs=182986 dispatch=10501 memops=2671382 r1=0003eee0 r3=0003ef50 lr=82070b84
+renderer_prefix published=00501060 next_original_call=820A7990 platform_renderer_init
+platform_init_prefix result=ok@00000000 funcs=2 memops=104 r1=0003ed30 r3=00000000 r4=00000001 r7=0003edd0 r8=00501064
+platform_init_prefix presentation=640x480 next_original_call=820BEFD0 graphics_device_helper
+graphics_init_prefix result=ok@00000000 funcs=17008 memops=194110 r1=0003ed30 r3=00000000 r4=2
+platform_post_graphics result=dispatch@820a85e8 funcs=964 memops=21113 r1=0003ed30 lr=820a7bc8 r3=00501060 r4=00000000 r5=00000000 r6=820a85e8 r7=000001e0 r8=00000280 r9=82042048 r10=82040000 ctr=820a85e8
+cf9d0_state f16720=00000000 f16724=00000000 tdiff=00000000 tlo=00000000 thi=000050ce q0=0000000000000000 q1=0000000000000000 copy0=00000000 copy1=00000000 state=0 r7=000001e0
+post_restore_ring s14912=00010000 s14916=0202f40c s14928=0201f380 s14932=00000054 s14940=0000000d d52=0202f37c d56=0202f2dc next=820A85E8
+post_c0bc0 device21544=1280 device21548=720 device21552=1280 wptr=0201f73c packet=0200faa0..0200fadc
+c8e98_packet start=0200fe88 words=2309 hash=1de1b325315c84ac tail=0201229c words=17 tail_hash=1ca6adb697e47ca5
+post_scaler_init final_wptr=0201f73c copy_start=0200fb20 nops=184 tail_words=16 persist_free=closed second_retrain=closed next=820A85E8
+vdswap_packet addr=0200f950 frontbuffer=02211000 size=640x480 persist_free=closed second_retrain=closed next=820A85E8
+graphics_state device=02000080 ring=02007140 secondary=0200f140 descriptor=0220f140 workers=2 resources=02211730,0233d770,0233dad0 output_published=02000080 hsio=ok
+captured_owner_stack mapped=0 ptr=00000000 depth=0
+captured_startup root=4012a260 head=405efa20 vtable=8204043c update=8209de50 boundary=memory@8225e62c
+PASS update_boundary assertions=3974 full_synthetic_update=ok startup_full=820701D0..return renderer_prefix=82070AC8..before_820A7990 manager_writer=820701D0@82070434 workers=5 lookup_entries=613 originals=8209CC98,8209DE50,82097720,820915F0,820772B0 platform_init_prefix=820A7990..before_820BEFD0 graphics_init_chain=820BEFD0..return gfx_workers=2 resources=3 output_published=1 next_host_graphics_boundary=820A85E8_renderer_vtable_call next_real_capture_boundary=8225E62C

@@ -1,0 +1,423 @@
+{
+  "image_sha256": "964aa6b9d993beb8ad9a986d0555e47c36b4b5716b0b8377c6631ae8b39c03ab",
+  "functions": [
+    {
+      "symbol": "__restfpr_14",
+      "address": 2182260844,
+      "original_bytes": 76,
+      "original_sha256": "e45a00b224a8d81995818a41c986b2ccd164612f1533ec9e44146f149af58aa5",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.3.cpp",
+      "body_sha256": "7d713ba665a51187eee6c8808f5e38f4c9782562f4499e5882f196fe5e2b53c4"
+    },
+    {
+      "symbol": "__restfpr_19",
+      "address": 2182260864,
+      "original_bytes": 56,
+      "original_sha256": "f085591c9de8c476d1cc583b2073c880359afcadc55a58045afa490a7a6e12b3",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.0.cpp",
+      "body_sha256": "c6afa1e3e1643ef7e816f1d05da289d1af99af9ce7c42c4d02247f2f6a9133db"
+    },
+    {
+      "symbol": "__restfpr_25",
+      "address": 2182260888,
+      "original_bytes": 32,
+      "original_sha256": "8c328f049a56096df27b42eb6a5681dc5d7169dcb7fa1e8cabdbf60a4916f1fe",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.9.cpp",
+      "body_sha256": "0e3e6f77dde5a637dd8fcd6a732500cbcab09f9474a627e7e23b9179a5b47708"
+    },
+    {
+      "symbol": "__restgprlr_20",
+      "address": 2182256968,
+      "original_bytes": 60,
+      "original_sha256": "609e0e07036710f4c3a7b91d04fa4c882a76f984a4865ec2a62e8d2733749cb8",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.8.cpp",
+      "body_sha256": "dd71360a0932304aca6323c18974dca1c4d99486b2931779b493d8cc0a526a56"
+    },
+    {
+      "symbol": "__restgprlr_21",
+      "address": 2182256972,
+      "original_bytes": 56,
+      "original_sha256": "09eac1b6e8943b1365ec05aeb8aa398a6566a938a8a974322642e0c1b16d536b",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.1.cpp",
+      "body_sha256": "4498d44cc277f23af43eb220d30c0bd7761703c904eca8a9018ff0956ca2c09c"
+    },
+    {
+      "symbol": "__restgprlr_25",
+      "address": 2182256988,
+      "original_bytes": 40,
+      "original_sha256": "b8fccdaa02d7e723b870874165494a80d5aed7dc4a1873105ecf874e775b9a01",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.6.cpp",
+      "body_sha256": "85e429392f3ec7bf00d12665958b49335d12fe0d3395ab6ae556890c2a84c2f6"
+    },
+    {
+      "symbol": "__restgprlr_27",
+      "address": 2182256996,
+      "original_bytes": 32,
+      "original_sha256": "24cf086c690e8cde992a92554e12ac11ff2e66f8c9d8ed65abd19e3579f6bf83",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.14.cpp",
+      "body_sha256": "572a3ab2938b27b2212c6abba235e3bdb72e02908fe3bc124aacc001da27d384"
+    },
+    {
+      "symbol": "__restgprlr_28",
+      "address": 2182257000,
+      "original_bytes": 28,
+      "original_sha256": "5448ffad152bf793e434e83f53a4f1eaac75acd15c2064ef070051617cc94c35",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.13.cpp",
+      "body_sha256": "90b7ecbc329bb00f1fd6db7a59218d9c249ab0d93b834936f9d11b8862ae6d17"
+    },
+    {
+      "symbol": "__savefpr_14",
+      "address": 2182260768,
+      "original_bytes": 76,
+      "original_sha256": "7b8d182913d616c5892226bceaa451615193a5c98d9acbbc0bbb5cb8e521d1e9",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.5.cpp",
+      "body_sha256": "0c3ce9c3c3f3e194119ce73b90855f3a7d624e7d64d8b84c19cdbf455f861cf8"
+    },
+    {
+      "symbol": "__savefpr_19",
+      "address": 2182260788,
+      "original_bytes": 56,
+      "original_sha256": "90520b07059e0257a1a2ec15504779b8ef0476a8e7b102836530ff829689081b",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.6.cpp",
+      "body_sha256": "0b1f621b4b0ca599126cf5926d12540aa744479aa36d6e78e56c328c9231e1b7"
+    },
+    {
+      "symbol": "__savefpr_25",
+      "address": 2182260812,
+      "original_bytes": 32,
+      "original_sha256": "095844a8f2f550e1fe08bfe35ac9cfcbb6d75afd82946765bec9962ebe25b472",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.0.cpp",
+      "body_sha256": "45e59b9da2ddd3caf9370d006b9a96e9ea6cf67c152af4db770a1ad545ef89bf"
+    },
+    {
+      "symbol": "__savegprlr_20",
+      "address": 2182256888,
+      "original_bytes": 56,
+      "original_sha256": "bcb0e9e5be0e9eb3ed8acb497be9e8ceff8ed0a510e74c5f46a4b4cfcac8a969",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.8.cpp",
+      "body_sha256": "02a9b878ff8b4fb16c8c690ce2009e98700def80d73cb1cade0f90387e44c30d"
+    },
+    {
+      "symbol": "__savegprlr_21",
+      "address": 2182256892,
+      "original_bytes": 52,
+      "original_sha256": "949aa356edba107234aed501c5a35138454e6772d3cba693c41fe58f55bc5033",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.4.cpp",
+      "body_sha256": "1c80c37df40cf8f12307a1be143fba4ca9033d5c3a5e77dbd3c29296674e8bb8"
+    },
+    {
+      "symbol": "__savegprlr_25",
+      "address": 2182256908,
+      "original_bytes": 36,
+      "original_sha256": "d7c8c4e881c5adeb20ddf50e76a6d2dfcdaf5a1326e507e6963859b8f3823588",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.16.cpp",
+      "body_sha256": "3b81a12118b12ea0db9c96429a252c041a3053119e4bf6be809832ebd2397caa"
+    },
+    {
+      "symbol": "__savegprlr_27",
+      "address": 2182256916,
+      "original_bytes": 28,
+      "original_sha256": "73fc9a29ae7916eaaded1505b879c48b31a26b1f20e9d0a274b254d596bfb120",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.6.cpp",
+      "body_sha256": "24df144433c3623214f7d8345b541d686750b235106dd607bbd9712f50b5ff15"
+    },
+    {
+      "symbol": "__savegprlr_28",
+      "address": 2182256920,
+      "original_bytes": 24,
+      "original_sha256": "8f01b74cf3503f5cc50db695ef741ca12060c98d5bda0db7b9a1a8d64e5ad2f8",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.9.cpp",
+      "body_sha256": "09b8e2e15cbcfec5ac4a9b9e0584689e8fbc5acb7e515a253b6be62579a45183"
+    },
+    {
+      "symbol": "sub_82053A98",
+      "address": 2181380760,
+      "original_bytes": 8,
+      "original_sha256": "d4e9e7520ef19698837e384bfe1708ac4b91fcf26b16ec098ec21c1e344ad3db",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.12.cpp",
+      "body_sha256": "c13978df450586dfaf8e404cf9701d6dfad14ddbbf6a0c4d207f4488e26e7c68"
+    },
+    {
+      "symbol": "sub_820619E8",
+      "address": 2181437928,
+      "original_bytes": 8,
+      "original_sha256": "2bf7a94759a252fd0d2af700ff876c19ab13998fb28ac5b0db3c70cdbc9ef8d6",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.2.cpp",
+      "body_sha256": "10d878f418276e814b111f3fa405613f0c98ee1c8e6932f1ef2faeb27f6edce4"
+    },
+    {
+      "symbol": "sub_820836E0",
+      "address": 2181576416,
+      "original_bytes": 224,
+      "original_sha256": "1eee84a8d9ef9340856001c8a76da6adfd5693cc18bb44284e8fb2a3568f9009",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.3.cpp",
+      "body_sha256": "5eb9511ef581b959f1f0fbc6da8a00f66ace25ebc6eabd592dc067a8f8dacc76"
+    },
+    {
+      "symbol": "sub_82084100",
+      "address": 2181579008,
+      "original_bytes": 492,
+      "original_sha256": "182cadf1494bb66f914c81280e3c94d74b6ddb2b238f4f2d8975b9289a692b88",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.7.cpp",
+      "body_sha256": "fa16606b8c12e8fda938c2e67e15f764287ffb48e0ee15fbd2d078c8f43ef2ef"
+    },
+    {
+      "symbol": "sub_82085110",
+      "address": 2181583120,
+      "original_bytes": 748,
+      "original_sha256": "355f2b6fbe45a824071bb7d1f84e7fad65d142a9d8dcdc56bf20a3598a7501c4",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.9.cpp",
+      "body_sha256": "732c4f8ed431657922787eb2c9bb7a3d5d44050699055cd6c6f47a77d28dc862"
+    },
+    {
+      "symbol": "sub_820855D8",
+      "address": 2181584344,
+      "original_bytes": 636,
+      "original_sha256": "ceccebf826b4ab143c2cfa89dbcaf903a5a7acf8a8f1deb72a919f42f0140a89",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.15.cpp",
+      "body_sha256": "40287f0ee23c7ba4d054452b561e3f060bc94c540ea4559b51761c3cbb0afcc5"
+    },
+    {
+      "symbol": "sub_82085AD8",
+      "address": 2181585624,
+      "original_bytes": 408,
+      "original_sha256": "edbda51393e5ef3243b2899ea1c1e48b42d3f2645bd4686657c919f20925c490",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.2.cpp",
+      "body_sha256": "e68eb07bd9508d99be2791b30209be4078ae23c9d32ddd5900be8d7a1c83d97a"
+    },
+    {
+      "symbol": "sub_82086090",
+      "address": 2181587088,
+      "original_bytes": 336,
+      "original_sha256": "ab921f63e6b9d965c5d8e7ab5fa9795351a2bf4ca1d645911545e88816ed7925",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.7.cpp",
+      "body_sha256": "7906727d9ed5caf411d534f9467863ca4a6c0a155a42e4081b3d609189be535c"
+    },
+    {
+      "symbol": "sub_82086278",
+      "address": 2181587576,
+      "original_bytes": 20,
+      "original_sha256": "92c720f39dba4587da7a801c37fdd1e151b4df72cba7672ec5fd644497918f3b",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.5.cpp",
+      "body_sha256": "f928db4cd3d1e0d578669a889f3465136bac0398f8eb4b699d35950a6a3321de"
+    },
+    {
+      "symbol": "sub_820868D0",
+      "address": 2181589200,
+      "original_bytes": 8,
+      "original_sha256": "7eb5b5ea8136c6630d2900586a816d9cc74e2b35ddf240443ebe2dbd1f234133",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.10.cpp",
+      "body_sha256": "3f29b0024e27bcbf4cbd71bd5a5daf3cd66df7a56da57a8bd49a251ce278f45a"
+    },
+    {
+      "symbol": "sub_8208A7A0",
+      "address": 2181605280,
+      "original_bytes": 1016,
+      "original_sha256": "b069174d3a61802e2ed6b1664509a4892c7f39cda32c6494b9e9011d90848215",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.1.cpp",
+      "body_sha256": "085f6e0299bdb96849ef743a00e9aff97636d30a8c8a65d9b134461de35a4ab4"
+    },
+    {
+      "symbol": "sub_8208AF08",
+      "address": 2181607176,
+      "original_bytes": 172,
+      "original_sha256": "aed3352e4fdf06d91d1d9963e966354d53f2a0fe78e0d2aec179f77060794b41",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.8.cpp",
+      "body_sha256": "8af230e78bedf3e6c1f0104db075f0c6c0957673f009c32ea116046f43775e19"
+    },
+    {
+      "symbol": "sub_82094FE8",
+      "address": 2181648360,
+      "original_bytes": 980,
+      "original_sha256": "b20f13f5331b1f64f9249dce0a7bdc256adc619b1341251e7331445ba9b5dae4",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.13.cpp",
+      "body_sha256": "d48388d8f290394e3cf94efc69d96ff04c80dc427a73a39a0141fc76d72835c1"
+    },
+    {
+      "symbol": "sub_8209D028",
+      "address": 2181681192,
+      "original_bytes": 236,
+      "original_sha256": "7f05700d2e99668b54235f6729dc7bcf314670c9e9ac8e22f415559840368eee",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.3.cpp",
+      "body_sha256": "d57aa68d525b511eb3ba5041484087539e1090ceb9dddf0b280b72d5b39091f9"
+    },
+    {
+      "symbol": "sub_8209D118",
+      "address": 2181681432,
+      "original_bytes": 176,
+      "original_sha256": "ef3cda1ddb404147aadd1d8b025a2b6203a7f911c9ac2c32144a7b4c91fdee68",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.14.cpp",
+      "body_sha256": "5e54675b07d9927941b9d5568e5913d11e037fe29862eecc7009464b9be8c6fe"
+    },
+    {
+      "symbol": "sub_8209D1C8",
+      "address": 2181681608,
+      "original_bytes": 260,
+      "original_sha256": "15887caa8e6bb25945b342528dccca6e6dfd6f6549a24cbfb8bd3ba2e1bc5936",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.11.cpp",
+      "body_sha256": "90897ad2a899f1f4338f162e57e7a985a51b0a183e60a5061c6460df29c04bd7"
+    },
+    {
+      "symbol": "sub_820A7488",
+      "address": 2181723272,
+      "original_bytes": 84,
+      "original_sha256": "6a46a29c2a7b3057c7dcb068995b6032df2abc90c07aca183b072609c3f467fa",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.3.cpp",
+      "body_sha256": "a09ed1d149c12f006370fca1b0b030e4b03497af4ea1a72d696891e6c00eaf90"
+    },
+    {
+      "symbol": "sub_820A74E0",
+      "address": 2181723360,
+      "original_bytes": 20,
+      "original_sha256": "f053cedb758e0ab03738fd0b3ec072b662767baf583f3c17c1dc0cb4f214f962",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.11.cpp",
+      "body_sha256": "a60692e85ebdce277334334fe9bf57fdfc827a372c81bda2000f258f7b075ba8"
+    },
+    {
+      "symbol": "sub_820A74F8",
+      "address": 2181723384,
+      "original_bytes": 12,
+      "original_sha256": "3a95b0a11bcc766fba6fd69b210a5958536a0f7e26aff278ff690b2527a081ed",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.1.cpp",
+      "body_sha256": "1c9b8be09589dd0bbabeed638d2cd88044e8e3e284d8d1ffb4a110cdf105c3a3"
+    },
+    {
+      "symbol": "sub_820A7508",
+      "address": 2181723400,
+      "original_bytes": 68,
+      "original_sha256": "28d7fb6b7c20155f315122524fbf995d2352b4e1a2ec9d33c6180b0532f34866",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.1.cpp",
+      "body_sha256": "9f9936711863297ff5ee7fea39976e0027f27eff80c47abc84fa207ef0216114"
+    },
+    {
+      "symbol": "sub_820A75C8",
+      "address": 2181723592,
+      "original_bytes": 20,
+      "original_sha256": "e789bef8dca2a688792027dbc070bc8b0382acbd53a2daf852a58df284748dd0",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.3.cpp",
+      "body_sha256": "c84f3ba0a5999b23b537587a8d35b03b4b72706e6b7e0934f63a1d6a503ce8e9"
+    },
+    {
+      "symbol": "sub_820A8038",
+      "address": 2181726264,
+      "original_bytes": 196,
+      "original_sha256": "44ea70b965a4d6209f2b48729c8b5193375788b7b59d359118c335029709cb3f",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.8.cpp",
+      "body_sha256": "97d5cf8411acb37da7ba8913bbc06c986eac74bb24b19e12e83dbea985e25b7c"
+    },
+    {
+      "symbol": "sub_820A8100",
+      "address": 2181726464,
+      "original_bytes": 144,
+      "original_sha256": "b25c285404553481a6811cdbac580d4d8ab764873d0696698fdbe0511dfd3fdc",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.11.cpp",
+      "body_sha256": "81d53ce810d52c4e7912498c88547798024e33467015b2b808d0475315da2d48"
+    },
+    {
+      "symbol": "sub_820A86B0",
+      "address": 2181727920,
+      "original_bytes": 32,
+      "original_sha256": "41ac5c52a8dbe43415ba9b89348a10f551f2608e684626dbdbd4d0d808624f05",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.1.cpp",
+      "body_sha256": "63660f8459d5e0a3c15028c41da100432ac65563c22fab5605515928638312b1"
+    },
+    {
+      "symbol": "sub_820A8DD8",
+      "address": 2181729752,
+      "original_bytes": 544,
+      "original_sha256": "fddae6ca1f4aab019a782d19ac575bd404b6619074e26cc2e3b65a7e6ed9aa3e",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.9.cpp",
+      "body_sha256": "7c0272e3f4f837f1d0b77687ddf35192ae139e735c7ae3f998fa17ba0a5721db"
+    },
+    {
+      "symbol": "sub_820A8FF8",
+      "address": 2181730296,
+      "original_bytes": 108,
+      "original_sha256": "406280ed0bcb01bfc5ad65e01455ac9fec1ec542531bc75a732cb79b173740f9",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.11.cpp",
+      "body_sha256": "bbd3b3b5959c29856ef77441c8c5a23f2a44d08831c55d2a40769480625a8205"
+    },
+    {
+      "symbol": "sub_820A9068",
+      "address": 2181730408,
+      "original_bytes": 668,
+      "original_sha256": "dd6d6e018b99bd6cca1ce3881bd5b8d3927961b82b73de2e8e5ac10f18cb1235",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.4.cpp",
+      "body_sha256": "79fd992641f166506e355958ebe6299cd782429ffb72c19528e2ff065820e697"
+    },
+    {
+      "symbol": "sub_820A9D78",
+      "address": 2181733752,
+      "original_bytes": 284,
+      "original_sha256": "3dc444f3fe593a039f9d9ef31f345490d0254dbce80b2b5b7ed7741cfe2ded70",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.16.cpp",
+      "body_sha256": "6ace5a55ac103e03288727f5ea56e74fd18cb05c6949b33190cf891c1ceb25bd"
+    },
+    {
+      "symbol": "sub_820A9E98",
+      "address": 2181734040,
+      "original_bytes": 1520,
+      "original_sha256": "d7a8a369a5649d4d53a9071bd485842aab5613960d02dcb36ff41375a4affe35",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.11.cpp",
+      "body_sha256": "0eea53a147f805caa8ed8a7381220c1bb8a400e611f060562e2f2df5456699c7"
+    },
+    {
+      "symbol": "sub_82127A08",
+      "address": 2182248968,
+      "original_bytes": 224,
+      "original_sha256": "5edad1a9803720f87d5e83b9f6454a8c1882c2a82e0975509ae188bf25260482",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.15.cpp",
+      "body_sha256": "4f7e06940c9b0b90d8c07e2e0b096725a91716df607e652aabb758742e91cf42"
+    },
+    {
+      "symbol": "sub_82127AE8",
+      "address": 2182249192,
+      "original_bytes": 224,
+      "original_sha256": "74014afe9bf329b4f0457a28b5760901e562f66b7b830761130e6a39e7f113fe",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.3.cpp",
+      "body_sha256": "86b36808bd2ff1ace8d002c6d660d90f8358cb8910021f5a4df90c09fbb8ad3b"
+    },
+    {
+      "symbol": "sub_82129038",
+      "address": 2182254648,
+      "original_bytes": 60,
+      "original_sha256": "0cb746d2fbe5091633af936dccf3abca2c70f62b14aa69692c2169c97dc9da0b",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.1.cpp",
+      "body_sha256": "6d2aa8a54798c12a73f1f52650bf9b842c8163a3cb0d617bd343712f14495ef0"
+    },
+    {
+      "symbol": "sub_82129A70",
+      "address": 2182257264,
+      "original_bytes": 1160,
+      "original_sha256": "b58acfd13eca317586498bdc5d3631b38fe1004e3507ace34b0dc80cc9d97e67",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.8.cpp",
+      "body_sha256": "f10d8f5438c0d28e0f4f5cc3af94a73a57ac97f7882096047f0df0b3e1a9e738"
+    }
+  ],
+  "unsupported_direct": [
+    "sub_82085C70",
+    "sub_8208C5D8",
+    "sub_82127FB0"
+  ],
+  "observed_indirects": [
+    2181380760,
+    2181437928,
+    2181584344,
+    2181587576,
+    2181589200,
+    2181605280,
+    2181607176,
+    2181648360,
+    2181723360,
+    2181723384,
+    2181723400,
+    2181723592,
+    2181726264,
+    2181726464,
+    2181727920,
+    2181728760,
+    2181729752,
+    2181730296,
+    2181731080
+  ]
+}

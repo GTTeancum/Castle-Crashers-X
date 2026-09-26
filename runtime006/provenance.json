@@ -1,0 +1,52 @@
+{
+  "image_sha256": "964aa6b9d993beb8ad9a986d0555e47c36b4b5716b0b8377c6631ae8b39c03ab",
+  "functions": [
+    {
+      "symbol": "sub_820A9308",
+      "address": "0x820a9308",
+      "original_bytes": 2008,
+      "original_sha256": "cb7aa2f6164f22ee63c3a9fd0c6cd6b68535c146c9dc339b21d2724113ba4100",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.8.cpp",
+      "body_sha256": "43d2d1a46f51b3bb69606989af31a90e0175c23ab0d139d6d944e8f58e60183b",
+      "generated_instruction_comments": 485,
+      "embedded_table_bytes": 68
+    },
+    {
+      "symbol": "__savegprlr_21",
+      "address": "0x821298fc",
+      "original_instruction_count": 13,
+      "original_bytes": 52,
+      "original_sha256": "949aa356edba107234aed501c5a35138454e6772d3cba693c41fe58f55bc5033",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.4.cpp",
+      "body_sha256": "1c80c37df40cf8f12307a1be143fba4ca9033d5c3a5e77dbd3c29296674e8bb8"
+    },
+    {
+      "symbol": "__restgprlr_21",
+      "address": "0x8212994c",
+      "original_instruction_count": 14,
+      "original_bytes": 56,
+      "original_sha256": "09eac1b6e8943b1365ec05aeb8aa398a6566a938a8a974322642e0c1b16d536b",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.1.cpp",
+      "body_sha256": "4498d44cc277f23af43eb220d30c0bd7761703c904eca8a9018ff0956ca2c09c"
+    },
+    {
+      "symbol": "__savefpr_20",
+      "address": "0x8212a838",
+      "original_instruction_count": 13,
+      "original_bytes": 52,
+      "original_sha256": "88875efe39e4e8189e195d1fb0d54ecacb91d889d9e97a1525097a1ea2f54504",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.16.cpp",
+      "body_sha256": "4eea38c9b2f148d8902933259956067889400f838b897a196cdc06116e4951d1"
+    },
+    {
+      "symbol": "__restfpr_20",
+      "address": "0x8212a884",
+      "original_instruction_count": 13,
+      "original_bytes": 52,
+      "original_sha256": "be70b0771fb813334b646e682fcab36afe0f4eac020f6948b60909ca83ad7ba5",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.1.cpp",
+      "body_sha256": "c7aaa2d4546e74373421984a76cfdf7ebdf732f8cd74e20063ee61785c850625"
+    }
+  ],
+  "scope": "Exact generated body, different memory/register adapter. Only shader 0/5 quad path is an exposed supported contract."
+}

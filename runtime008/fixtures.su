@@ -1,0 +1,8 @@
+../runtime008/fixtures.cpp:5:?little32@tree@cc@@YAIPBE@Z	0	static
+../runtime008/fixtures.cpp:95:?parse@tree@cc@@YA?AW4FixtureError@12@PBXIAAUFixtures@12@@Z	1268	static
+../runtime008/fixtures.cpp:31:?record@tree@cc@@YA?AW4FixtureError@12@PBEIIAAUCase@12@@Z	52	static
+../runtime008/fixtures.cpp:128:?get@tree@cc@@YA?AW4FixtureError@12@ABUFixtures@12@IAAUCase@12@@Z	12	static
+../runtime008/fixtures.cpp:137:?restore@tree@cc@@YA?AW4FixtureError@12@ABUFixtures@12@IAAUWorkspace@12@AAUCase@12@@Z	1048	static
+../runtime008/fixtures.cpp:153:?check_stores@tree@cc@@YA_NABUCase@12@ABUWorkspace@12@PAI@Z	40	static
+../runtime008/fixtures.cpp:167:?callee_saved@tree@cc@@YA_NABUCase@12@ABUContext@quad@2@@Z	1164	static
+../runtime008/fixtures.cpp:12:?context@tree@cc@@YA_NPBEAAUContext@quad@2@@Z	28	static

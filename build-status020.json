@@ -1,0 +1,50 @@
+{
+  "checkpoint": 20,
+  "host": {
+    "graphics_result": "ok",
+    "lower_device": "0x02000080",
+    "renderer_plus_4": "0x02000080",
+    "generated_helper_executions": 17008,
+    "guest_memory_operations": 194110,
+    "boundary_assertions": 1248,
+    "generated_bodies_exact": 297,
+    "ctest_release": "6/6",
+    "ctest_asan_ubsan": "6/6",
+    "renderer_assertions_each_variant": 1922,
+    "visibility_checks": 43528,
+    "fixture_checks": 12047,
+    "fixture_mutations": 6000
+  },
+  "next": {
+    "platform_renderer_resume": "0x820A7B18",
+    "first_unclosed_call": "sub_820C2C98",
+    "call_instruction": "0x820A7B5C",
+    "return_address": "0x820A7B60"
+  },
+  "xemu": {
+    "scope": "Native/original-Xbox diagnostic regression in xemu. Not live Castle Crashers gameplay and not proof of Xbox 360 Xenos API equivalence.",
+    "xemu": {
+      "version_lineage": "0.8.136-15-gc231997",
+      "binary_path_external": "/mnt/data/cc020/xemu-c231997/squashfs-root/usr/bin/xemu",
+      "binary_sha256": "15e102b7a3353fbfaa42a0a9866f1cff6f96526d5ec8c8247a10b49a84132707"
+    },
+    "firmware_hashes_only": {
+      "bios_name": "Complex_4627.bin",
+      "bios_sha256": "34f1c8ded59116436065783f8ad2ef0939df3cbfc76277ec9e5c41bf9ccb93cd",
+      "mcpx_name": "mcpx_1.0.bin",
+      "mcpx_sha256": "e99e3a772bf5f5d262786aee895664eb96136196e37732fe66e14ae062f20335",
+      "user_eeprom_name": "eeprom.bin",
+      "user_eeprom_sha256": "01086645b94346e7e99ea33951d2bbf16e25dce833ef3e10362fb9b25edd5d51",
+      "bytes_in_checkpoint": false
+    },
+    "diagnostic": {
+      "iso": "CastleCrashers-Widget011.iso",
+      "iso_sha256": "93e6ffd28bc124e71993604223e6800f07e244596a510a83b43ee5ce9a524e76",
+      "retained_checkpoint_lineage": 11
+    },
+    "result_file": "xemu-complex4627-c231997/result.json",
+    "fresh_native_rebuild_this_turn": false,
+    "fresh_native_rebuild_note": "The external nxdk SDK/buildkit tree was not present in this scratch environment; this run re-executes the retained Checkpoint 011 XBE/ISO diagnostic under the newly supplied firmware."
+  },
+  "fresh_nxdk_rebuild": false
+}

@@ -1,0 +1,22 @@
+[
+  {
+    "observed_root": "820855d8",
+    "return_address": "8208ab28",
+    "call_instruction": "4e800421",
+    "calls": 146,
+    "containing_generated_functions": [
+      "sub_8208A7A0"
+    ],
+    "status": "candidate only; not ported or target-executed in 007"
+  },
+  {
+    "observed_root": "820a9068",
+    "return_address": "820a9050",
+    "call_instruction": "4800001d",
+    "calls": 267,
+    "containing_generated_functions": [
+      "sub_820A8FF8"
+    ],
+    "status": "candidate only; not ported or target-executed in 007"
+  }
+]

@@ -1,0 +1,13 @@
+../runtime006/bridge.cpp:14:?disableFlushMode@FPState@quad@cc@@QAEXXZ	4	static
+../runtime006/bridge.cpp:39:?gpr@quad@cc@@YAAATRegister@12@AAUContext@12@I@Z	0	static
+../runtime006/bridge.cpp:10:?hard_failure@quad@cc@@YAXXZ	0	static
+../runtime006/bridge.cpp:109:?fpr@quad@cc@@YAAATRegister@12@AAUContext@12@I@Z	0	static
+../runtime006/bridge.cpp:179:?cr@quad@cc@@YAAAUCR@12@AAUContext@12@I@Z	0	static
+../runtime006/bridge.cpp:272:?invoke@quad@cc@@YA?AW4Error@12@IAAUContext@12@AAVAddressSpace@xbox@2@USink@12@PAI@Z	124	static
+../runtime006/bridge.cpp:26:??0FloatScope@quad@cc@@QAE@XZ	8	static
+../runtime006/generated/sub_820A9308.inc:1:?sub_820A9308@quad@cc@@YAXAAUContext@12@AAUMachine@12@@Z	1020	static
+../runtime006/bridge.cpp:369:?name@quad@cc@@YAPBDW4Error@12@@Z	0	static
+../runtime006/bridge.cpp:212:?store@Machine@quad@cc@@QAEXII_K@Z	0	static
+../runtime006/bridge.cpp:206:?load@Machine@quad@cc@@QAE_KII@Z	20	static
+../runtime006/generated/__restfpr_20.inc:1:?__restfpr_20@quad@cc@@YAXAAUContext@12@AAUMachine@12@@Z	28	static
+../runtime006/generated/__restgprlr_21.inc:1:?__restgprlr_21@quad@cc@@YAXAAUContext@12@AAUMachine@12@@Z	28	static

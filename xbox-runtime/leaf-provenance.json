@@ -1,0 +1,8 @@
+{
+  "source_file": "pc/generated/default/castle_crashers_recomp.5.cpp",
+  "guest_start": "0x820B20C8",
+  "guest_bytes": 40,
+  "guest_sha256": "f69aa9cbdef30a8119694db98ccf13bcd1f1adbdf00b93698587dab5903a5589",
+  "generated_body_sha256": "93467888423163ea891f8a220042b678d0a2479820823b7cc670c922883bf89f",
+  "context": "exact generated body; narrow adapter supplies registers and address translation; not a full PPC context"
+}

@@ -1,0 +1,5 @@
+../renderer005/stream_loader.cpp:61:?reset@Scene@stream@cc@@QAEXXZ	12	static
+../renderer005/stream_loader.cpp:78:?name@stream@cc@@YAPBDW4Error@12@@Z	0	static
+../renderer005/stream_loader.cpp:101:?load@stream@cc@@YA?AW4Error@12@USource@12@UMemory@12@AAVScene@12@I@Z	16704	static
+../renderer005/stream_loader.cpp:24:?decode@?A0x78F82853@stream@cc@@YA?AW4Error@12@PBEIAAUDraw@replay@2@@Z	68	static
+../renderer005/stream_loader.cpp:43:?vertices@?A0x78F82853@stream@cc@@YAXABUDraw@replay@2@ABUPlan@?A0x78F82853@12@PAUGpuVertex@42@@Z	44	static

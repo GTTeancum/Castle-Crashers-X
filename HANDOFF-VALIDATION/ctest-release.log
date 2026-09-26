@@ -1,0 +1,18 @@
+Internal ctest changing into directory: /mnt/data/cc_full_source_handoff/build-verify
+Test project /mnt/data/cc_full_source_handoff/build-verify
+    Start 1: visibility_properties
+1/6 Test #1: visibility_properties ............   Passed    0.00 sec
+    Start 2: update_boundary
+2/6 Test #2: update_boundary ..................   Passed    0.11 sec
+    Start 3: update_provenance
+3/6 Test #3: update_provenance ................   Passed    1.21 sec
+    Start 4: vtable_provenance
+4/6 Test #4: vtable_provenance ................   Passed    0.62 sec
+    Start 5: update_capture_source
+5/6 Test #5: update_capture_source ............   Passed    0.57 sec
+    Start 6: generated_seal
+6/6 Test #6: generated_seal ...................   Passed    0.59 sec
+
+100% tests passed, 0 tests failed out of 6
+
+Total Test time (real) =   3.10 sec

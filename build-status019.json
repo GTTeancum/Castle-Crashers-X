@@ -1,0 +1,32 @@
+{
+  "checkpoint": "019",
+  "scope": "host original presentation/resource creation through sub_820CBBF0, stopping before sub_820CB988 GPU-state fanout",
+  "startup_full": {"entry": "0x820701D0", "result": "ok", "functions": 182963, "indirect_dispatches": 10501, "memory_ops": 2670630},
+  "renderer_caller_prefix": {"entry": "0x82070AC8", "result": "ok", "functions": 182986, "indirect_dispatches": 10501, "memory_ops": 2671382, "renderer_global": "0x8225E628", "renderer_bytes": 30216},
+  "platform_renderer_init_prefix": {"entry": "0x820A7990", "result": "ok", "functions": 2, "memory_ops": 104, "fixture_mode": {"width": 640, "height": 480, "refresh_hz": 60.0}},
+  "graphics_init_chain": {"entry": "sub_820BEFD0", "stop": "sub_820CB988", "result": "unsupported@0x820CB988", "functions": 16132, "memory_ops": 184985, "lower_object_bytes": 24064, "alignment": 128, "deterministic_device_object": "0x02000080", "outer_renderer_output_published": false},
+  "presentation_resources": {
+    "resource_14828": "0x02211730",
+    "resource_14832": "0x0233D770",
+    "resource_14824": "0x0233DAD0",
+    "framebuffer_sized_backing_bytes": 1228800,
+    "formats": ["0x28280106", "0x18280186", "0x2D200196"],
+    "tile_requests": [240, 240],
+    "tile_starts": [0, 240],
+    "tile_capacity": 6144,
+    "tiles_remaining": 5664
+  },
+  "graphics_allocations": {"count": 15, "sequence_locked": true, "unexpected_shapes_fail_closed": true},
+  "exact_generated_bodies": 143,
+  "diagnostic_original_artifacts": 4,
+  "boundary_assertions": 1167,
+  "ctest": {"release": "6/6", "asan_ubsan": "6/6"},
+  "renderer_regression": {"assertions": 1922, "roots": 239, "draws": 418, "tree_visits": 125, "checked_store_bytes": 42499, "variants": ["native", "software_fma"]},
+  "visibility_checks": 43528,
+  "fixture_checks": 12047,
+  "fixture_mutations": 6000,
+  "next_host_graphics_boundary": "sub_820CB988",
+  "real_captured_boundary": "memory@0x8225E62C",
+  "latest_native_xemu_acceptance": "Checkpoint 011",
+  "native_019": "not run; external nxdk and private xemu BIOS/MCPX/EEPROM boot inputs unavailable in current environment"
+}

@@ -1,0 +1,11 @@
+Castle Crashers X — Full Source Handoff Manifest
+State: WIP 021, unsealed
+Sealed base: Checkpoint 020
+Current boundary: sub_820A85E8 @ 0x820A85E8
+Files (including manifest/checksum files): 1851
+Uncompressed bytes: 163868188
+Fresh source-tree validation: Release CTest 6/6 passed with Clang
+Generated provenance at current state: 338 exact generated bodies
+Focused boundary result: dispatch@820A85E8; 964 functions; 21,113 memory ops; 3,974 assertions
+Linux XEMU/runtime bundle: intentionally omitted per user request
+See HANDOFF-README-FIRST.txt and CastleCrashers-PROJECT_STATUS.md before continuing.

@@ -1,0 +1,3 @@
+../runtime011/selftest.cpp:15:?self_test@widget011@cc@@YAIABUFixtures@tree@2@AAUWorkspace@42@@Z	2396	static
+../runtime011/selftest.cpp:7:?bind@widget011@cc@@YA_NPAXIPBI@Z	0	static
+../runtime011/selftest.cpp:8:?draw@widget011@cc@@YA_NPAXABUDraw@quad@2@@Z	16	static

@@ -1,0 +1,3 @@
+../renderer010/live_frame.cpp:155:?frame@owner010@cc@@YA?AUResult@12@ABUFixtures@tree@2@AAUWorkspace@52@AAVScene@stream@2@AAUResident@12@_NPAUVertex@replay@2@I@Z	6684	static
+../renderer010/live_frame.cpp:133:?bind_texture@owner010@cc@@YA_NPAXIQBI@Z	16	static
+../renderer010/live_frame.cpp:46:?submit@owner010@cc@@YA_NPAXABUDraw@quad@2@@Z	700	static

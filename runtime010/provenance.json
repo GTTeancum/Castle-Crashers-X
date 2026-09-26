@@ -1,0 +1,50 @@
+{
+  "image_sha256": "964aa6b9d993beb8ad9a986d0555e47c36b4b5716b0b8377c6631ae8b39c03ab",
+  "functions": [
+    {
+      "symbol": "__restgprlr_24",
+      "address": 2182256984,
+      "original_bytes": 44,
+      "original_sha256": "b661ccfa1d28d688a3e5f142772fc3a569627687e02144abce8c7a964c2970ed",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.9.cpp",
+      "body_sha256": "0a1d6d15c17900c5d84152fc96548c74be536b0c2c198a1df5c60c6d7b34fcb3",
+      "pdata_bytes": null
+    },
+    {
+      "symbol": "__savegprlr_24",
+      "address": 2182256904,
+      "original_bytes": 40,
+      "original_sha256": "571fca4aab3d05424413fb052e9728ad2271bb816e3ab2fda20e6009da1282a1",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.0.cpp",
+      "body_sha256": "157b7fe119f7dc632879b4d5591e698b0f0549b30356d9155778caba1607e1fd",
+      "pdata_bytes": null
+    },
+    {
+      "symbol": "sub_82083658",
+      "address": 2181576280,
+      "original_bytes": 136,
+      "original_sha256": "584ef4bf29d72aeb02758038cfac8c03fd6b4b8c0a3bd47bbd0607fc9283cf8f",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.0.cpp",
+      "body_sha256": "f4bfa07fb6d7c673a137582eae2a3d6e3fd5693a927a8a66581778d9043ff683",
+      "pdata_bytes": null
+    },
+    {
+      "symbol": "sub_82086810",
+      "address": 2181589008,
+      "original_bytes": 8,
+      "original_sha256": "2cb99b6d77aa7f7e553763ecbd51e059a1bb4db68144e7af17ca00f2b4c59045",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.13.cpp",
+      "body_sha256": "f58a38df1bf5ccd3b9c6025b4412c24ec1eccf7eaefaec6211b48105a96afea8",
+      "pdata_bytes": null
+    },
+    {
+      "symbol": "sub_82091248",
+      "address": 2181632584,
+      "original_bytes": 936,
+      "original_sha256": "74a473d1830031f49c8000a1c96a12d7de2cb3d36f243420a2757df054d967a9",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.7.cpp",
+      "body_sha256": "cf62a443349789c468f3830729ac3c92b8c666600a9b504e03e61fb230e79c16",
+      "pdata_bytes": 936
+    }
+  ]
+}

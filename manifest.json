@@ -1,0 +1,558 @@
+{
+    "format":  "cc-buildkit-v1",
+    "collector_version":  "1.0.1",
+    "created_utc":  "2026-09-21T08:10:12.0226459Z",
+    "target_host":  "Linux x86_64",
+    "target_console":  "original Xbox via nxdk",
+    "status":  "collected; not built or executed",
+    "options":  {
+                    "llvm_included":  true,
+                    "xemu_source_included":  false,
+                    "nxdk_requested_ref":  "master"
+                },
+    "downloads":  [
+                      {
+                          "path":  "downloads/rexglue-sdk-0.10.0-linux-amd64.zip",
+                          "url":  "https://github.com/rexglue/rexglue-sdk/releases/download/v0.10.0/rexglue-sdk-0.10.0-linux-amd64.zip",
+                          "sha256":  "0388edb3f8fb1444f1b0ad5d440cb02d9690ac20a76b04fd6b7dcc19f59328a6",
+                          "bytes":  121616313,
+                          "verification":  "matches pinned upstream-published SHA-256"
+                      },
+                      {
+                          "path":  "downloads/xemu-0.8.136-x86_64.AppImage",
+                          "url":  "https://github.com/xemu-project/xemu/releases/download/v0.8.136/xemu-0.8.136-x86_64.AppImage",
+                          "sha256":  "ac77363a599109194ba2af3caa695348d199f515cf1d0fde091beb629e0c3103",
+                          "bytes":  16402936,
+                          "verification":  "matches pinned upstream-published SHA-256"
+                      },
+                      {
+                          "path":  "downloads/bison-3.8.2.tar.xz",
+                          "url":  "https://ftp.gnu.org/gnu/bison/bison-3.8.2.tar.xz",
+                          "sha256":  "9bba0214ccf7f1079c5d59210045227bcf619519840ebfa80cd3849cff5a5bf2",
+                          "bytes":  2817324,
+                          "verification":  "locally-recorded SHA-256; HTTPS transport; no upstream digest verified"
+                      },
+                      {
+                          "path":  "downloads/flex-2.6.4.tar.gz",
+                          "url":  "https://github.com/westes/flex/releases/download/v2.6.4/flex-2.6.4.tar.gz",
+                          "sha256":  "e87aae032bf07c26f85ac0ed3250998c37621d95f8bd748b31f15b33c45ee995",
+                          "bytes":  1419096,
+                          "verification":  "locally-recorded SHA-256; HTTPS transport; no upstream digest verified"
+                      },
+                      {
+                          "path":  "downloads/LLVM-20.1.8-Linux-X64.tar.xz",
+                          "url":  "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/LLVM-20.1.8-Linux-X64.tar.xz",
+                          "sha256":  "1ead36b3dfcb774b57be530df42bec70ab2d239fbce9889447c7a29a4ddc1ae6",
+                          "bytes":  2021269412,
+                          "verification":  "matches pinned upstream-published SHA-256"
+                      }
+                  ],
+    "repositories":  [
+                         {
+                             "id":  "193a2aaa070b5c58afa5c172",
+                             "url":  "https://github.com/rexglue/rexglue-sdk.git",
+                             "requested_ref":  "refs/tags/v0.10.0",
+                             "commit":  "f5337cdc947ff6d4c4196737e2c807a48f2a1fc2",
+                             "archive":  "repositories/193a2aaa070b5c58afa5c172.zip",
+                             "sha256":  "bf885cfbada544422af193a8d0149a0317d877b41ee58f37fa204d3f24866870",
+                             "bytes":  24304193
+                         },
+                         {
+                             "id":  "cda0cf40109ca2f68bc82ab2",
+                             "url":  "https://github.com/wmarti/FFmpeg.git",
+                             "requested_ref":  "0604b464c7cb4ebc94940cf1f324a3b26b87717c",
+                             "commit":  "0604b464c7cb4ebc94940cf1f324a3b26b87717c",
+                             "archive":  "repositories/cda0cf40109ca2f68bc82ab2.zip",
+                             "sha256":  "2596f671e897488487fc548be3aac5132fd502b0e537dfd831330def7a798dcc",
+                             "bytes":  16671333
+                         },
+                         {
+                             "id":  "a91c8b83500bf8bbc351dcc1",
+                             "url":  "https://github.com/catchorg/Catch2.git",
+                             "requested_ref":  "88abf9bf325c798c33f54f6b9220ef885b267f4f",
+                             "commit":  "88abf9bf325c798c33f54f6b9220ef885b267f4f",
+                             "archive":  "repositories/a91c8b83500bf8bbc351dcc1.zip",
+                             "sha256":  "b48661127f0ebb63c03a342f468985a8f151522c61fa76b8740477fdf1034302",
+                             "bytes":  1425261
+                         },
+                         {
+                             "id":  "3b35622d0a5a22fb0b72a7f6",
+                             "url":  "https://github.com/CLIUtils/CLI11",
+                             "requested_ref":  "bfffd37e1f804ca4fae1caae106935791696b6a9",
+                             "commit":  "bfffd37e1f804ca4fae1caae106935791696b6a9",
+                             "archive":  "repositories/3b35622d0a5a22fb0b72a7f6.zip",
+                             "sha256":  "00fd19d34e7cfa493afae7176392fe12ac517f41dbb27c66da297059b7b07690",
+                             "bytes":  458360
+                         },
+                         {
+                             "id":  "584fc289cd8318d18409a3f5",
+                             "url":  "https://github.com/fmtlib/fmt.git",
+                             "requested_ref":  "407c905e45ad75fc29bf0f9bb7c5c2fd3475976f",
+                             "commit":  "407c905e45ad75fc29bf0f9bb7c5c2fd3475976f",
+                             "archive":  "repositories/584fc289cd8318d18409a3f5.zip",
+                             "sha256":  "7dd8258cf251f2a56a29019b920cda5804b312ab61001bf57c908cdca14dc0bc",
+                             "bytes":  754456
+                         },
+                         {
+                             "id":  "557fe5100a07ed9cde0cb551",
+                             "url":  "https://github.com/KhronosGroup/glslang.git",
+                             "requested_ref":  "f4f1d8a352ca1908943aea2ad8c54b39b4879080",
+                             "commit":  "f4f1d8a352ca1908943aea2ad8c54b39b4879080",
+                             "archive":  "repositories/557fe5100a07ed9cde0cb551.zip",
+                             "sha256":  "e2b93cc03424f492712e32fb2fe84a1c29b6103037791bb8b181bed66f21bae8",
+                             "bytes":  3687938
+                         },
+                         {
+                             "id":  "f42e8af94d4f0bc90ef0537a",
+                             "url":  "https://github.com/ocornut/imgui.git",
+                             "requested_ref":  "6d910d5487d11ca567b61c7824b0c78c569d62f0",
+                             "commit":  "6d910d5487d11ca567b61c7824b0c78c569d62f0",
+                             "archive":  "repositories/f42e8af94d4f0bc90ef0537a.zip",
+                             "sha256":  "9d4059abd8fa8dd3f60609179240b137a73ded10f75987db6385493779650d34",
+                             "bytes":  1980521
+                         },
+                         {
+                             "id":  "ac1071049fd7ee4e589c65c0",
+                             "url":  "https://github.com/pantor/inja.git",
+                             "requested_ref":  "7d1b4600b68595085a949743331c2e5673f511ea",
+                             "commit":  "7d1b4600b68595085a949743331c2e5673f511ea",
+                             "archive":  "repositories/ac1071049fd7ee4e589c65c0.zip",
+                             "sha256":  "13bcfa9ed0233134a8e3a34a907a9aa9b77bff0fd9342d2afd18a59bbb586ed2",
+                             "bytes":  403954
+                         },
+                         {
+                             "id":  "2a47da6c6140c42909e19c5d",
+                             "url":  "https://github.com/kyz/libmspack.git",
+                             "requested_ref":  "305907723a4e7ab2018e58040059ffb5e77db837",
+                             "commit":  "305907723a4e7ab2018e58040059ffb5e77db837",
+                             "archive":  "repositories/2a47da6c6140c42909e19c5d.zip",
+                             "sha256":  "a6db13f4cb1b513de0476618b323743144ea58695474933c085542b8eeb4dc65",
+                             "bytes":  450893
+                         },
+                         {
+                             "id":  "4426ac0ba2d7acc9844a17c4",
+                             "url":  "https://github.com/KhronosGroup/MoltenVK.git",
+                             "requested_ref":  "db445ff2042d9ce348c439ad8451112f354b8d2a",
+                             "commit":  "db445ff2042d9ce348c439ad8451112f354b8d2a",
+                             "archive":  "repositories/4426ac0ba2d7acc9844a17c4.zip",
+                             "sha256":  "4bf7e780d896af4ba25c9583920f7c204c1ea4ce8d3837967fd147b390a355d5",
+                             "bytes":  1344142
+                         },
+                         {
+                             "id":  "726a8d9b9305ea4c4f6015c4",
+                             "url":  "https://github.com/pavel-kirienko/o1heap.git",
+                             "requested_ref":  "388a73fd9007300e5130c5fe352d9ce3288b6dde",
+                             "commit":  "388a73fd9007300e5130c5fe352d9ce3288b6dde",
+                             "archive":  "repositories/726a8d9b9305ea4c4f6015c4.zip",
+                             "sha256":  "c2af62ac3569be4d84cf1521ce5d2d7fad63066db55487f0990e09cecfc12acc",
+                             "bytes":  460815
+                         },
+                         {
+                             "id":  "88fd10a13190cc733cd99a03",
+                             "url":  "https://github.com/libsdl-org/SDL",
+                             "requested_ref":  "8bf3b7215ad9fc3deb583c6a3a37c6c67f2e24e4",
+                             "commit":  "8bf3b7215ad9fc3deb583c6a3a37c6c67f2e24e4",
+                             "archive":  "repositories/88fd10a13190cc733cd99a03.zip",
+                             "sha256":  "770fc2dea0c7f26a8bf16311514257470478f9d5d0f4b4361d0320da4d8b0e1b",
+                             "bytes":  16457465
+                         },
+                         {
+                             "id":  "4fdda3c8d2c30b8e659d6c1e",
+                             "url":  "https://github.com/simd-everywhere/simde.git",
+                             "requested_ref":  "71fd833d9666141edcd1d3c109a80e228303d8d7",
+                             "commit":  "71fd833d9666141edcd1d3c109a80e228303d8d7",
+                             "archive":  "repositories/4fdda3c8d2c30b8e659d6c1e.zip",
+                             "sha256":  "b47bb23da5da7ff601edde591d12e1340c2d514f8f74a45ed8adc255f5ade93b",
+                             "bytes":  8069020
+                         },
+                         {
+                             "id":  "a10eeccd91793f3259a07b82",
+                             "url":  "https://github.com/nemequ/munit.git",
+                             "requested_ref":  "da8f73412998e4f1adf1100dc187533a51af77fd",
+                             "commit":  "da8f73412998e4f1adf1100dc187533a51af77fd",
+                             "archive":  "repositories/a10eeccd91793f3259a07b82.zip",
+                             "sha256":  "fa61fbdc5968c6deef73e6fc3f11381d88b8a5fb821e9745457103f5573818d2",
+                             "bytes":  37607
+                         },
+                         {
+                             "id":  "fffe914bb6a3950adbb2228e",
+                             "url":  "https://github.com/gabime/spdlog.git",
+                             "requested_ref":  "79524ddd08a4ec981b7fea76afd08ee05f83755d",
+                             "commit":  "79524ddd08a4ec981b7fea76afd08ee05f83755d",
+                             "archive":  "repositories/fffe914bb6a3950adbb2228e.zip",
+                             "sha256":  "c403e8f0ec7150b1211932cab7bf9641375c3a07377ad9cca6fac3db11686d07",
+                             "bytes":  337325
+                         },
+                         {
+                             "id":  "aede664328066469644eb3b5",
+                             "url":  "https://github.com/KhronosGroup/SPIRV-Headers.git",
+                             "requested_ref":  "29981f65241605e08b0ede4cfeb999fe3b723c6a",
+                             "commit":  "29981f65241605e08b0ede4cfeb999fe3b723c6a",
+                             "archive":  "repositories/aede664328066469644eb3b5.zip",
+                             "sha256":  "f3affcdfb7877f11c123e48559b730c843bf1fdc75d664f30e2051dc00deb716",
+                             "bytes":  412491
+                         },
+                         {
+                             "id":  "0448df90225a3461c3d95f37",
+                             "url":  "https://github.com/KhronosGroup/SPIRV-Tools.git",
+                             "requested_ref":  "9a49b0883b9b635689a85b5647dbfcb223268151",
+                             "commit":  "9a49b0883b9b635689a85b5647dbfcb223268151",
+                             "archive":  "repositories/0448df90225a3461c3d95f37.zip",
+                             "sha256":  "9607d217bb1fbde9e394ecf1d3b102a021908284160b05f040f13e941d16606e",
+                             "bytes":  4356076
+                         },
+                         {
+                             "id":  "67a9031bfd49367ddfa54939",
+                             "url":  "https://github.com/marzer/tomlplusplus.git",
+                             "requested_ref":  "30172438cee64926dc41fdd9c11fb3ba5b2ba9de",
+                             "commit":  "30172438cee64926dc41fdd9c11fb3ba5b2ba9de",
+                             "archive":  "repositories/67a9031bfd49367ddfa54939.zip",
+                             "sha256":  "066c1502fb2506ceaa0521d6222e8418f5ee9604de4ac2a8bb179f988e33683a",
+                             "bytes":  1343738
+                         },
+                         {
+                             "id":  "6c4cafc1cd6c1d8963884c27",
+                             "url":  "https://github.com/wolfpld/tracy.git",
+                             "requested_ref":  "05cceee0df3b8d7c6fa87e9638af311dbabc63cb",
+                             "commit":  "05cceee0df3b8d7c6fa87e9638af311dbabc63cb",
+                             "archive":  "repositories/6c4cafc1cd6c1d8963884c27.zip",
+                             "sha256":  "c2363cb1368e75c4f33b068185e723c278bb07333d346cdb102b03c122e8e1fc",
+                             "bytes":  4615138
+                         },
+                         {
+                             "id":  "a0d36c1f730265a31f52aaf9",
+                             "url":  "https://github.com/nemtrif/utfcpp.git",
+                             "requested_ref":  "63d64de49fd6b829f7c8694df5ab2ee625cb7134",
+                             "commit":  "63d64de49fd6b829f7c8694df5ab2ee625cb7134",
+                             "archive":  "repositories/a0d36c1f730265a31f52aaf9.zip",
+                             "sha256":  "70df0130342d2beba373ae18f627000dded63179e2c401042d630ffb823193e4",
+                             "bytes":  61553
+                         },
+                         {
+                             "id":  "0fa0b94f8a8be522d449acab",
+                             "url":  "https://github.com/KhronosGroup/Vulkan-Headers.git",
+                             "requested_ref":  "e3b1eec08173d6b825cd3ac88c885a63b621504a",
+                             "commit":  "e3b1eec08173d6b825cd3ac88c885a63b621504a",
+                             "archive":  "repositories/0fa0b94f8a8be522d449acab.zip",
+                             "sha256":  "c5345629361e2cfc5cd6d49f3ec3323f8f07acb77e6039e5f8e926c3315142d2",
+                             "bytes":  3959939
+                         },
+                         {
+                             "id":  "b8f6c920677a77c45de2704c",
+                             "url":  "https://github.com/KhronosGroup/Vulkan-Loader.git",
+                             "requested_ref":  "5f157b62e333c63260d05d81bf66faa216ab0fb8",
+                             "commit":  "5f157b62e333c63260d05d81bf66faa216ab0fb8",
+                             "archive":  "repositories/b8f6c920677a77c45de2704c.zip",
+                             "sha256":  "d9db7ee3f649708937be6a20cb6996aa8cb90fe42638fff48b59818273575649",
+                             "bytes":  1864770
+                         },
+                         {
+                             "id":  "bd9afee5c4347a678ebd4d8a",
+                             "url":  "https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git",
+                             "requested_ref":  "1d8f600fd424278486eade7ed3e877c99f0846b1",
+                             "commit":  "1d8f600fd424278486eade7ed3e877c99f0846b1",
+                             "archive":  "repositories/bd9afee5c4347a678ebd4d8a.zip",
+                             "sha256":  "424ee171ef9e68c593c2d87efcd3f83bbac0e7228db0b4956bd509ab471c8df8",
+                             "bytes":  1018020
+                         },
+                         {
+                             "id":  "358c1d9e07d0cbcc344dab81",
+                             "url":  "https://github.com/Cyan4973/xxHash.git",
+                             "requested_ref":  "e626a72bc2321cd320e953a0ccf1584cad60f363",
+                             "commit":  "e626a72bc2321cd320e953a0ccf1584cad60f363",
+                             "archive":  "repositories/358c1d9e07d0cbcc344dab81.zip",
+                             "sha256":  "81b6625fe3282187fad71b622b36f33d2adba1e8700ef775006b240459b817d5",
+                             "bytes":  1353748
+                         },
+                         {
+                             "id":  "f83b9b464cc5b616822f954e",
+                             "url":  "https://github.com/XboxDev/nxdk.git",
+                             "requested_ref":  "master",
+                             "commit":  "58427c078b4ccb0121f359b6b6c536b3b2914976",
+                             "archive":  "repositories/f83b9b464cc5b616822f954e.zip",
+                             "sha256":  "7f184c00925525fef9a22318d700cd0351f5665528b02e7a428881103b2558ee",
+                             "bytes":  13771203
+                         },
+                         {
+                             "id":  "c4fcd0e98898a8a5b51609d4",
+                             "url":  "https://github.com/XboxDev/nxdk-libcxx.git",
+                             "requested_ref":  "3111bbf75a5f89d382c7f3366a166b662d43048a",
+                             "commit":  "3111bbf75a5f89d382c7f3366a166b662d43048a",
+                             "archive":  "repositories/c4fcd0e98898a8a5b51609d4.zip",
+                             "sha256":  "b805d44da2a2ca37f0c1b36b1fed42a399a8341a6eadc000632bdc7d92dfe954",
+                             "bytes":  4423552
+                         },
+                         {
+                             "id":  "6a18e5417d829f93e2a13e2e",
+                             "url":  "https://github.com/libjpeg-turbo/libjpeg-turbo.git",
+                             "requested_ref":  "166e34213e4f4e2363ce058a7bcc69fd03e38b76",
+                             "commit":  "166e34213e4f4e2363ce058a7bcc69fd03e38b76",
+                             "archive":  "repositories/6a18e5417d829f93e2a13e2e.zip",
+                             "sha256":  "8fc86735b6d45eac196a439d591250624305798db4355ab06dbb300048349431",
+                             "bytes":  2282756
+                         },
+                         {
+                             "id":  "33b2e0f2e81f798ac673886d",
+                             "url":  "https://github.com/glennrp/libpng.git",
+                             "requested_ref":  "a40189cf881e9f0db80511c382292a5604c3c3d1",
+                             "commit":  "a40189cf881e9f0db80511c382292a5604c3c3d1",
+                             "archive":  "repositories/33b2e0f2e81f798ac673886d.zip",
+                             "sha256":  "a1f7c18a0881dfc642df8df78cac707e3fd60af09cd327334a850ab3c3179a6f",
+                             "bytes":  1624744
+                         },
+                         {
+                             "id":  "5fe053fcb3d543ea41ca7337",
+                             "url":  "https://github.com/lwip-tcpip/lwip.git",
+                             "requested_ref":  "77dcd25a72509eb83f72b033d219b1d40cd8eb95",
+                             "commit":  "77dcd25a72509eb83f72b033d219b1d40cd8eb95",
+                             "archive":  "repositories/5fe053fcb3d543ea41ca7337.zip",
+                             "sha256":  "81edbda1c4028936856937c91fbbee093db0338da873a7ba7a0c01dfc9b6c5da",
+                             "bytes":  1975717
+                         },
+                         {
+                             "id":  "8f93d3b9550be10a686b0d1c",
+                             "url":  "https://github.com/XboxDev/nxdk-pdclib.git",
+                             "requested_ref":  "679081d4725ab893d0ef7822111b5c5d05a572f5",
+                             "commit":  "679081d4725ab893d0ef7822111b5c5d05a572f5",
+                             "archive":  "repositories/8f93d3b9550be10a686b0d1c.zip",
+                             "sha256":  "43793f7c082df34c15cd617f3eed497054274da63e6265b1b536f024dfa6053a",
+                             "bytes":  333821
+                         },
+                         {
+                             "id":  "d2bdc0b4dec9c889cc9071ed",
+                             "url":  "https://github.com/XboxDev/nxdk-sdl.git",
+                             "requested_ref":  "2554902f7bbf469449216ee25f88016421271cd8",
+                             "commit":  "2554902f7bbf469449216ee25f88016421271cd8",
+                             "archive":  "repositories/d2bdc0b4dec9c889cc9071ed.zip",
+                             "sha256":  "60db1641ffaf6caed00c3f43f8dfd8ab02c33bc9e218c1ebdc6bc701edc937a1",
+                             "bytes":  6003414
+                         },
+                         {
+                             "id":  "792fcd5f544a5a85e7a9581e",
+                             "url":  "https://github.com/libsdl-org/SDL_image.git",
+                             "requested_ref":  "ab2a9c602623193d61827ccd395302d92d90fc38",
+                             "commit":  "ab2a9c602623193d61827ccd395302d92d90fc38",
+                             "archive":  "repositories/792fcd5f544a5a85e7a9581e.zip",
+                             "sha256":  "7e46b7ec6daff4f2a61565606a52372daf76ff160b4396751d9c360dcfa66552",
+                             "bytes":  9520405
+                         },
+                         {
+                             "id":  "2547ae4652242ea366a1e678",
+                             "url":  "https://github.com/libsdl-org/SDL_ttf.git",
+                             "requested_ref":  "200901a8f55bcf7aa031157f53a575c942d2b7aa",
+                             "commit":  "200901a8f55bcf7aa031157f53a575c942d2b7aa",
+                             "archive":  "repositories/2547ae4652242ea366a1e678.zip",
+                             "sha256":  "2b0f5105a726c932fdbbd365baec1329a725b5530c84fda424a3c6bf18fc6e3e",
+                             "bytes":  3879381
+                         },
+                         {
+                             "id":  "8b68caa16993db8380bc4cb5",
+                             "url":  "https://github.com/XboxDev/libusbohci.git",
+                             "requested_ref":  "6a0c5fefbcd9db53f4a27ee10df99f93d5bce745",
+                             "commit":  "6a0c5fefbcd9db53f4a27ee10df99f93d5bce745",
+                             "archive":  "repositories/8b68caa16993db8380bc4cb5.zip",
+                             "sha256":  "f32c09007c6a01e0cf41241c939f8328473707e86a10919554928da639488a1a",
+                             "bytes":  176988
+                         },
+                         {
+                             "id":  "1dff88558141400b9b18babf",
+                             "url":  "https://github.com/madler/zlib.git",
+                             "requested_ref":  "51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf",
+                             "commit":  "51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf",
+                             "archive":  "repositories/1dff88558141400b9b18babf.zip",
+                             "sha256":  "3bbba3f606680a52f43bd979e3f12014d8768e9d06951a799d7d8a010571b011",
+                             "bytes":  1607126
+                         },
+                         {
+                             "id":  "9fc4580cd78ce3b3751b9a8b",
+                             "url":  "https://github.com/XboxDev/extract-xiso.git",
+                             "requested_ref":  "b72e5b60d598ec6df80534cda19cdcd4361aa18c",
+                             "commit":  "b72e5b60d598ec6df80534cda19cdcd4361aa18c",
+                             "archive":  "repositories/9fc4580cd78ce3b3751b9a8b.zip",
+                             "sha256":  "3aa50315adfb3215710cfdbdc756ab356334c4e764d44a68aa4b60406d72e90a",
+                             "bytes":  36594
+                         }
+                     ],
+    "mounts":  [
+                   {
+                       "path":  "rexglue-sdk",
+                       "repository_id":  "193a2aaa070b5c58afa5c172",
+                       "commit":  "f5337cdc947ff6d4c4196737e2c807a48f2a1fc2"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/FFmpeg",
+                       "repository_id":  "cda0cf40109ca2f68bc82ab2",
+                       "commit":  "0604b464c7cb4ebc94940cf1f324a3b26b87717c"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/catch2",
+                       "repository_id":  "a91c8b83500bf8bbc351dcc1",
+                       "commit":  "88abf9bf325c798c33f54f6b9220ef885b267f4f"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/cli11",
+                       "repository_id":  "3b35622d0a5a22fb0b72a7f6",
+                       "commit":  "bfffd37e1f804ca4fae1caae106935791696b6a9"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/fmt",
+                       "repository_id":  "584fc289cd8318d18409a3f5",
+                       "commit":  "407c905e45ad75fc29bf0f9bb7c5c2fd3475976f"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/glslang",
+                       "repository_id":  "557fe5100a07ed9cde0cb551",
+                       "commit":  "f4f1d8a352ca1908943aea2ad8c54b39b4879080"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/imgui",
+                       "repository_id":  "f42e8af94d4f0bc90ef0537a",
+                       "commit":  "6d910d5487d11ca567b61c7824b0c78c569d62f0"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/inja",
+                       "repository_id":  "ac1071049fd7ee4e589c65c0",
+                       "commit":  "7d1b4600b68595085a949743331c2e5673f511ea"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/libmspack",
+                       "repository_id":  "2a47da6c6140c42909e19c5d",
+                       "commit":  "305907723a4e7ab2018e58040059ffb5e77db837"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/moltenvk",
+                       "repository_id":  "4426ac0ba2d7acc9844a17c4",
+                       "commit":  "db445ff2042d9ce348c439ad8451112f354b8d2a"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/o1heap",
+                       "repository_id":  "726a8d9b9305ea4c4f6015c4",
+                       "commit":  "388a73fd9007300e5130c5fe352d9ce3288b6dde"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/sdl3",
+                       "repository_id":  "88fd10a13190cc733cd99a03",
+                       "commit":  "8bf3b7215ad9fc3deb583c6a3a37c6c67f2e24e4"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/simde",
+                       "repository_id":  "4fdda3c8d2c30b8e659d6c1e",
+                       "commit":  "71fd833d9666141edcd1d3c109a80e228303d8d7"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/simde/test/munit",
+                       "repository_id":  "a10eeccd91793f3259a07b82",
+                       "commit":  "da8f73412998e4f1adf1100dc187533a51af77fd"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/spdlog",
+                       "repository_id":  "fffe914bb6a3950adbb2228e",
+                       "commit":  "79524ddd08a4ec981b7fea76afd08ee05f83755d"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/spirv-headers",
+                       "repository_id":  "aede664328066469644eb3b5",
+                       "commit":  "29981f65241605e08b0ede4cfeb999fe3b723c6a"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/spirv-tools",
+                       "repository_id":  "0448df90225a3461c3d95f37",
+                       "commit":  "9a49b0883b9b635689a85b5647dbfcb223268151"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/tomlplusplus",
+                       "repository_id":  "67a9031bfd49367ddfa54939",
+                       "commit":  "30172438cee64926dc41fdd9c11fb3ba5b2ba9de"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/tracy",
+                       "repository_id":  "6c4cafc1cd6c1d8963884c27",
+                       "commit":  "05cceee0df3b8d7c6fa87e9638af311dbabc63cb"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/utfcpp",
+                       "repository_id":  "a0d36c1f730265a31f52aaf9",
+                       "commit":  "63d64de49fd6b829f7c8694df5ab2ee625cb7134"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/vulkan-headers",
+                       "repository_id":  "0fa0b94f8a8be522d449acab",
+                       "commit":  "e3b1eec08173d6b825cd3ac88c885a63b621504a"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/vulkan-loader",
+                       "repository_id":  "b8f6c920677a77c45de2704c",
+                       "commit":  "5f157b62e333c63260d05d81bf66faa216ab0fb8"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/vulkan-memory-allocator",
+                       "repository_id":  "bd9afee5c4347a678ebd4d8a",
+                       "commit":  "1d8f600fd424278486eade7ed3e877c99f0846b1"
+                   },
+                   {
+                       "path":  "rexglue-sdk/thirdparty/xxHash",
+                       "repository_id":  "358c1d9e07d0cbcc344dab81",
+                       "commit":  "e626a72bc2321cd320e953a0ccf1584cad60f363"
+                   },
+                   {
+                       "path":  "nxdk",
+                       "repository_id":  "f83b9b464cc5b616822f954e",
+                       "commit":  "58427c078b4ccb0121f359b6b6c536b3b2914976"
+                   },
+                   {
+                       "path":  "nxdk/lib/libcxx",
+                       "repository_id":  "c4fcd0e98898a8a5b51609d4",
+                       "commit":  "3111bbf75a5f89d382c7f3366a166b662d43048a"
+                   },
+                   {
+                       "path":  "nxdk/lib/libjpeg/libjpeg-turbo",
+                       "repository_id":  "6a18e5417d829f93e2a13e2e",
+                       "commit":  "166e34213e4f4e2363ce058a7bcc69fd03e38b76"
+                   },
+                   {
+                       "path":  "nxdk/lib/libpng/libpng",
+                       "repository_id":  "33b2e0f2e81f798ac673886d",
+                       "commit":  "a40189cf881e9f0db80511c382292a5604c3c3d1"
+                   },
+                   {
+                       "path":  "nxdk/lib/net/lwip",
+                       "repository_id":  "5fe053fcb3d543ea41ca7337",
+                       "commit":  "77dcd25a72509eb83f72b033d219b1d40cd8eb95"
+                   },
+                   {
+                       "path":  "nxdk/lib/pdclib",
+                       "repository_id":  "8f93d3b9550be10a686b0d1c",
+                       "commit":  "679081d4725ab893d0ef7822111b5c5d05a572f5"
+                   },
+                   {
+                       "path":  "nxdk/lib/sdl/SDL2",
+                       "repository_id":  "d2bdc0b4dec9c889cc9071ed",
+                       "commit":  "2554902f7bbf469449216ee25f88016421271cd8"
+                   },
+                   {
+                       "path":  "nxdk/lib/sdl/SDL2_image",
+                       "repository_id":  "792fcd5f544a5a85e7a9581e",
+                       "commit":  "ab2a9c602623193d61827ccd395302d92d90fc38"
+                   },
+                   {
+                       "path":  "nxdk/lib/sdl/SDL_ttf",
+                       "repository_id":  "2547ae4652242ea366a1e678",
+                       "commit":  "200901a8f55bcf7aa031157f53a575c942d2b7aa"
+                   },
+                   {
+                       "path":  "nxdk/lib/usb/libusbohci",
+                       "repository_id":  "8b68caa16993db8380bc4cb5",
+                       "commit":  "6a0c5fefbcd9db53f4a27ee10df99f93d5bce745"
+                   },
+                   {
+                       "path":  "nxdk/lib/zlib/zlib",
+                       "repository_id":  "1dff88558141400b9b18babf",
+                       "commit":  "51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf"
+                   },
+                   {
+                       "path":  "nxdk/tools/extract-xiso",
+                       "repository_id":  "9fc4580cd78ce3b3751b9a8b",
+                       "commit":  "b72e5b60d598ec6df80534cda19cdcd4361aa18c"
+                   }
+               ]
+}

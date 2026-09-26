@@ -1,0 +1,29 @@
+{
+  "scope": "Observed input LR values mapped to generated caller assignments; candidate integration boundaries, not recovered original symbols.",
+  "scenes": {
+    "menu": {
+      "820A92F4": 214,
+      "82085838": 48
+    },
+    "book": {
+      "820A92F4": 53,
+      "82085838": 66
+    }
+  },
+  "callers": {
+    "82085838": [
+      {
+        "generated_source": "pc/generated/default/castle_crashers_recomp.15.cpp",
+        "containing_symbol": "sub_820855D8",
+        "context": "ctx.lr = 0x82085838;\n\tREX_CALL_INDIRECT_FUNC(ctx.ctr.u32);\nloc_82085838:\n\t// cmplw cr6,r28,r30\n\tctx.cr6.compare<uint32_t>(ctx.r28.u32, ctx.r30.u32, ct"
+      }
+    ],
+    "820A92F4": [
+      {
+        "generated_source": "pc/generated/default/castle_crashers_recomp.4.cpp",
+        "containing_symbol": "sub_820A9068",
+        "context": "ctx.lr = 0x820A92F4;\n\tREX_CALL_INDIRECT_FUNC(ctx.ctr.u32);\nloc_820A92F4:\n\t// addi r1,r1,352\n\tctx.r1.s64 = ctx.r1.s64 + 352;\n\t// addi r12,r1,-64\n\tctx.r"
+      }
+    ]
+  }
+}

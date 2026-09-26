@@ -1,0 +1,36 @@
+{
+  "checkpoint": "014",
+  "scope": "host original-code update/vtable convergence",
+  "full_synthetic_update": {
+    "entry": "0x8209DE50",
+    "result": "ok",
+    "functions": 17,
+    "indirect_dispatches": 3,
+    "timeline_before_bits": "0x40000000",
+    "timeline_after_bits": "0x40011111",
+    "active_global_after": "0x00000000"
+  },
+  "initialization_chain": {
+    "entry": "0x820915F0",
+    "result": "ok",
+    "functions": 19,
+    "inserted_key": 1
+  },
+  "static_virtuals": {
+    "controller_vtable": "0x8203E118",
+    "controller_slot_0x0c": "0x820772B0",
+    "parser_vtable": "0x8203F510",
+    "parser_slot_84_decimal": "0x82088A08",
+    "parser_slot_88_decimal": "0x8208A228"
+  },
+  "exact_generated_bodies": 22,
+  "boundary_assertions": 119,
+  "ctest": {"release": "6/6", "asan_ubsan": "6/6"},
+  "renderer_regression": {"assertions": 1922, "roots": 239, "draws": 418, "tree_visits": 125, "checked_store_bytes": 42499},
+  "visibility_checks": 43528,
+  "fixture_checks": 12047,
+  "fixture_mutations": 6000,
+  "real_captured_boundary": "memory@0x8225E62C",
+  "latest_native_xemu_acceptance": "Checkpoint 011",
+  "native_014": "not built; external prepared nxdk tree absent and 014 is host diagnostic scope"
+}

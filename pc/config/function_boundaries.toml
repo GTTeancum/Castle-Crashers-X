@@ -1,0 +1,21 @@
+# Original image, direct disassembly: tail branch at 0x820E0D04 targets
+# eleven instructions, with blr at 0x820E1610 and zero padding afterwards.
+[functions]
+0x820E15E8 = { size = 0x2C }
+# .pdata packed record 0x40005405 = 0x54 words; blr at 0x82112D0C.
+0x82112BC0 = { size = 0x150 }
+
+# CFG seeds from bytes at 0x8200AF18. Do NOT treat these twelve entries as a
+# proven runtime bound. repair_switch.py switches on the original computed CTR.
+# Runtime reached this two-entry allocator vtable at guest 0x8200AF88.
+# Five instructions ending in a tail branch to ExAllocatePoolTypeWithTag;
+# followed by padding. Its two-instruction pair tail-branches to ExFreePool.
+0x82114E20 = { size = 0x14 }
+0x82114E38 = { size = 0x08 }
+
+[[switch_tables]]
+address = 0x82112C04
+register = 11
+labels = [0x82112C38, 0x82112C38, 0x82112C38, 0x82112C38,
+          0x82112D10, 0x82112C38, 0x82112C38, 0x82112C38,
+          0x82112C38, 0x82112C08, 0x82112C38, 0x82112C38]

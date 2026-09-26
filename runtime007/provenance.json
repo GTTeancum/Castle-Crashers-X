@@ -1,0 +1,134 @@
+{
+  "image_sha256": "964aa6b9d993beb8ad9a986d0555e47c36b4b5716b0b8377c6631ae8b39c03ab",
+  "functions": [
+    {
+      "symbol": "sub_820A7488",
+      "address": "0x820A7488",
+      "original_bytes": 84,
+      "original_sha256": "6a46a29c2a7b3057c7dcb068995b6032df2abc90c07aca183b072609c3f467fa",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.3.cpp",
+      "body_sha256": "a09ed1d149c12f006370fca1b0b030e4b03497af4ea1a72d696891e6c00eaf90"
+    },
+    {
+      "symbol": "sub_82127AE8",
+      "address": "0x82127AE8",
+      "original_bytes": 224,
+      "original_sha256": "74014afe9bf329b4f0457a28b5760901e562f66b7b830761130e6a39e7f113fe",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.3.cpp",
+      "body_sha256": "86b36808bd2ff1ace8d002c6d660d90f8358cb8910021f5a4df90c09fbb8ad3b"
+    },
+    {
+      "symbol": "__restgprlr_27",
+      "address": "0x82129964",
+      "original_bytes": 32,
+      "original_sha256": "24cf086c690e8cde992a92554e12ac11ff2e66f8c9d8ed65abd19e3579f6bf83",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.14.cpp",
+      "body_sha256": "572a3ab2938b27b2212c6abba235e3bdb72e02908fe3bc124aacc001da27d384"
+    },
+    {
+      "symbol": "sub_820A9068",
+      "address": "0x820A9068",
+      "original_bytes": 668,
+      "original_sha256": "dd6d6e018b99bd6cca1ce3881bd5b8d3927961b82b73de2e8e5ac10f18cb1235",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.4.cpp",
+      "body_sha256": "79fd992641f166506e355958ebe6299cd782429ffb72c19528e2ff065820e697"
+    },
+    {
+      "symbol": "sub_820855D8",
+      "address": "0x820855D8",
+      "original_bytes": 636,
+      "original_sha256": "ceccebf826b4ab143c2cfa89dbcaf903a5a7acf8a8f1deb72a919f42f0140a89",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.15.cpp",
+      "body_sha256": "40287f0ee23c7ba4d054452b561e3f060bc94c540ea4559b51761c3cbb0afcc5"
+    },
+    {
+      "symbol": "sub_82127A08",
+      "address": "0x82127A08",
+      "original_bytes": 224,
+      "original_sha256": "5edad1a9803720f87d5e83b9f6454a8c1882c2a82e0975509ae188bf25260482",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.15.cpp",
+      "body_sha256": "4f7e06940c9b0b90d8c07e2e0b096725a91716df607e652aabb758742e91cf42"
+    },
+    {
+      "symbol": "sub_82085110",
+      "address": "0x82085110",
+      "original_bytes": 748,
+      "original_sha256": "355f2b6fbe45a824071bb7d1f84e7fad65d142a9d8dcdc56bf20a3598a7501c4",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.9.cpp",
+      "body_sha256": "732c4f8ed431657922787eb2c9bb7a3d5d44050699055cd6c6f47a77d28dc862"
+    },
+    {
+      "symbol": "sub_820A8DD8",
+      "address": "0x820A8DD8",
+      "original_bytes": 544,
+      "original_sha256": "fddae6ca1f4aab019a782d19ac575bd404b6619074e26cc2e3b65a7e6ed9aa3e",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.9.cpp",
+      "body_sha256": "7c0272e3f4f837f1d0b77687ddf35192ae139e735c7ae3f998fa17ba0a5721db"
+    },
+    {
+      "symbol": "__savegprlr_28",
+      "address": "0x82129918",
+      "original_bytes": 24,
+      "original_sha256": "8f01b74cf3503f5cc50db695ef741ca12060c98d5bda0db7b9a1a8d64e5ad2f8",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.9.cpp",
+      "body_sha256": "09b8e2e15cbcfec5ac4a9b9e0584689e8fbc5acb7e515a253b6be62579a45183"
+    },
+    {
+      "symbol": "__restgprlr_28",
+      "address": "0x82129968",
+      "original_bytes": 28,
+      "original_sha256": "5448ffad152bf793e434e83f53a4f1eaac75acd15c2064ef070051617cc94c35",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.13.cpp",
+      "body_sha256": "90b7ecbc329bb00f1fd6db7a59218d9c249ab0d93b834936f9d11b8862ae6d17"
+    },
+    {
+      "symbol": "sub_820A74E0",
+      "address": "0x820A74E0",
+      "original_bytes": 20,
+      "original_sha256": "f053cedb758e0ab03738fd0b3ec072b662767baf583f3c17c1dc0cb4f214f962",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.11.cpp",
+      "body_sha256": "a60692e85ebdce277334334fe9bf57fdfc827a372c81bda2000f258f7b075ba8"
+    },
+    {
+      "symbol": "__restfpr_19",
+      "address": "0x8212A880",
+      "original_bytes": 56,
+      "original_sha256": "f085591c9de8c476d1cc583b2073c880359afcadc55a58045afa490a7a6e12b3",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.0.cpp",
+      "body_sha256": "c6afa1e3e1643ef7e816f1d05da289d1af99af9ce7c42c4d02247f2f6a9133db"
+    },
+    {
+      "symbol": "__savegprlr_27",
+      "address": "0x82129914",
+      "original_bytes": 28,
+      "original_sha256": "73fc9a29ae7916eaaded1505b879c48b31a26b1f20e9d0a274b254d596bfb120",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.6.cpp",
+      "body_sha256": "24df144433c3623214f7d8345b541d686750b235106dd607bbd9712f50b5ff15"
+    },
+    {
+      "symbol": "__restgprlr_25",
+      "address": "0x8212995C",
+      "original_bytes": 40,
+      "original_sha256": "b8fccdaa02d7e723b870874165494a80d5aed7dc4a1873105ecf874e775b9a01",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.6.cpp",
+      "body_sha256": "85e429392f3ec7bf00d12665958b49335d12fe0d3395ab6ae556890c2a84c2f6"
+    },
+    {
+      "symbol": "__savefpr_19",
+      "address": "0x8212A834",
+      "original_bytes": 56,
+      "original_sha256": "90520b07059e0257a1a2ec15504779b8ef0476a8e7b102836530ff829689081b",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.6.cpp",
+      "body_sha256": "0b1f621b4b0ca599126cf5926d12540aa744479aa36d6e78e56c328c9231e1b7"
+    },
+    {
+      "symbol": "__savegprlr_25",
+      "address": "0x8212990C",
+      "original_bytes": 36,
+      "original_sha256": "d7c8c4e881c5adeb20ddf50e76a6d2dfcdaf5a1326e507e6963859b8f3823588",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.16.cpp",
+      "body_sha256": "3b81a12118b12ea0db9c96429a252c041a3053119e4bf6be809832ebd2397caa"
+    }
+  ],
+  "extent_method": "One instruction per generated assembly comment. These selected bodies contain no inline switch data; original terminal instructions recorded by audit."
+}

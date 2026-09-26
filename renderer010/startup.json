@@ -1,0 +1,24 @@
+{
+  "format": "CCST008",
+  "frame": 439,
+  "calls": 1,
+  "draws": 178,
+  "max_scratch": 30880,
+  "bytes": 125920,
+  "sha256": "ee7fad5fc554dfa0e7beb68e23e65e708686bff8ad68a937d64b6a737315d65e",
+  "cases": [
+    {
+      "index": 0,
+      "entry": "0x82091248",
+      "draws": 178,
+      "scratch": 30880,
+      "regions": 64,
+      "tree_visits": 7,
+      "write_check_bytes": 17317,
+      "input_sha256": "d1938144a27239b282844c5b2d8af934b6a0f6ff10e3968065724d64c0643018",
+      "counter_before": 0,
+      "counter_after": 712,
+      "counter_observed": true
+    }
+  ]
+}

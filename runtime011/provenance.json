@@ -1,0 +1,90 @@
+{
+  "image_sha256": "964aa6b9d993beb8ad9a986d0555e47c36b4b5716b0b8377c6631ae8b39c03ab",
+  "functions": [
+    {
+      "symbol": "sub_8209CD08",
+      "address": 2181680392,
+      "original_bytes": 140,
+      "original_sha256": "d80dd81a6f73757b56125d9d760bea9b13c69de73165ff1a76dde2dd510b64d4",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.8.cpp",
+      "body_sha256": "c1551427a949f107ccfed679ac4b41406ec1d16deb55f96119e8127d42369d14",
+      "pdata_bytes": 140,
+      "pc_trace_observed": true
+    },
+    {
+      "symbol": "sub_8209CE40",
+      "address": 2181680704,
+      "original_bytes": 8,
+      "original_sha256": "6b7b8093a3bcdfc967f57ef6b950dabdc67b0a3b4c7c292cef88a10d05383303",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.14.cpp",
+      "body_sha256": "58671487c2d4445abcb84233e4ecd34f319d0dc784661dd8a8fe0fe03962511a",
+      "pdata_bytes": null,
+      "pc_trace_observed": false
+    },
+    {
+      "symbol": "sub_8209CE48",
+      "address": 2181680712,
+      "original_bytes": 8,
+      "original_sha256": "44a425c6ba88076014348a3879421bf924cf74c73278169cb28b683cab6a775a",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.14.cpp",
+      "body_sha256": "fbd0323d12942db02c58700ee6b94b74abdc1476115cbe256a72ed3da7352c82",
+      "pdata_bytes": null,
+      "pc_trace_observed": true
+    },
+    {
+      "symbol": "sub_8209DF48",
+      "address": 2181685064,
+      "original_bytes": 160,
+      "original_sha256": "aca05904cab220aad9f1a077d927a6308006874a36366008ba0683cb1b017028",
+      "generated_source": "pc/generated/default/castle_crashers_recomp.10.cpp",
+      "body_sha256": "84c06e7de0b431152b25c4b589e879dd191d2f1fb17f341f01fc0efca10bf3fa",
+      "pdata_bytes": 160,
+      "pc_trace_observed": true
+    }
+  ],
+  "widget_vtable": {
+    "address": "0x8204043c",
+    "slots": [
+      {
+        "offset": 0,
+        "target": "0x8209dce8"
+      },
+      {
+        "offset": 4,
+        "target": "0x8209db88"
+      },
+      {
+        "offset": 8,
+        "target": "0x8209de50"
+      },
+      {
+        "offset": 12,
+        "target": "0x8209df48"
+      },
+      {
+        "offset": 16,
+        "target": "0x8209cd98"
+      },
+      {
+        "offset": 20,
+        "target": "0x8209ce40"
+      },
+      {
+        "offset": 24,
+        "target": "0x8209ce48"
+      },
+      {
+        "offset": 28,
+        "target": "0x8209ce50"
+      },
+      {
+        "offset": 32,
+        "target": "0x8209ce88"
+      },
+      {
+        "offset": 36,
+        "target": "0x8208c5d8"
+      }
+    ]
+  }
+}
