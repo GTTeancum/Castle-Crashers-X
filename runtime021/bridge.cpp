@@ -25,8 +25,8 @@ static uint32_t g_tls_slots[64]{};
 // (initialized by XAPI process startup on hardware, not by any code on the
 // recovered path): the notification-listener lock used by exact
 // sub_820D84A8. Registered up front like a loader fixture.
-static std::vector<uint32_t> g_registered_cs = { 0x82151A6Cu };
-static std::vector<bool> g_registered_cs_locked = { false };
+static std::vector<uint32_t> g_registered_cs = { 0x82151A6Cu, 0x82235A5Cu };
+static std::vector<bool> g_registered_cs_locked = { false, false };
 [[maybe_unused]] static uint32_t g_valloc_cursor = 0x04000000u;
 // Raised-IRQL balance flag for the single-threaded spinlock model.
 static uint32_t g_irql_level = 0; // 0=PASSIVE, 2=DISPATCH
@@ -34,6 +34,8 @@ static uint32_t g_irql_level = 0; // 0=PASSIVE, 2=DISPATCH
 static bool g_xaudio_client_registered = false;
 // Bounded semaphore-token registry for the exact event wrappers.
 static uint32_t g_semaphore_count = 0;
+// One-shot XAM notification listener.
+static bool g_xam_listener_created = false;
 // The physical graphics allocator is one durable kernel-side allocator: its
 // sequence position and cursor survive between diagnostic invocations exactly
 // as physical allocations do on hardware.
@@ -353,6 +355,7 @@ static simde__m128 simde_mm_min_ps(simde__m128 a, simde__m128 b) {
   simde__m128 r{}; for(int i=0;i<4;++i) r.f32[i]=(std::isnan(a.f32[i])||std::isnan(b.f32[i]))?b.f32[i]:(a.f32[i]<b.f32[i]?a.f32[i]:b.f32[i]); return r;
 }
 static simde__m128i simde_mm_set1_epi32(int v) { simde__m128i r{}; for(int i=0;i<4;++i) std::memcpy(r.u8+i*4,&v,4); return r; }
+static simde__m128i simde_mm_set1_epi8(char v) { simde__m128i r{}; for(int i=0;i<16;++i) r.u8[i]=uint8_t(v); return r; }
 static simde__m128i simde_mm_and_si128(simde__m128i a, simde__m128i b) { simde__m128i r{}; for(int i=0;i<16;++i) r.u8[i]=uint8_t(a.u8[i]&b.u8[i]); return r; }
 static simde__m128i simde_mm_andnot_si128(simde__m128i a, simde__m128i b) { simde__m128i r{}; for(int i=0;i<16;++i) r.u8[i]=uint8_t((~a.u8[i])&b.u8[i]); return r; }
 static simde__m128i simde_mm_or_si128(simde__m128i a, simde__m128i b) { simde__m128i r{}; for(int i=0;i<16;++i) r.u8[i]=uint8_t(a.u8[i]|b.u8[i]); return r; }
@@ -415,6 +418,15 @@ static constexpr uint8_t VectorShiftTableL[256] = {
   0x1E,0x1D,0x1C,0x1B,0x1A,0x19,0x18,0x17,0x16,0x15,0x14,0x13,0x12,0x11,0x10,0x0F
 };
 namespace rex::ppc {
+// Lanewise vector shift-left by per-byte counts (PPC vslb).
+static simde__m128i simde_mm_sllv_epi8(simde__m128i a, simde__m128i b) {
+  simde__m128i r{};
+  for (int i=0;i<16;++i) {
+    const unsigned n = b.u8[i] & 7u;
+    r.u8[i] = uint8_t(a.u8[i] << n);
+  }
+  return r;
+}
 // PPC vperm in the host mirrored-lane representation: host lane i is
 // big-endian lane 15-i, so the be-space select translates to
 // d_host[i] = (c&0x10) ? b_host[31-c] : a_host[15-c] with c = c_host[i]&0x1F.

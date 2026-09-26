@@ -1,0 +1,7 @@
+DEFINE_REX_FUNC(sub_82120958) {
+	REX_FUNC_PROLOGUE();
+	// stw r4,17(r3)
+	REX_STORE_U32(ctx.r3.u32 + 17, ctx.r4.u32);
+	// blr 
+	return;
+}

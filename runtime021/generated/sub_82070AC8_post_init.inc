@@ -2,6 +2,8 @@ DEFINE_REX_FUNC(sub_82070AC8_post_init) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	(void)temp;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-label"
 	// lis r11,-32218
 	ctx.r11.s64 = -2111438848;
 	// li r7,1
@@ -258,6 +260,47 @@ loc_82070D54:
 	REX_STORE_U8(ctx.r30.u32 + 0, ctx.r27.u8);
 	// lwz r4,-6628(r10)
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r10.u32 + -6628);
-	// Diagnostic continuation stop: next original instruction is bl 0x820A1BF8.
+	// bl 0x820a1bf8
+	ctx.lr = 0x82070D74;
+	sub_820A1BF8(ctx, base);
+	// li r4,0
+	ctx.r4.s64 = 0;
+	// lwz r3,-6624(r28)
+	ctx.r3.u64 = REX_LOAD_U32(ctx.r28.u32 + -6624);
+	// bl 0x820757c8
+	ctx.lr = 0x82070D80;
+	sub_820757C8(ctx, base);
+	// lis r9,-32252
+	ctx.r9.s64 = -2113667072;
+	// addi r3,r1,96
+	ctx.r3.s64 = ctx.r1.s64 + 96;
+	// lfs f31,9724(r9)
+	ctx.fpscr.disableFlushMode();
+	temp.u32 = REX_LOAD_U32(ctx.r9.u32 + 9724);
+	ctx.f31.f64 = double(temp.f32);
+	// bl 0x820b6d10
+	ctx.lr = 0x82070D90;
+	sub_820B6D10(ctx, base);
+	// addi r3,r1,120
+	ctx.r3.s64 = ctx.r1.s64 + 120;
+	// bl 0x820b6d48
+	ctx.lr = 0x82070D98;
+	sub_820B6D48(ctx, base);
+	// lis r10,-32252
+	ctx.r10.s64 = -2113667072;
+	// lis r11,-32255
+	ctx.r11.s64 = -2113863680;
+	// ld r27,96(r1)
+	ctx.r27.u64 = REX_LOAD_U64(ctx.r1.u32 + 96);
+	// lis r29,-32215
+	ctx.r29.s64 = -2111242240;
+	// addi r30,r11,18268
+	ctx.r30.s64 = ctx.r11.s64 + 18268;
+	// lfs f30,9732(r10)
+	ctx.fpscr.disableFlushMode();
+	temp.u32 = REX_LOAD_U32(ctx.r10.u32 + 9732);
+	ctx.f30.f64 = double(temp.f32);
+#pragma clang diagnostic pop
+	// Diagnostic continuation stop: next original code is the loc_82070DB0 main monitor loop (startup complete).
 	return;
 }
