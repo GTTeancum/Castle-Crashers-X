@@ -531,7 +531,11 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   store(m,0x0250002Cu,4,0u);
   // Guest arena backing the bounded NtAllocateVirtualMemory contract used by
   // the exact CRT heap (reservations start at 0x04000000).
-  static std::vector<uint8_t> heap_arena(0x100000); // CRT heap reserves 64 KiB; 1 MiB arena leaves growth headroom
+  // WIP 023: the frame loop's pak loader parses whole asset files through
+  // CRT heap blocks (logo.pak alone is 1.3 MiB), so the startup-era 1 MiB
+  // arena starves it and the loader retries forever. 8 MiB covers the
+  // observed intro assets; exhaustion still fails closed.
+  static std::vector<uint8_t> heap_arena(0x800000);
   CHECK(m.map(0x04000000u,uint32_t(heap_arena.size()),heap_arena.data(),3)==cc::xbox::MemoryError::ok);
   // Guest arena backing the single observed MmAllocatePhysicalMemoryEx main
   // pool (16 MiB + guard page) requested by exact sub_8209BC98 after Init.
@@ -1075,7 +1079,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // bounded KeDelayExecutionThread contract stops the diagnostic at the
   // third frame's pacing sleep with Error::capacity -" a deliberate frame
   // budget, never a faked exit path.
-  auto pi=invoke(0x82070ba4,c,m,sink(),20000000);
+  auto pi=invoke(0x82070ba4,c,m,sink(),80000000);
   cc_log("caller_post_init result=%s@%08x funcs=%u memops=%u r1=%08x lr=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r11=%08x\n",
               name(pi.error),pi.address,pi.functions,pi.memory_ops,c.r1.u32,uint32_t(c.lr),
               c.r3.u32,c.r4.u32,c.r5.u32,c.r6.u32,c.r7.u32,c.r11.u32);
@@ -1091,7 +1095,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // chain (sub_820C3568/sub_820C3930/sub_820C4488/sub_820C4498) creates the
   // font texture. The slice ends by dispatching renderer vtable slot +12 to
   // exact sub_820A7E80 (with exact sub_820BFB50), which returns normally.
-  CHECK(pi.functions==330612u && pi.memory_ops==7127931u);
+  CHECK(pi.functions==3333939u && pi.memory_ops==51455729u);
   CHECK(c.r1.u32==0x0003ee70u); // Sleep wrapper frame at the pacing boundary
   CHECK(m.load_be(0x00075240u,4,v)==cc::xbox::MemoryError::ok && v==0x01000000u); // pool size
   CHECK(m.load_be(0x00075244u,4,v)==cc::xbox::MemoryError::ok && v==0x10000000u); // pool base

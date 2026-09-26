@@ -205,6 +205,10 @@ struct Machine {
     return timebase_virtual_ticks;
   }
   const Context* last_ctx{};
+  bool trace_one_frame = false;
+  bool frame_probe_log = false;
+  const char* trace_names[256] = {};
+  unsigned trace_count = 0;
   void prologue(const char *name, const Context& ctx) {
     last_function = name;
     last_ctx = &ctx;
@@ -224,6 +228,15 @@ struct Machine {
     // read-index writeback has always caught up with the device's current
     // submission phase. Refresh the same writeback word the doorbell
     // contract publishes; the exact wait code then observes a caught-up GPU.
+    if (frame_probe_log && !std::strcmp(name, "sub_82075C88")) {
+      cc_elog("UPDATE dt=%f obj=%08x\n", ctx.f1.f64, ctx.r3.u32);
+      frame_probe_log = false;
+    }
+    if (trace_one_frame && trace_count < 2000) {
+      ++trace_count;
+      cc_elog("FT %s r3=%08x r4=%08x r5=%08x lr=%08x\n",
+              name, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, uint32_t(ctx.lr));
+    }
     // Writeback publishes below use the raw address space: they model the
     // GPU's own memory traffic, which never counts as guest CPU memory ops,
     // so the sealed startup/init measurements stay untouched.
@@ -719,6 +732,7 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     const bool ok=std::fread(base.file_bytes.data(),1,size_t(sz),f)==size_t(sz);
     std::fclose(f);
     if (!ok) base.fail(Error::unsupported, address);
+    if (pak_open_shape) cc_log("pak_open %s bytes=%ld\n",fname,sz);
     base.file_open=true;
     base.file_pos=0;
     base.file_handle=0x0F11E001u;
@@ -904,7 +918,7 @@ Result invoke(uint32_t entry, Context &ctx, AddressSpace &memory, Sink sink,
     return error;
   }
   if (!sink.submit || !sink.bind || ctx.r1.u64 < 16384 ||
-      ctx.r1.u64 > 0xffffff7f || budget < 1 || budget > 20000000) {
+      ctx.r1.u64 > 0xffffff7f || budget < 1 || budget > 100000000) {
     error.error = Error::context;
     return error;
   }

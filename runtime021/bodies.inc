@@ -1122,7 +1122,7 @@ static void sub_820C6088(Context& ctx, Machine& base) {
 // frames, then stops fail-closed at this exact boundary with Error::capacity
 // so the harness measures whole frames and never fakes an exit path.
 static uint32_t g_frame_delay_calls = 0;
-static constexpr uint32_t k_frame_budget = 1000;
+static constexpr uint32_t k_frame_budget = 10000;
 static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   if (ctx.r3.u32 != 1u || ctx.r4.u32 != 0u || ctx.r5.u32 == 0u ||
       uint32_t(ctx.lr) != 0x820B7504u)
@@ -1132,6 +1132,23 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     base.fail(Error::unsupported, 0x8214A614u);
   if (++g_frame_delay_calls >= k_frame_budget)
     base.fail(Error::capacity, 0x8214A614u);
+  base.trace_one_frame = false;
+  base.frame_probe_log = (g_frame_delay_calls % 2000u == 0u);
+  if (g_frame_delay_calls % 2000u == 0u) {
+    // Frame-state probe: the main loop's quit check reads the object at
+    // [0x8225E620]; log its leading words so state transitions are visible.
+    uint64_t obj=0; base.memory.load_be(0x8225E620u,4,obj);
+    uint64_t w0=0,w1=0,w2=0,w3=0;
+    if (obj) { base.memory.load_be(uint32_t(obj),4,w0); base.memory.load_be(uint32_t(obj)+4,4,w1);
+               base.memory.load_be(uint32_t(obj)+8,4,w2); base.memory.load_be(uint32_t(obj)+12,4,w3); }
+    uint64_t q0=0,q1=0,q2=0,q3=0;
+    base.memory.load_be(0x00530C28u,4,q0); base.memory.load_be(0x00530C2Cu,4,q1);
+    base.memory.load_be(0x00530C40u,4,q2); base.memory.load_be(0x00530C44u,4,q3);
+    cc_log("frame %u state_obj=%08x w=[%08x %08x %08x %08x] q=[%08x %08x %08x %08x] file_open=%u pos=%u\n",
+           g_frame_delay_calls,uint32_t(obj),uint32_t(w0),uint32_t(w1),uint32_t(w2),uint32_t(w3),
+           uint32_t(q0),uint32_t(q1),uint32_t(q2),uint32_t(q3),
+           unsigned(base.file_open),base.file_pos);
+  }
   ctx.r3.u64 = 0u;  // STATUS_SUCCESS
 }
 static void __imp__KfReleaseSpinLock([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported,0x8214A744u); }
@@ -1975,8 +1992,19 @@ static void __imp__XamInputGetState(Context& ctx, Machine& base) {
   const uint32_t user = ctx.r3.u32, state = ctx.r5.u32;
   if (user != 0u) { ctx.r3.u64 = 0x48Fu; return; }
   ++g_input_packet_number;
+  // WIP 023 labeled diagnostic input script, keyed to the frame counter
+  // (g_frame_delay_calls): the fixture player presses START for 10 frames
+  // at frame 300 and presses A for 10 frames at frame 450, otherwise idle.
+  // This is injected input for the diagnostic, never faked game state; the
+  // original code reads it through the same boundary a real pad would use.
+  uint32_t buttons = 0u;
+  if ((g_frame_delay_calls >= 300u && g_frame_delay_calls < 312u) ||
+      (g_frame_delay_calls >= 1200u && g_frame_delay_calls < 1212u))
+    buttons = 0x0010u;  // XINPUT_GAMEPAD_START
+  else if (g_frame_delay_calls >= 2200u && g_frame_delay_calls < 2212u)
+    buttons = 0x1000u;  // XINPUT_GAMEPAD_A
   base.store(state + 0, 4, g_input_packet_number); // dwPacketNumber
-  base.store(state + 4, 4, 0u);                    // wButtons | triggers
+  base.store(state + 4, 4, buttons << 16);         // wButtons | triggers
   base.store(state + 8, 4, 0u);                    // sThumbLX | sThumbLY
   base.store(state + 12, 4, 0u);                   // sThumbRX | sThumbRY
   ctx.r3.u64 = 0u;                                 // ERROR_SUCCESS
