@@ -27,3 +27,6 @@ CMakeCache.txt
 *.swp
 Thumbs.db
 Desktop.ini
+
+# Game data extracted from the retail LIVE container (reproducible via castle-crashers-port/tools/extract_stfs.py)
+game-data/extracted/

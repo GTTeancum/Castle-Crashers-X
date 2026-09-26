@@ -90,24 +90,28 @@ print('PASS platform init prefix source=820A7990 range=entry..before_820BEFD0 by
 
 
 # Verify the WIP 021 PlatformRenderer continuation slice from the already-proven
-# successful graphics-helper branch through the first subsequent indirect call.
-# The wrapper header/return are diagnostic scaffolding; the executed instruction
-# fragment itself is copied byte-for-byte from sealed sub_820A7990.
+# successful graphics-helper branch through the (now closed) renderer-vtable
+# indirect call, the presentation-state stores, the exact 17-iteration
+# loc_820A7BF0 descriptor loop (exact sub_820AA5B8), and the post-loop setup
+# calls (exact sub_82129FA0 / sub_82129A70), stopping before the first
+# still-unrecovered direct call bl 0x820A8190. The wrapper header/return are
+# diagnostic scaffolding; the executed instruction fragment itself is copied
+# byte-for-byte from sealed sub_820A7990.
 orig=expected('sub_820A7990').decode()
 label=orig.index('loc_820A7B34:')
 st=orig.index('\n',label)+1
-needle='\tREX_CALL_INDIRECT_FUNC(ctx.ctr.u32);\n'
-en=orig.index(needle,st)+len(needle)
+needle='\t// bl 0x820a8190\n'
+en=orig.index(needle,st)
 frag=orig[st:en]
 want=('DEFINE_REX_FUNC(sub_820A7990_platform_post_graphics) {\n'
       '\tREX_FUNC_PROLOGUE();\n'
       '\tPPCRegister temp{};\n'+frag+
-      '\t// Diagnostic continuation stop: unknown indirect target remains fail-closed.\n'
+      '\t// Diagnostic continuation stop: next original instruction is bl 0x820A8190.\n'
       '\treturn;\n}\n')
 actual=(root/'runtime021/generated/sub_820A7990_platform_post_graphics.inc').read_text()
 if actual!=want:
     print('FAIL PlatformRenderer post-graphics slice differs from sealed sub_820A7990',file=sys.stderr);sys.exit(1)
-print('PASS platform post-graphics slice source=820A7990 range=820A7B34..through_820A7BC8 bytes=%d sha256=%s' %
+print('PASS platform post-graphics slice source=820A7990 range=820A7B34..before_820A8190 bytes=%d sha256=%s' %
       (len(frag.encode()),hashlib.sha256(frag.encode()).hexdigest()))
 
 

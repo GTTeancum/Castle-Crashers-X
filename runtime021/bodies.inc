@@ -5,8 +5,22 @@
 
 // ReXGlue's generated PPC trap intrinsic is a non-returning failure path. The
 // bounded host runtime reports it as context failure; it never converts a trap
-// into success.
+// into success. The single exception is trap code 20, the Xbox kernel debug-
+// output service reached through exact sub_820B7BC0 (r3=string, r4=length):
+// with no debugger attached the retail kernel resumes the title, so the
+// bounded runtime logs the message and continues without touching game state.
 static void ppc_trap([[maybe_unused]] Context& ctx, Machine& base, uint32_t code) {
+  if (code == 20u) {
+    const uint32_t len = ctx.r4.u32 <= 512u ? ctx.r4.u32 : 512u;
+    std::fprintf(stderr, "GUEST DBGPRINT: ");
+    for (uint32_t i = 0; i < len; ++i) {
+      const int chv = int(base.load(ctx.r3.u32 + i, 1));
+      if (!chv) break;
+      std::fputc(chv, stderr);
+    }
+    std::fputc('\n', stderr);
+    return;
+  }
   base.fail(Error::context, code);
 }
 
@@ -101,8 +115,34 @@ static void __imp__KeQueryPerformanceFrequency(Context& ctx, [[maybe_unused]] Ma
 #include "generated/sub_82053A00.inc"
 
 static void sub_82127778(Context& ctx, Machine& base) {
-  // The only accepted checkpoint-016 call shape is sprintf-like "%i" used by
-  // sub_8209CA70 to create its monotonically numbered startup label.
+  // WIP 021 second accepted sprintf shape: the sealed shader-path format
+  // "game:\shaders\%s" at 0x82042134 with a single bounded string argument,
+  // used by exact sub_820AA488 to build shader resource paths. Any other
+  // format/argument shape still fails closed.
+  if (ctx.r4.u32 == 0x82042134u) {
+    static const char prefix_fmt[] = "game:\\shaders\\%s";
+    for (unsigned i = 0; i <= sizeof(prefix_fmt) - 1; ++i)
+      if (base.load(ctx.r4.u32 + i, 1) != uint8_t(prefix_fmt[i]))
+        base.fail(Error::unsupported, 0x82127778u);
+    uint32_t out = ctx.r3.u32;
+    unsigned written = 0;
+    for (const char* p = "game:\\shaders\\"; *p; ++p) {
+      base.store(out++, 1, uint8_t(*p));
+      ++written;
+    }
+    for (unsigned i = 0;; ++i) {
+      if (i >= 64u) base.fail(Error::unsupported, 0x82127778u);
+      const uint8_t chv = uint8_t(base.load(ctx.r5.u32 + i, 1));
+      if (!chv) break;
+      base.store(out++, 1, chv);
+      ++written;
+    }
+    base.store(out, 1, 0);
+    ctx.r3.u64 = written;
+    return;
+  }
+  // The only other accepted checkpoint-016 call shape is sprintf-like "%i"
+  // used by sub_8209CA70 to create its monotonically numbered startup label.
   if (ctx.r4.u32 != 0x8203DF98u ||
       base.load(ctx.r4.u32 + 0,1) != uint8_t('%') ||
       base.load(ctx.r4.u32 + 1,1) != uint8_t('i') ||
@@ -133,11 +173,17 @@ static void sub_82127778(Context& ctx, Machine& base) {
 
 static void __imp__RtlInitializeCriticalSection(Context& ctx, Machine& base) {
   // Startup-prefix proof is single-threaded. The Xbox import receives a
-  // 28-byte object here; initialize the owned bytes deterministically. Enter/
-  // leave semantics are deliberately outside this checkpoint.
+  // 28-byte object here; initialize the owned bytes deterministically. WIP
+  // 021 additionally registers the object so the bounded enter/leave shims
+  // accept exactly the critical sections exact code created (the CRT heap's
+  // lock is the first). The registry is small and fails closed when full.
   const uint32_t p=ctx.r3.u32;
   if (p > 0xffffffe4u) base.fail(Error::context,p);
   for (unsigned i=0;i<28;++i) base.store(p+i,1,0);
+  for (uint32_t slot : g_registered_cs)
+    if (slot==p) { ctx.r3.u64=0; return; }
+  g_registered_cs.push_back(p);
+  g_registered_cs_locked.push_back(false);
   ctx.r3.u64=0;
 }
 
@@ -269,11 +315,16 @@ static void __imp__NtResumeThread(Context& ctx, Machine& base) {
   ctx.r3.s64=0;
 }
 
-// Failure-only error translation path for the exact wrappers. Successful
-// checkpoint-017 calls never enter it; a platform failure remains fail-closed.
-static void sub_820B7290([[maybe_unused]] Context& ctx, Machine& base) {
-  base.fail(Error::unsupported, 0x820B7290u);
+// WIP 021: the shader loader's SobelEdge.xpu miss legitimately reaches the
+// exact error-translation wrapper, so it is now executed byte-exact. The
+// trusted RtlNtStatusToDosError contract accepts only the observed
+// STATUS_OBJECT_NAME_NOT_FOUND and maps it to ERROR_FILE_NOT_FOUND.
+static void __imp__RtlNtStatusToDosError(Context& ctx, Machine& base) {
+  if (ctx.r3.u32 != 0xC0000034u)
+    base.fail(Error::unsupported, 0x8214A4E4u);
+  ctx.r3.u64 = 2u;
 }
+#include "generated/sub_820B7290.inc"
 
 #include "generated/sub_820B7350.inc"
 #include "generated/sub_820B73C0.inc"
@@ -295,6 +346,15 @@ static void sub_820B7290([[maybe_unused]] Context& ctx, Machine& base) {
     base.fail(Error::unsupported, addr); \
   }
 static void __imp__RtlEnterCriticalSection(Context& ctx, Machine& base) {
+  // Critical sections created by exact code through the bounded
+  // RtlInitializeCriticalSection contract: single-thread diagnostic, so a
+  // registered CS may simply toggle. Recursion is not observed and fails.
+  for (unsigned i=0;i<unsigned(g_registered_cs.size());++i) {
+    if (g_registered_cs[i]==ctx.r3.u32 && ctx.r3.u32) {
+      if (g_registered_cs_locked[i]) base.fail(Error::unsupported,0x8214A434u);
+      g_registered_cs_locked[i]=true; ctx.r3.u64=0; return;
+    }
+  }
   if (base.tile_allocator && ctx.r3.u32 == base.tile_allocator) {
     if (base.tile_cs_locked) base.fail(Error::unsupported,0x8214A434u);
     base.tile_cs_locked=true; ctx.r3.u64=0; return;
@@ -305,6 +365,12 @@ static void __imp__RtlEnterCriticalSection(Context& ctx, Machine& base) {
   base.hsio_cs_locked=true; ctx.r3.u64=0;
 }
 static void __imp__RtlLeaveCriticalSection(Context& ctx, Machine& base) {
+  for (unsigned i=0;i<unsigned(g_registered_cs.size());++i) {
+    if (g_registered_cs[i]==ctx.r3.u32 && ctx.r3.u32) {
+      if (!g_registered_cs_locked[i]) base.fail(Error::unsupported,0x8214A444u);
+      g_registered_cs_locked[i]=false; ctx.r3.u64=0; return;
+    }
+  }
   if (base.tile_allocator && ctx.r3.u32 == base.tile_allocator) {
     if (!base.tile_cs_locked) base.fail(Error::unsupported,0x8214A444u);
     base.tile_cs_locked=false; ctx.r3.u64=0; return;
@@ -319,7 +385,7 @@ HARD_BOUNDARY_017(sub_82128A60, 0x82128A60u)
 HARD_BOUNDARY_017(sub_820B00D8, 0x820B00D8u)
 HARD_BOUNDARY_017(sub_820B0330, 0x820B0330u)
 HARD_BOUNDARY_017(sub_820B0D80, 0x820B0D80u)
-HARD_BOUNDARY_017(sub_820B6498, 0x820B6498u)
+#include "generated/sub_820B6498.inc"
 HARD_BOUNDARY_017(sub_820B02B0, 0x820B02B0u)
 HARD_BOUNDARY_017(sub_820A7400, 0x820A7400u)
 HARD_BOUNDARY_017(sub_820B0750, 0x820B0750u)
@@ -402,7 +468,7 @@ static void __imp__VdSetSystemCommandBufferGpuIdentifierAddress(Context& ctx, Ma
   base.system_identifier_set=true; ctx.r3.u64=0;
 }
 static void __imp__MmGetPhysicalAddress(Context& ctx, Machine& base) {
-  if (base.graphics_alloc_index!=6u || !base.ring_virtual || ctx.r3.u32!=base.ring_virtual)
+  if (g_graphics_alloc_index!=6u || !base.ring_virtual || ctx.r3.u32!=base.ring_virtual)
     base.fail(Error::unsupported,0x8214A7E4u);
   // The bounded fixture maps its graphics arena in low guest memory, so the
   // physical token is the low 29-bit address used by this original path.
@@ -631,7 +697,7 @@ static void sub_820D62F8(Context& ctx, Machine& base) {
 #define HARD_RESOURCE_BOUNDARY_019(sym, addr) \
   static void sym([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, addr); }
 HARD_RESOURCE_BOUNDARY_019(sub_820D62A8,0x820D62A8u)
-HARD_RESOURCE_BOUNDARY_019(sub_82136390,0x82136390u)
+// (sub_82136390 XMemCpy is now included exact, in the WIP 021 section)
 HARD_RESOURCE_BOUNDARY_019(sub_820C90E0,0x820C90E0u)
 HARD_RESOURCE_BOUNDARY_019(sub_820BDD78,0x820BDD78u)
 #undef HARD_RESOURCE_BOUNDARY_019
@@ -1219,3 +1285,192 @@ static void __imp__MmFreePhysicalMemory(Context& ctx, Machine& base) {
 
 #include "generated/sub_820C0DA8.inc"
 #include "generated/sub_820C13B8.inc"
+
+// WIP 021 sub_820A7990-suffix boundaries: descriptor/resource helpers called
+// by exact sub_820AA5B8 that are not yet recovered. Each hard-fails rather
+// than simulating success.
+#define HARD_BOUNDARY_021(sym, addr) \
+  static void sym([[maybe_unused]] Context& ctx, Machine& base) { \
+    base.fail(Error::unsupported, addr); \
+  }
+// (sub_820C0440 is now included exact, below)
+// (sub_820C0330 is now included exact, below)
+#undef HARD_BOUNDARY_021
+
+#include "generated/sub_820AA5B8.inc"
+
+// Descriptor-parse helpers reached by exact sub_820AA488; unrecovered callees
+// stay fail-closed.
+#define HARD_BOUNDARY_021B(sym, addr) \
+  static void sym([[maybe_unused]] Context& ctx, Machine& base) { \
+    base.fail(Error::unsupported, addr); \
+  }
+HARD_BOUNDARY_021B(sub_820B6190, 0x820B6190u)
+#undef HARD_BOUNDARY_021B
+
+// The bounded NtReadFile contract completes synchronously, so the exact read
+// wrapper's pending-wait branch is never reached; it stays fail-closed.
+static void __imp__NtWaitForSingleObjectEx([[maybe_unused]] Context& ctx, Machine& base) {
+  base.fail(Error::unsupported, 0x8214A514u);
+}
+#include "generated/sub_820B6310.inc"
+#include "generated/sub_82138200.inc"
+#include "generated/sub_82136390.inc"
+#include "generated/sub_820BFDF0.inc"
+#include "generated/sub_820C0440.inc"
+#include "generated/sub_820C0330.inc"
+#include "generated/sub_820C00D0.inc"
+#include "generated/sub_820C01C0.inc"
+
+// KeBugCheck is a terminal kernel failure; reaching it is never success.
+static void __imp__KeBugCheck([[maybe_unused]] Context& ctx, Machine& base) {
+  base.fail(Error::unsupported, 0x8214A9F4u);
+}
+
+// WIP 021: the exact statically linked game heap (RtlHeap-family) reached by
+// the shader loader's sub_82128F70 allocation. Game-side heap code is executed
+// byte-exact; only the kernel TLS/virtual-memory/critical-section contracts
+// below are modeled, each fail-closed outside its observed shape.
+static void __imp__KeBugCheckEx([[maybe_unused]] Context& ctx, Machine& base) {
+  base.fail(Error::unsupported, 0x8214AA04u);
+}
+static void __imp__KeTlsGetValue(Context& ctx, Machine& base) {
+  if (ctx.r3.u32 >= 64u) base.fail(Error::unsupported, 0x8214A9D4u);
+  ctx.r3.u64 = g_tls_slots[ctx.r3.u32];
+}
+static void __imp__KeTlsSetValue(Context& ctx, Machine& base) {
+  if (ctx.r3.u32 >= 64u) base.fail(Error::unsupported, 0x8214A9E4u);
+  g_tls_slots[ctx.r3.u32] = ctx.r4.u32;
+  ctx.r3.u64 = 1u;
+}
+static void __imp__RtlCompareMemoryUlong(Context& ctx, Machine& base) {
+  // Trusted xboxkrnl contract: count leading bytes of the ULONG-aligned block
+  // at r3 (length r4) equal to pattern r5, in whole-ULONG steps.
+  const uint32_t src=ctx.r3.u32, len=ctx.r4.u32 & ~3u, pat=ctx.r5.u32;
+  uint32_t matched=0;
+  while (matched<len && uint32_t(base.load(src+matched,4))==pat) matched+=4u;
+  ctx.r3.u64=matched;
+}
+static void __imp__NtAllocateVirtualMemory(Context& ctx, Machine& base) {
+  // Bounded virtual-memory contract for the exact CRT heap: reservations and
+  // commits are served from the dedicated fixture arena at 0x04000000. Only
+  // the observed shapes are accepted; anything else fails closed.
+  const uint32_t base_ptr=ctx.r3.u32, size_ptr=ctx.r4.u32,
+                 alloc_type=ctx.r5.u32, protect=ctx.r6.u32;
+  const uint32_t want_base=uint32_t(base.load(base_ptr,4));
+  const uint32_t want_size=uint32_t(base.load(size_ptr,4));
+  if (ctx.r7.u32!=0u || protect!=4u || want_size==0u || want_size>0x400000u)
+    base.fail(Error::unsupported, 0x8214A6B4u);
+  if (alloc_type==0x60002000u && want_base==0u) {
+    // Top-down reserve of a fresh region: round to 64 KiB.
+    const uint32_t size=(want_size+0xFFFFu)&~0xFFFFu;
+    const uint32_t p=(g_valloc_cursor+0xFFFFu)&~0xFFFFu;
+    if (p+size<p || base.memory.check(p,size,3)!=cc::xbox::MemoryError::ok)
+      base.fail(Error::memory,p);
+    g_valloc_cursor=p+size;
+    base.store(base_ptr,4,p);
+    base.store(size_ptr,4,size);
+    ctx.r3.u64=0;
+    return;
+  }
+  if ((alloc_type==0x1000u||alloc_type==0x2000u||alloc_type==0x60001000u) &&
+      want_base>=0x04000000u && want_base<g_valloc_cursor) {
+    // Commit inside an existing fixture reservation: round to 4 KiB.
+    const uint32_t start=want_base&~0xFFFu;
+    const uint32_t size=((want_base-start)+want_size+0xFFFu)&~0xFFFu;
+    if (base.memory.check(start,size,3)!=cc::xbox::MemoryError::ok)
+      base.fail(Error::memory,start);
+    base.store(base_ptr,4,start);
+    base.store(size_ptr,4,size);
+    ctx.r3.u64=0;
+    return;
+  }
+  std::fprintf(stderr,
+    "NTALLOCVM unsupported r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x [r3]=%08x [r4]=%08x lr=%08x\n",
+    ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32,
+    want_base, want_size, uint32_t(ctx.lr));
+  base.fail(Error::unsupported, 0x8214A6B4u);
+}
+static void __imp__NtFreeVirtualMemory([[maybe_unused]] Context& ctx, Machine& base) {
+  base.fail(Error::unsupported, 0x8214A9B4u);
+}
+
+// RtlRaiseException is a terminal failure path for the exact heap; reaching
+// it is never promoted to success.
+static void __imp__RtlRaiseException([[maybe_unused]] Context& ctx, Machine& base) {
+  base.fail(Error::unsupported, 0x8214A9C4u);
+}
+#include "generated/sub_820B6780.inc"
+#include "generated/sub_820B72C8.inc"
+#include "generated/sub_820B7BC8.inc"
+#include "generated/sub_820B7D88.inc"
+#include "generated/sub_820B7EA8.inc"
+#include "generated/sub_820B8138.inc"
+#include "generated/sub_820B8540.inc"
+#include "generated/sub_820B8CA0.inc"
+#include "generated/sub_820B8E08.inc"
+#include "generated/sub_820B9048.inc"
+#include "generated/sub_820BA1D4.inc"
+#include "generated/sub_820BA228.inc"
+#include "generated/sub_820BA4C8.inc"
+#include "generated/sub_82129470.inc"
+#include "generated/sub_82129880.inc"
+#include "generated/sub_8212A2E8.inc"
+#include "generated/sub_8212A3B8.inc"
+#include "generated/sub_8212C298.inc"
+#include "generated/sub_8212E140.inc"
+#include "generated/sub_8212E218.inc"
+#include "generated/sub_821325C0.inc"
+#include "generated/sub_820B9958.inc"
+#include "generated/sub_820BB280.inc"
+#include "generated/sub_8212EC50.inc"
+#include "generated/sub_821294E0.inc"
+#include "generated/sub_820B7BC0.inc"
+#include "generated/sub_820B7630.inc"
+
+// Exact CRT heap creation (sub_820B7880 -> RtlCreateHeap-family
+// sub_820B93B0), executed as observed original startup behavior. The
+// XexExecutableModuleHandle loader variable is fixture-resolved to a null
+// module so the default 1 MiB reserve path is taken, exactly as a title with
+// no XEX default-heap-size field.
+static void __imp__RtlImageXexHeaderField([[maybe_unused]] Context& ctx, Machine& base) {
+  base.fail(Error::unsupported, 0x8214A684u);
+}
+static void __imp__NtQueryVirtualMemory(Context& ctx, Machine& base) {
+  std::fprintf(stderr,
+    "NTQUERYVM r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r1=%08x lr=%08x\n",
+    ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32,
+    ctx.r1.u32, uint32_t(ctx.lr));
+  base.fail(Error::unsupported, 0x8214A994u);
+}
+#include "generated/sub_8212A760.inc"
+#include "generated/sub_820B93B0.inc"
+#include "generated/sub_820B7880.inc"
+#include "generated/sub_820B6CD0.inc"
+#include "generated/sub_8212C368.inc"
+#include "generated/sub_8212C3B0.inc"
+#include "generated/sub_8212A040.inc"
+#include "generated/sub_82128F70.inc"
+
+#include "generated/sub_820B75C0.inc"
+#include "generated/sub_820B6AD8.inc"
+
+// Trusted xboxkrnl contract: initialize the ANSI_STRING at r3 (USHORT Length,
+// USHORT MaximumLength, ULONG Buffer, big-endian) from the NUL-terminated
+// guest buffer at r4. The observed shader-path call always passes a valid
+// bounded string; unbounded scans fail closed.
+static void __imp__RtlInitAnsiString(Context& ctx, Machine& base) {
+  uint32_t len = 0;
+  if (ctx.r4.u32) {
+    while (base.load(ctx.r4.u32 + len, 1) != 0)
+      if (++len >= 1024u) base.fail(Error::unsupported, 0x8214A494u);
+  }
+  base.store(ctx.r3.u32 + 0, 2, len);
+  base.store(ctx.r3.u32 + 2, 2, ctx.r4.u32 ? len + 1 : 0);
+  base.store(ctx.r3.u32 + 4, 4, ctx.r4.u32);
+}
+
+#include "generated/sub_820B7278.inc"
+#include "generated/sub_820B73C8.inc"
+#include "generated/sub_820B64E0.inc"
+#include "generated/sub_820AA488.inc"

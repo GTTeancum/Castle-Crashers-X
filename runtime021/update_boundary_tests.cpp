@@ -498,6 +498,39 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   store(m,0x02500028u,4,500u);
   store(m,0x68100,4,0x02501000u);
   store(m,0x02501000u+332u,4,0x44556677u);
+  // The exact file wrappers publish GetLastError-style state through the PCR:
+  // sub_820B7278 stores to [[r13+256]+352] when [r13+336] is zero. Point the
+  // bounded per-thread error block inside the already-mapped PCR page.
+  store(m,0x68000+256,4,0x68400u);
+  // Xbox kernel ordinal 403 is XexExecutableModuleHandle, a loader-resolved
+  // variable. The fixture resolves it to a slot holding a null module handle,
+  // so exact sub_820B7880 takes its default 1 MiB heap-reserve path without
+  // querying the XEX header.
+  store(m,0x82000600,4,0x0250002Cu);
+  store(m,0x0250002Cu,4,0u);
+  // Guest arena backing the bounded NtAllocateVirtualMemory contract used by
+  // the exact CRT heap (reservations start at 0x04000000).
+  static std::vector<uint8_t> heap_arena(0x400000);
+  CHECK(m.map(0x04000000u,uint32_t(heap_arena.size()),heap_arena.data(),3)==cc::xbox::MemoryError::ok);
+
+  // Execute the exact CRT heap initialization (sub_820B7880 -> exact
+  // sub_820B93B0) that original startup performs before any game code runs.
+  // The exact heap then serves every later original allocation on this path.
+  {
+    Context hc{};
+    hc.r1.u32=0x3f000;
+    hc.r13.u32=0x68000;
+    hc.lr=0x0c0160c0;
+    auto hr=invoke(0x820b7880,hc,m,sink(),200000);
+    uint64_t hv=0;
+    const bool hok=m.load_be(0x82290B3Cu,4,hv)==cc::xbox::MemoryError::ok;
+    std::printf("crt_heap_init result=%s@%08x funcs=%u memops=%u r3=%08x handle=%08x\n",
+                name(hr.error),hr.address,hr.functions,hr.memory_ops,hc.r3.u32,
+                hok?uint32_t(hv):0xffffffffu);
+    CHECK(hr.error==Error::ok);
+    CHECK(hc.r3.u32==1u);
+    CHECK(hok && hv!=0u);
+  }
 
   Context c{};
   c.r1.u32=0x3f000;
@@ -575,27 +608,65 @@ static void renderer_caller_prefix_controls(const char* image_path) {
               name(ps.error),ps.address,ps.functions,ps.memory_ops,c.r1.u32,uint32_t(c.lr),c.r3.u32,c.r4.u32,c.r5.u32,c.r6.u32,c.r7.u32,c.r8.u32,c.r9.u32,c.r10.u32,c.ctr.u32);
   CHECK(ps.error==Error::ok);
   CHECK(ps.address==0u);
-  CHECK(ps.functions==965u);
-  CHECK(ps.memory_ops==21114u);
+  // The continuation now executes the closed exact sub_820A85E8 vtable call,
+  // the presentation-state stores, and the full 17-iteration loc_820A7BF0
+  // shader-descriptor loop: exact sub_820AA5B8/sub_820AA488 load each
+  // descriptor's shader files from the container through the bounded
+  // NtCreateFile/NtQueryInformationFile/NtReadFile/NtClose contracts, the
+  // exact CRT heap serves the file buffers, exact XMemCpy (sub_82136390)
+  // copies microcode, and exact sub_820C0440/sub_820C0330/sub_820C01C0
+  // create the vertex/pixel shader objects and vertex declarations. The two
+  // container-absent names (SobelEdge.xpu, VertexColorFillPS.xpu) take the
+  // original error path. The slice then runs the post-loop setup and stops
+  // before the first still-unrecovered call bl 0x820A8190.
+  CHECK(ps.functions==2231u);
+  CHECK(ps.memory_ops==66888u);
   CHECK(c.r1.u32==0x0003ed30u);
-  CHECK(uint32_t(c.lr)==0x820A7BC8u);
+  CHECK(uint32_t(c.lr)==0x820A7CA4u); // last completed original call: sub_82129A70
   CHECK(c.r3.u32==renderer);
-  CHECK(c.r4.u32==0u && c.r5.u32==0u);
-  CHECK(c.r6.u32==0x820A85E8u && c.ctr.u32==0x820A85E8u);
-  CHECK(c.r7.u32==480u && c.r8.u32==640u);
-  CHECK(c.r9.u32==0x82042048u && c.r10.u32==0x82040000u);
-  // Exact sub_820A85E8 observed-branch evidence: the guard byte is still zero,
-  // so the color-conversion path was not taken and renderer+28736..28739 remain
-  // untouched. Do not treat these as durable color state until original code
-  // actually writes them.
-  CHECK(m.load_be(renderer+28715,1,v)==cc::xbox::MemoryError::ok && v==0u);
+  // Durable presentation-state stores executed after the vtable call and
+  // before the fail-closed loc_820A7BF0 loop stop.
+  std::printf("post_vtable_presentation f30=%08x f31=%08x r28=%08x fields=[28740..28752]\n",
+              uint32_t(m.load_be(renderer+28756,4,v)==cc::xbox::MemoryError::ok?v:~0ull),
+              uint32_t(m.load_be(renderer+28760,4,v)==cc::xbox::MemoryError::ok?v:~0ull),
+              uint32_t(m.load_be(renderer+29124,4,v)==cc::xbox::MemoryError::ok?v:~0ull));
+  CHECK(m.load_be(renderer+28740,4,v)==cc::xbox::MemoryError::ok && v==0u);
+  CHECK(m.load_be(renderer+28744,4,v)==cc::xbox::MemoryError::ok && v==0u);
+  CHECK(m.load_be(renderer+28748,4,v)==cc::xbox::MemoryError::ok && v==640u);
+  CHECK(m.load_be(renderer+28752,4,v)==cc::xbox::MemoryError::ok && v==480u);
+  CHECK(m.load_be(renderer+29124,4,v)==cc::xbox::MemoryError::ok && v==0u);
+  CHECK(m.load_be(renderer+28756,4,v)==cc::xbox::MemoryError::ok && v==0x00000000u); // stfs f30 = 0.0f
+  CHECK(m.load_be(renderer+28760,4,v)==cc::xbox::MemoryError::ok && v==0x3f800000u); // stfs f31 = 1.0f
+  // Exact sub_820A85E8 observed-branch evidence: at the vtable call the guard
+  // byte renderer+28715 was still zero, so the color-conversion path was not
+  // taken and renderer+28736..28739 remain untouched. The original post-loop
+  // code then stores the guard byte (r29=1).
+  CHECK(m.load_be(renderer+28715,1,v)==cc::xbox::MemoryError::ok && v==1u);
   CHECK(m.load_be(renderer+28736,4,v)==cc::xbox::MemoryError::ok && v==0u);
+  // Durable shader-descriptor table published by the exact loop: the table
+  // pointer and running counter, slot 0's created vertex shader, pixel
+  // shader, and vertex declaration, and the exact microcode bytes XMemCpy
+  // copied from the container's GenericVS.xvu into the first shader object
+  // (validating the byte-exact copy path end to end).
+  CHECK(m.load_be(renderer+30176,4,v)==cc::xbox::MemoryError::ok && v==renderer+29836u);
+  CHECK(m.load_be(renderer+30208,4,v)==cc::xbox::MemoryError::ok && v==0u);
+  CHECK(m.load_be(renderer+29836+0,4,v)==cc::xbox::MemoryError::ok && v==0u); // slot 0 result: success
+  CHECK(m.load_be(renderer+29836+8,4,v)==cc::xbox::MemoryError::ok && v!=0u);
+  CHECK(m.load_be(renderer+29836+12,4,v)==cc::xbox::MemoryError::ok && v!=0u);
+  CHECK(m.load_be(renderer+29836+16,4,v)==cc::xbox::MemoryError::ok && v!=0u);
+  CHECK(m.load_be(0x0233DE68u+0,4,v)==cc::xbox::MemoryError::ok && v==0x102a1101u);
+  CHECK(m.load_be(0x0233DE68u+4,4,v)==cc::xbox::MemoryError::ok && v==0x0000011cu);
+  CHECK(m.load_be(0x0233DE68u+8,4,v)==cc::xbox::MemoryError::ok && v==0x0000009cu);
+  CHECK(m.load_be(0x0233DE68u+12,4,v)==cc::xbox::MemoryError::ok && v==0x00000024u);
   CHECK(m.load_be(renderer+4,4,v)==cc::xbox::MemoryError::ok && v==device);
   // Allocation/object publication contract from sub_820BEF28/sub_820CC088.
   CHECK(m.load_be(device-4,4,v)==cc::xbox::MemoryError::ok && v==0x02000000u);
   CHECK(m.load_be(0x02500000u,4,v)==cc::xbox::MemoryError::ok && v==device);
   CHECK(m.load_be(device+60,4,v)==cc::xbox::MemoryError::ok && v==1u);
-  CHECK(m.load_be(device+10888,4,v)==cc::xbox::MemoryError::ok && v==0x44556677u);
+  // The exact shader-creation chain (sub_820BFDF0) legitimately clears the
+  // loader-fixture canary previously bound at device+10888; the observed
+  // durable value after the descriptor loop is zero.
+  CHECK(m.load_be(device+10888,4,v)==cc::xbox::MemoryError::ok && v==0u);
   CHECK(m.load_be(device+10892,4,v)==cc::xbox::MemoryError::ok && v==0u);
   CHECK(m.load_be(device+16728,4,v)==cc::xbox::MemoryError::ok && v==0x02005e80u);
   CHECK(m.load_be(device+23980,4,v)==cc::xbox::MemoryError::ok && v==0x0c000000u);
@@ -960,7 +1031,20 @@ static void captured_startup_boundary(const char* path) {
   delete w;
 }
 int main(int argc,char** argv) {
-  CHECK(argc==3);
+  CHECK(argc==3 || argc==4);
+  if (argc==4) {
+    cc::tree::set_game_root(argv[3]);
+  } else {
+    // Default: game-data/extracted next to castle-crashers-port (argv[2] is
+    // <root>/castle-crashers-port/reference/default.image.bin).
+    std::string img(argv[2]);
+    for (int up=0; up<3; ++up) {
+      const auto cut=img.find_last_of("/\\");
+      CHECK(cut!=std::string::npos);
+      img.resize(cut);
+    }
+    cc::tree::set_game_root((img+"/game-data/extracted").c_str());
+  }
   CHECK(cc::update014::synthetic_chain_test()==cc::update014::synthetic_chain_mask);
   synthetic_controls();
   map_hit_and_wrapper_controls();
@@ -968,6 +1052,6 @@ int main(int argc,char** argv) {
   startup_full_controls(argv[2]);
   renderer_caller_prefix_controls(argv[2]);
   captured_startup_boundary(argv[1]);
-  std::printf("PASS update_boundary assertions=%llu full_synthetic_update=ok startup_full=820701D0..return renderer_prefix=82070AC8..before_820A7990 manager_writer=820701D0@82070434 workers=5 lookup_entries=613 originals=8209CC98,8209DE50,82097720,820915F0,820772B0 platform_init_prefix=820A7990..before_820BEFD0 graphics_init_chain=820BEFD0..return gfx_workers=2 resources=3 output_published=1 next_host_graphics_boundary=820A7BC8_caller_continuation_before_820AA5B8 next_real_capture_boundary=8225E62C\n",
+  std::printf("PASS update_boundary assertions=%llu full_synthetic_update=ok startup_full=820701D0..return renderer_prefix=82070AC8..before_820A7990 manager_writer=820701D0@82070434 workers=5 lookup_entries=613 originals=8209CC98,8209DE50,82097720,820915F0,820772B0 platform_init_prefix=820A7990..before_820BEFD0 graphics_init_chain=820BEFD0..return gfx_workers=2 resources=3 output_published=1 next_host_graphics_boundary=820A7990_suffix_before_820A8190 next_real_capture_boundary=8225E62C\n",
               (unsigned long long)assertions);
 }

@@ -7,7 +7,28 @@
 #include <csetjmp>
 #include <cstring>
 #include <cstdio>
+#include <string>
+#include <vector>
 namespace cc::tree {
+// WIP 021 bounded shader-file platform contract: host directory holding the
+// files extracted from the retail container (set by the test harness; the
+// contract fails closed when unset).
+static std::string g_game_root;
+void set_game_root(const char* p) noexcept { g_game_root = p ? p : ""; }
+// WIP 021 persistent kernel-fixture state. Unlike per-invoke Machine state,
+// these model kernel-side facts that survive between diagnostic invocations
+// exactly as they would across calls on hardware: TLS slot values, critical
+// sections created by exact code, and the virtual-memory cursor backing the
+// exact CRT heap's reservations.
+static uint32_t g_tls_slots[64]{};
+static std::vector<uint32_t> g_registered_cs;
+static std::vector<bool> g_registered_cs_locked;
+[[maybe_unused]] static uint32_t g_valloc_cursor = 0x04000000u;
+// The physical graphics allocator is one durable kernel-side allocator: its
+// sequence position and cursor survive between diagnostic invocations exactly
+// as physical allocations do on hardware.
+static uint32_t g_graphics_alloc_index = 0;
+static uint32_t g_graphics_alloc_cursor = 0x02000000u;
 #include "../runtime007/float_scope.inc"
 struct Machine {
   struct ThreadSlot {
@@ -30,8 +51,8 @@ struct Machine {
   // Checkpoint 020's graphics allocator is a deliberately tiny platform/runtime
   // contract. It accepts only the fifteen allocation shapes reached by the sealed
   // 640x480 device-init path; all other sizes/flags fail closed.
-  uint32_t graphics_alloc_index{};
-  uint32_t graphics_alloc_cursor{0x02000000u};
+
+
   bool graphics_engines_initialized{};
   uint32_t terminate_notifications{};
   bool graphics_interrupt_installed{};
@@ -62,6 +83,12 @@ struct Machine {
   bool persist_display_called{};
   bool persist_display_freed{};
   uint32_t persist_display_allocation{};
+  // WIP 021 shader-file fixture: exactly one file open at a time, read-only,
+  // backed by the extracted container bytes. All other shapes fail closed.
+  bool file_open{};
+  uint32_t file_handle{};
+  uint32_t file_pos{};
+  std::vector<uint8_t> file_bytes;
   uint32_t ring_virtual{};
   uint32_t ring_physical{};
   uint32_t ring_descriptor{};
@@ -72,17 +99,33 @@ struct Machine {
                                          0x87800000u, 0xA5800000u, 0x95800000u,
                                          0xB5800000u, 0x64800000u, 0xB5800000u, 0xB5800000u, 0x64800000u, 0xBC800000u, 0x64800000u, 0x64800000u, 0x64800000u};
     graphics_last_alloc_size=size; graphics_last_alloc_flags=flags;
-    if (graphics_alloc_index >= 15u || size != sizes[graphics_alloc_index] ||
-        flags != flagv[graphics_alloc_index])
+    if (g_graphics_alloc_index >= 15u) {
+      // WIP 021 shader-creation phase: after the fifteen sealed device-init
+      // shapes, exact sub_820C0440/sub_820C0330/sub_820C01C0 allocate shader
+      // and declaration objects (flag 0x24800000) and their physical
+      // microcode blocks (flag 0xB5800000), with small sizes derived from the
+      // container's shader files. Only those shapes are accepted.
+      if ((flags != 0x24800000u && flags != 0xB5800000u) ||
+          size < 16u || size > 65536u)
+        fail(Error::unsupported, 0x82136670u);
+      const uint32_t p=(g_graphics_alloc_cursor + 15u) & ~15u;
+      if (p > 0xffffffffu-size || memory.check(p,size,3) != cc::xbox::MemoryError::ok)
+        fail(Error::memory,p);
+      g_graphics_alloc_cursor=p+size;
+      ++g_graphics_alloc_index;
+      return p;
+    }
+    if (size != sizes[g_graphics_alloc_index] ||
+        flags != flagv[g_graphics_alloc_index])
       fail(Error::unsupported, 0x82136670u);
-    uint32_t p=(graphics_alloc_cursor + 15u) & ~15u;
+    uint32_t p=(g_graphics_alloc_cursor + 15u) & ~15u;
     if (p > 0xffffffffu-size || memory.check(p,size,3) != cc::xbox::MemoryError::ok)
       fail(Error::memory,p);
-    if (graphics_alloc_index == 2u) ring_virtual=p;
-    if (graphics_alloc_index == 4u) ring_descriptor=p;
-    if (graphics_alloc_index == 13u) tile_allocator=p;
-    graphics_alloc_cursor=p+size;
-    ++graphics_alloc_index;
+    if (g_graphics_alloc_index == 2u) ring_virtual=p;
+    if (g_graphics_alloc_index == 4u) ring_descriptor=p;
+    if (g_graphics_alloc_index == 13u) tile_allocator=p;
+    g_graphics_alloc_cursor=p+size;
+    ++g_graphics_alloc_index;
     return p;
   }
   ThreadSlot* by_handle(uint32_t handle) noexcept {
@@ -107,8 +150,10 @@ struct Machine {
     const uint64_t ns = uint64_t(duration_cast<nanoseconds>(steady_clock::now()-timebase_epoch).count());
     return (ns/1000000000ull)*timebase_hz + ((ns%1000000000ull)*timebase_hz)/1000000000ull;
   }
+  const Context* last_ctx{};
   void prologue(const char *name, const Context& ctx) {
     last_function = name;
+    last_ctx = &ctx;
     recent_functions[recent_pos & 31u] = name;
     recent_r1[recent_pos & 31u] = ctx.r1.u32;
     ++recent_pos;
@@ -128,7 +173,12 @@ struct Machine {
   [[noreturn]] void fail(Error e, uint32_t a = 0) {
     result.error = e;
     result.address = a;
-    std::fprintf(stderr,"TRACE020 fail error=%u address=%08x last=%s funcs=%u memops=%u recent=",unsigned(e),a,last_function,result.functions,result.memory_ops);
+    std::fprintf(stderr,"TRACE020 fail error=%u address=%08x last=%s funcs=%u memops=%u",unsigned(e),a,last_function,result.functions,result.memory_ops);
+    if (last_ctx)
+      std::fprintf(stderr," r1=%08x r3=%08x r4=%08x r5=%08x r6=%08x r11=%08x lr=%08x",
+                   last_ctx->r1.u32,last_ctx->r3.u32,last_ctx->r4.u32,last_ctx->r5.u32,
+                   last_ctx->r6.u32,last_ctx->r11.u32,uint32_t(last_ctx->lr));
+    std::fprintf(stderr," recent=");
     for (unsigned k=0;k<32;++k) { const char* n=recent_functions[(recent_pos+k)&31u]; if(n) std::fprintf(stderr,"%s%s@%08x",k?",":"",n,recent_r1[(recent_pos+k)&31u]); }
     std::fprintf(stderr,"\n");
     std::longjmp(escape, 1);
@@ -306,7 +356,41 @@ static simde__m128 simde_mm_round_ps(simde__m128 a, int mode) {
   for(int i=0;i<4;++i) { if(m==SIMDE_MM_FROUND_TO_NEG_INF) r.f32[i]=std::floor(a.f32[i]); else if(m==SIMDE_MM_FROUND_TO_ZERO) r.f32[i]=std::trunc(a.f32[i]); else r.f32[i]=std::nearbyint(a.f32[i]); }
   return r;
 }
+// PPC lvsl control table in ReXGlue host byte order. lvsl with shift sh must
+// yield the big-endian control vector whose lane j equals sh+j; host lane i
+// mirrors big-endian lane 15-i, so row sh holds [sh+15, sh+14, ..., sh]. The
+// pairing with simde_mm_perm_epi8_ below reproduces exact vperm unaligned
+// loads: be-lane j selects concat(vA,vB)[c_be[j] & 0x1F].
+static constexpr uint8_t VectorShiftTableL[256] = {
+  0x0F,0x0E,0x0D,0x0C,0x0B,0x0A,0x09,0x08,0x07,0x06,0x05,0x04,0x03,0x02,0x01,0x00,
+  0x10,0x0F,0x0E,0x0D,0x0C,0x0B,0x0A,0x09,0x08,0x07,0x06,0x05,0x04,0x03,0x02,0x01,
+  0x11,0x10,0x0F,0x0E,0x0D,0x0C,0x0B,0x0A,0x09,0x08,0x07,0x06,0x05,0x04,0x03,0x02,
+  0x12,0x11,0x10,0x0F,0x0E,0x0D,0x0C,0x0B,0x0A,0x09,0x08,0x07,0x06,0x05,0x04,0x03,
+  0x13,0x12,0x11,0x10,0x0F,0x0E,0x0D,0x0C,0x0B,0x0A,0x09,0x08,0x07,0x06,0x05,0x04,
+  0x14,0x13,0x12,0x11,0x10,0x0F,0x0E,0x0D,0x0C,0x0B,0x0A,0x09,0x08,0x07,0x06,0x05,
+  0x15,0x14,0x13,0x12,0x11,0x10,0x0F,0x0E,0x0D,0x0C,0x0B,0x0A,0x09,0x08,0x07,0x06,
+  0x16,0x15,0x14,0x13,0x12,0x11,0x10,0x0F,0x0E,0x0D,0x0C,0x0B,0x0A,0x09,0x08,0x07,
+  0x17,0x16,0x15,0x14,0x13,0x12,0x11,0x10,0x0F,0x0E,0x0D,0x0C,0x0B,0x0A,0x09,0x08,
+  0x18,0x17,0x16,0x15,0x14,0x13,0x12,0x11,0x10,0x0F,0x0E,0x0D,0x0C,0x0B,0x0A,0x09,
+  0x19,0x18,0x17,0x16,0x15,0x14,0x13,0x12,0x11,0x10,0x0F,0x0E,0x0D,0x0C,0x0B,0x0A,
+  0x1A,0x19,0x18,0x17,0x16,0x15,0x14,0x13,0x12,0x11,0x10,0x0F,0x0E,0x0D,0x0C,0x0B,
+  0x1B,0x1A,0x19,0x18,0x17,0x16,0x15,0x14,0x13,0x12,0x11,0x10,0x0F,0x0E,0x0D,0x0C,
+  0x1C,0x1B,0x1A,0x19,0x18,0x17,0x16,0x15,0x14,0x13,0x12,0x11,0x10,0x0F,0x0E,0x0D,
+  0x1D,0x1C,0x1B,0x1A,0x19,0x18,0x17,0x16,0x15,0x14,0x13,0x12,0x11,0x10,0x0F,0x0E,
+  0x1E,0x1D,0x1C,0x1B,0x1A,0x19,0x18,0x17,0x16,0x15,0x14,0x13,0x12,0x11,0x10,0x0F
+};
 namespace rex::ppc {
+// PPC vperm in the host mirrored-lane representation: host lane i is
+// big-endian lane 15-i, so the be-space select translates to
+// d_host[i] = (c&0x10) ? b_host[31-c] : a_host[15-c] with c = c_host[i]&0x1F.
+static simde__m128i simde_mm_perm_epi8_(simde__m128i a, simde__m128i b, simde__m128i c) {
+  simde__m128i d{};
+  for (int i=0;i<16;++i) {
+    const uint8_t sel = uint8_t(c.u8[i] & 0x1F);
+    d.u8[i] = sel < 16 ? a.u8[15 - sel] : b.u8[31 - sel];
+  }
+  return d;
+}
 static simde__m128i simde_mm_vctsxs(simde__m128 a) {
   simde__m128i r{}; int32_t out[4]{};
   for(int i=0;i<4;++i) {
@@ -382,6 +466,120 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
 #include "../runtime010/dispatch.inc"
 #include "../runtime011/dispatch.inc"
 #include "dispatch.inc"
+  case 0x8214a534: {
+    // NtCreateFile ??? bounded shader-file platform contract. Accept only the
+    // observed synchronous read-only open (access 0x80100080, OBJ root -3,
+    // OBJ_CASE_INSENSITIVE, FILE_OPEN, options 0x60) of "game:\shaders\<name>"
+    // backed by the extracted retail-container files.
+    const uint32_t handle_out=ctx.r3.u32, oa=ctx.r5.u32, iosb=ctx.r6.u32;
+    if (base.file_open || ctx.r4.u32!=0x80100080u || ctx.r7.u32!=0u ||
+        ctx.r8.u32!=0u || ctx.r9.u32!=0u || ctx.r10.u32!=1u ||
+        uint32_t(base.load(ctx.r1.u32+84,4))!=0x60u ||
+        uint32_t(base.load(oa+0,4))!=0xFFFFFFFDu ||
+        uint32_t(base.load(oa+8,4))!=0x40u) {
+      std::fprintf(stderr,"NTCREATE reject open=%d r4=%08x r7=%08x r8=%08x r9=%08x r10=%08x s84=%08x oa0=%08x oa8=%08x\n",
+        int(base.file_open),ctx.r4.u32,ctx.r7.u32,ctx.r8.u32,ctx.r9.u32,ctx.r10.u32,
+        uint32_t(base.load(ctx.r1.u32+84,4)),uint32_t(base.load(oa+0,4)),uint32_t(base.load(oa+8,4)));
+      base.fail(Error::unsupported, address);
+    }
+    const uint32_t str=uint32_t(base.load(oa+4,4));
+    const uint32_t len=uint32_t(base.load(str+0,2));
+    const uint32_t buf=uint32_t(base.load(str+4,4));
+    char fname[80]{};
+    static constexpr char prefix[]="game:\\shaders\\";
+    constexpr uint32_t plen=uint32_t(sizeof(prefix))-1u;
+    if (len<=plen || len>=plen+64u)
+      base.fail(Error::unsupported, address);
+    for (uint32_t i=0;i<plen;++i)
+      if (uint8_t(base.load(buf+i,1))!=uint8_t(prefix[i]))
+        base.fail(Error::unsupported, address);
+    for (uint32_t i=plen;i<len;++i) {
+      const char chv=char(base.load(buf+i,1));
+      if (!((chv>='A'&&chv<='Z')||(chv>='a'&&chv<='z')||(chv>='0'&&chv<='9')||chv=='.'))
+        base.fail(Error::unsupported, address);
+      fname[i-plen]=chv;
+    }
+    if (g_game_root.empty())
+      base.fail(Error::unsupported, address);
+    const std::string host=g_game_root+"/shaders/"+fname;
+    std::FILE* f=std::fopen(host.c_str(),"rb");
+    if (!f) {
+      // The sealed shader-name table requests SobelEdge.xpu (the container
+      // ships SobelEdgePS.xpu) and VertexColorFillPS.xpu (absent from the
+      // container entirely, per the sealed container manifest). The retail
+      // game observes STATUS_OBJECT_NAME_NOT_FOUND for exactly these two and
+      // continues. Any other miss is an environment problem and fails closed.
+      if (std::strcmp(fname,"SobelEdge.xpu")!=0 &&
+          std::strcmp(fname,"VertexColorFillPS.xpu")!=0) {
+        std::fprintf(stderr,"NTCREATE miss name='%s' root='%s'\n",fname,g_game_root.c_str());
+        base.fail(Error::unsupported, address);
+      }
+      ctx.r3.u64=0xC0000034u;
+      return;
+    }
+    std::fseek(f,0,SEEK_END);
+    const long sz=std::ftell(f);
+    std::fseek(f,0,SEEK_SET);
+    if (sz<=0 || sz>65536) { std::fclose(f); base.fail(Error::unsupported, address); }
+    base.file_bytes.assign(size_t(sz),0);
+    const bool ok=std::fread(base.file_bytes.data(),1,size_t(sz),f)==size_t(sz);
+    std::fclose(f);
+    if (!ok) base.fail(Error::unsupported, address);
+    base.file_open=true;
+    base.file_pos=0;
+    base.file_handle=0x0F11E001u;
+    base.store(handle_out,4,base.file_handle);
+    base.store(iosb+0,4,0u);
+    base.store(iosb+4,4,1u); // FILE_OPENED
+    ctx.r3.u64=0;
+    return;
+  }
+  case 0x8214a624: {
+    // NtQueryInformationFile ??? bounded to FileNetworkOpenInformation (class
+    // 34, 56 bytes) on the single open shader-file fixture handle.
+    const uint32_t iosb=ctx.r4.u32, buf=ctx.r5.u32;
+    if (!base.file_open || ctx.r3.u32!=base.file_handle ||
+        ctx.r6.u32!=56u || ctx.r7.u32!=34u)
+      base.fail(Error::unsupported, address);
+    for (unsigned i=0;i<4;++i) base.store(buf+i*8u,8,0u); // four timestamps
+    base.store(buf+32u,8,uint64_t(base.file_bytes.size())); // AllocationSize
+    base.store(buf+40u,8,uint64_t(base.file_bytes.size())); // EndOfFile
+    base.store(buf+48u,4,0x80u); // FILE_ATTRIBUTE_NORMAL
+    base.store(buf+52u,4,0u);
+    base.store(iosb+0,4,0u);
+    base.store(iosb+4,4,56u);
+    ctx.r3.u64=0;
+    return;
+  }
+  case 0x8214a664: {
+    // NtReadFile ??? bounded synchronous read of the single open shader-file
+    // fixture from the current position (no event/APC/byte-offset observed).
+    const uint32_t iosb=ctx.r7.u32, buf=ctx.r8.u32, len=ctx.r9.u32;
+    if (!base.file_open || ctx.r3.u32!=base.file_handle || ctx.r4.u32!=0u ||
+        ctx.r5.u32!=0u || ctx.r6.u32!=0u || ctx.r10.u32!=0u ||
+        base.file_pos>base.file_bytes.size())
+      base.fail(Error::unsupported, address);
+    const uint32_t avail=uint32_t(base.file_bytes.size()-base.file_pos);
+    const uint32_t take=len<avail?len:avail;
+    for (uint32_t i=0;i<take;++i)
+      base.store(buf+i,1,base.file_bytes[base.file_pos+i]);
+    base.file_pos+=take;
+    base.store(iosb+0,4,take?0u:0xC0000011u); // STATUS_END_OF_FILE when empty
+    base.store(iosb+4,4,take);
+    ctx.r3.u64=take?0u:0xC0000011u;
+    return;
+  }
+  case 0x8214a584: {
+    // NtClose ??? bounded to the single open shader-file fixture handle.
+    if (!base.file_open || ctx.r3.u32!=base.file_handle)
+      base.fail(Error::unsupported, address);
+    base.file_open=false;
+    base.file_handle=0;
+    base.file_pos=0;
+    base.file_bytes.clear();
+    ctx.r3.u64=0;
+    return;
+  }
   case 0x820a89f8: {
     const uint32_t obj = ctx.r3.u32, desc = ctx.r4.u32;
     if (obj > 0xffff89efu || desc > 0xffffffafu)
@@ -443,6 +641,7 @@ static void execute(uint32_t entry, Context &ctx, Machine &m) {
   }
   switch (entry) {
   case 0x820701d0: sub_820701D0_startup_full(ctx,m); break;
+  case 0x820b7880: sub_820B7880(ctx,m); break;
   case 0x82070ac8: sub_82070AC8_renderer_prefix(ctx,m); break;
   case 0x820a7990: sub_820A7990_platform_prefix(ctx,m); break;
   case 0x820a7b34: sub_820A7990_platform_post_graphics(ctx,m); break;
@@ -475,7 +674,7 @@ static void execute(uint32_t entry, Context &ctx, Machine &m) {
 Result invoke(uint32_t entry, Context &ctx, AddressSpace &memory, Sink sink,
               uint32_t budget) noexcept {
   Result error;
-  if (entry != 0x820c13b8 && entry != 0x820c2c98 && entry != 0x820befd0 && entry != 0x820a7b34 && entry != 0x820a7990 && entry != 0x82070ac8 && entry != 0x820701d0 && entry != 0x82070434 && entry != 0x8208a7a0 && entry != 0x820a8ff8 && entry != 0x82091248 && entry != 0x8209cd08 && entry != 0x8209cc98 && entry != 0x8209de50 && entry != 0x82097720 && entry != 0x820915f0 && entry != 0x8209df48 && entry != 0x820a1ac0 && entry != 0x8209ce40 && entry != 0x8209ce48) {
+  if (entry != 0x820c13b8 && entry != 0x820c2c98 && entry != 0x820befd0 && entry != 0x820a7b34 && entry != 0x820a7990 && entry != 0x82070ac8 && entry != 0x820701d0 && entry != 0x820b7880 && entry != 0x82070434 && entry != 0x8208a7a0 && entry != 0x820a8ff8 && entry != 0x82091248 && entry != 0x8209cd08 && entry != 0x8209cc98 && entry != 0x8209de50 && entry != 0x82097720 && entry != 0x820915f0 && entry != 0x8209df48 && entry != 0x820a1ac0 && entry != 0x8209ce40 && entry != 0x8209ce48) {
     error.error = Error::entry;
     return error;
   }

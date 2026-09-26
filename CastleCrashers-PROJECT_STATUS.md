@@ -1,4 +1,4 @@
-# Castle Crashers Xbox Build — PROJECT_STATUS.md
+﻿# Castle Crashers Xbox Build â€” PROJECT_STATUS.md
 
 > **AUTHORITATIVE CONSTANT HANDOFF FILE**
 >
@@ -95,7 +95,7 @@ Archive/inventory verification:
 - Region/system state publishes at `0x8225E63C`.
 - Control returns into original `sub_82070AC8`.
 - Renderer object is 30,216 bytes; exact constructor publishes it at `0x8225E628`.
-- `PlatformRenderer::Init` consumes the deterministic original 640×480 / 60 Hz presentation state.
+- `PlatformRenderer::Init` consumes the deterministic original 640Ã—480 / 60 Hz presentation state.
 - Sealed refresh threshold remains 58.0 Hz (`0x42680000`).
 
 ### Checkpoint 018 graphics facts retained
@@ -115,12 +115,12 @@ Archive/inventory verification:
 
 ### Checkpoint 019 resource/presentation facts retained
 
-The exact 640×480 `sub_820CBBF0` path creates three resource-like objects through original/generated game code:
+The exact 640Ã—480 `sub_820CBBF0` path creates three resource-like objects through original/generated game code:
 
 1. `sub_820C44A0`:
    - 52-byte resource header;
    - backing allocation **1,228,800 bytes (`0x12C000`)**, flags `0xBC800000`;
-   - size equals `640 × 480 × 4`;
+   - size equals `640 Ã— 480 Ã— 4`;
    - published at graphics-object offset **14,828**;
    - deterministic diagnostic-fixture pointer `0x02211730`.
 2. First `sub_820C45C0` surface:
@@ -139,8 +139,8 @@ Observed format/state constants remain `0x28280106`, `0x18280186`, and `0x2D2001
 Tiled allocator invariant:
 
 - capacity: 6,144 tiles;
-- first 240-tile request → start tile 0;
-- second 240-tile request → start tile 240;
+- first 240-tile request â†’ start tile 0;
+- second 240-tile request â†’ start tile 240;
 - 480 bits allocated;
 - 5,664 tiles free.
 
@@ -254,7 +254,7 @@ XEMU was **not** re-run for this increment. The currently reusable runnable ISO 
 
 Sanitizer re-validation for the newer WIP 021 suffix and the full inherited renderer/widget/fixture sealing matrix remain pending. Therefore this WIP must not yet be promoted to Checkpoint 021.
 
-### WIP 021 continuation — exact sub_820A85E8 closed (2026-09-25, Windows environment)
+### WIP 021 continuation â€” exact sub_820A85E8 closed (2026-09-25, Windows environment)
 
 The project moved to a Windows 11 host and is now a git repository pushed to the private GitHub remote `GTTeancum/Castle-Crashers-X` (the retail LIVE package and emulator firmware are excluded by `.gitignore`; `.gitattributes` disables all line-ending conversion because sources are checksum-sealed). Toolchain: Clang 22.1.2 (`x86_64-pc-windows-msvc`), CMake 4.3.1, VS 2022-bundled Ninja, `-D_CRT_SECURE_NO_WARNINGS` added via `CMAKE_CXX_FLAGS` (CRT deprecation warnings under `-Werror`; no source edits). The full prior WIP 021 state was reproduced exactly on this toolchain before editing: `dispatch@820A85E8`, 964/21,113, 3,974 assertions, Release CTest 6/6.
 
@@ -268,6 +268,16 @@ New closure:
 - ASan/UBSan matrix re-validated on this increment: CTest **6/6**, widget FMA + software-FMA **1,922 assertions each**, fixture **12,047 checks + 6,000 mutations**. Windows notes: ASan requires the release CRT (`CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL`) and `-D_DISABLE_STRING_ANNOTATION -D_DISABLE_VECTOR_ANNOTATION` (VS ASan STL-annotation lib not installed); sanitizer coverage of the generated/game code itself is unaffected.
 
 The dispatch boundary at the renderer vtable is therefore closed. The new boundary is the original caller continuation at `lr=0x820A7BC8` inside `sub_820A7990`: the diagnostic post-graphics slice still ends at the indirect call, and the first unrecovered original call beyond it is `sub_820AA5B8` (17-iteration loop), followed by `sub_82129FA0`*, `sub_82129A70`*, `sub_820A8190`, `sub_820BB6A8`*, `sub_820BFEE8`, `sub_820BFC30`, `sub_820C00B8`, `sub_820BD0F8`* (* = already recovered).
+
+### WIP 021 continuation â€” full shader-descriptor loop closed (2026-09-26)
+
+The `sub_820A7990` continuation slice now runs byte-exact from `0x820A7B34` through the closed vtable call, the presentation-state stores, the complete 17-iteration `loc_820A7BF0` shader-descriptor loop, and the post-loop setup (`stb r29,28715`, exact `sub_82129FA0`, exact `sub_82129A70`), stopping fail-closed before `bl 0x820A8190`. Focused Release result: **`platform_post_graphics result=ok`, 2,231 generated/helper executions, 66,888 guest-memory operations, 3,999 `update_boundary` assertions**; Release CTest **6/6**; ASan/UBSan CTest 6/6 plus widget (1,922Ã—2) and fixture (12,047+6,000) regressions.
+
+Newly recovered byte-exact bodies (all verified against the sealed corpus by `verify_provenance.py`; local provenance now **391 exact generated bodies**): `sub_820AA5B8`, `sub_820AA488`, `sub_820B64E0`, `sub_820B6310`, `sub_820B6498`, `sub_820B6AD8`, `sub_820B75C0`, `sub_820B7278`, `sub_820B73C8`, `sub_820B7290`, `sub_820B6CD0`, `sub_820B7630`, `sub_820B7BC0`, `sub_820B7880`, `sub_820B93B0` (RtlCreateHeap family), `sub_8212A760`, `sub_82128F70` (malloc) plus the full statically linked heap internals (`sub_820B7BC8/7D88/7EA8/8138/8540/8CA0/8E08/9048/9958/BA1D4/BA228/BA4C8/BB280`, `sub_82129470/82129880/8212A040/8212A2E8/8212A3B8/8212C298/8212C368/8212C3B0/8212E140/8212E218/8212EC50/821294E0/821325C0`), `sub_82136390`/`sub_82138200` (XMemCpy), and the shader-object creators `sub_820BFDF0`, `sub_820C0440`, `sub_820C0330`, `sub_820C00D0`, `sub_820C01C0`.
+
+The exact CRT heap is now created by original code (`sub_820B7880` executed as harness pre-step, handle published at `0x82290B3C`, first reservation at fixture arena `0x04000000`) and serves all original allocations on this path. New narrow platform contracts, each fail-closed outside its observed shape: `NtCreateFile`/`NtQueryInformationFile`/`NtReadFile`/`NtClose` (bounded to `game:\shaders\<name>` backed by files extracted from the retail container into gitignored `game-data/extracted/` via `castle-crashers-port/tools/extract_stfs.py`), `NtAllocateVirtualMemory`/`NtFreeVirtualMemory` (fixture arena; free still fail-closed), `RtlInitAnsiString` (exact semantics), `RtlNtStatusToDosError` (only `0xC0000034`â†’2), `RtlCompareMemoryUlong`, `KeTlsGetValue`/`KeTlsSetValue` (64 bounded slots), `RtlInitializeCriticalSection` extended with a registry consumed by enter/leave, kernel debug trap 20 (`DbgPrint`) as logged no-op, `KeBugCheck(Ex)`/`RtlRaiseException`/`RtlImageXexHeaderField`/`NtWaitForSingleObjectEx` fail-closed, and the `XexExecutableModuleHandle` loader variable fixture-resolved to a null module. The sealed 15-shape graphics allocator gained a documented WIP 021 shader phase (flags `0x24800000`/`0xB5800000`, â‰¤64 KiB). Kernel-side allocator/TLS/CS state now persists across diagnostic invocations (file-scope fixtures), matching hardware persistence. Two ReXGlue VMX helpers (`VectorShiftTableL`, `vperm`) were added to the host bridge with PPC big-endian semantics, validated end-to-end by binding the exact `GenericVS.xvu` microcode bytes XMemCpy produced in guest memory.
+
+Observed and bound original behavior: 15 of 17 shader pairs load and create vertex/pixel shaders and vertex declarations; the sealed name table's `SobelEdge.xpu` and `VertexColorFillPS.xpu` are absent from the retail container (per the sealed container manifest), so those iterations take the original `STATUS_OBJECT_NAME_NOT_FOUND` error path, exactly as on hardware. Durable bindings include the descriptor table at `renderer+29836` (slot 0 success with nonzero shader/declaration pointers), `renderer+30176/30208`, guard byte `renderer+28715=1`, and the copied microcode header words at `0x0233DE68`.
 
 ## 4. XBOX / XEMU STATUS
 
@@ -286,8 +296,8 @@ Persistent project/Xbox artifacts include:
 
 Persistent emulator/firmware artifacts include:
 
-- `Emulator/Xemu.7z` — user-supplied firmware bundle, SHA-256 `4f042bb128362c6b32aec8d160873b4642f6c4fe3716079a5d9a525cebe1d468`;
-- `Emulator/xemu-ubuntu-x86_64-release-c231997.zip` — GitHub Actions artifact for commit `c231997ef0fefc47e535cdb82ff9237c04e85769`;
+- `Emulator/Xemu.7z` â€” user-supplied firmware bundle, SHA-256 `4f042bb128362c6b32aec8d160873b4642f6c4fe3716079a5d9a525cebe1d468`;
+- `Emulator/xemu-ubuntu-x86_64-release-c231997.zip` â€” GitHub Actions artifact for commit `c231997ef0fefc47e535cdb82ff9237c04e85769`;
 - `Emulator/xemu-0.8.136-15-gc231997ef0-x86_64.AppImage`;
 - `Emulator/Complex_4627.bin`;
 - `Emulator/mcpx_1.0.bin`;
@@ -304,7 +314,7 @@ Validated tuple hashes:
 
 Do not silently substitute a different emulator or firmware tuple for direct baseline comparisons.
 
-### Fresh actual XEMU execution — 2026-09-25
+### Fresh actual XEMU execution â€” 2026-09-25
 
 A **new XEMU process was actually executed** on 2026-09-25 after the firmware bundle was re-uploaded. This is fresh evidence, not a recovered screenshot or stale result.
 
@@ -381,7 +391,7 @@ A provenance-checked continuation of original `sub_820A7990` resumes at the alre
 
 **renderer vtable target `sub_820A85E8` at `0x820A85E8`**
 
-- outer path: exact `sub_820A7990` success continuation → exact `sub_820C2C98` → exact `sub_820C13B8` → exact `sub_820C0DA8` → exact `sub_820CF9D0` → exact `sub_820CF858` → exact `sub_821368C0` → return through exact suffixes → second exact `sub_820C2C98` → renderer vtable slot `+28`;
+- outer path: exact `sub_820A7990` success continuation â†’ exact `sub_820C2C98` â†’ exact `sub_820C13B8` â†’ exact `sub_820C0DA8` â†’ exact `sub_820CF9D0` â†’ exact `sub_820CF858` â†’ exact `sub_821368C0` â†’ return through exact suffixes â†’ second exact `sub_820C2C98` â†’ renderer vtable slot `+28`;
 - current indirect-call return address: `lr=0x820A7BC8`;
 - live `PlatformRenderer::Init` stack: `r1=0x0003ED30`;
 - boundary registers: `r3=0x00501060` (renderer), `r4=0`, `r5=0`, `r6=0x820A85E8`, `r7=480`, `r8=640`, `r9=0x82042048`, `r10=0x82040000`, `ctr=0x820A85E8`;
@@ -403,7 +413,7 @@ Do **not** describe WIP 021 as sealed Checkpoint 021 or completed `PlatformRende
 
 ## 6. NEXT_ACTION
 
-**Exact `sub_820A85E8` is closed. Resume at the original `sub_820A7990` caller continuation beyond `lr=0x820A7BC8`: extend the provenance-checked post-graphics slice past the indirect call through the presentation-state stores, and stop before the first `bl 0x820AA5B8`. Then recover exact `sub_820AA5B8` in a following increment.**
+**The full shader-descriptor loop is closed (see the 2026-09-26 subsection). Resume at the `sub_820A7990` suffix beyond the slice stop: recover exact `sub_820A8190`, extend the slice through it and the subsequent calls (`sub_820BB6A8`*, `sub_820BFEE8`, `sub_820BFC30`, `sub_820C00B8`, `sub_820BD0F8`*, ...), and continue until the original `PlatformRenderer::Init` frame actually returns to `sub_82070AC8`. Reproduce first: `platform_post_graphics ok`, 2,231 / 66,888, 3,999 assertions, CTest 6/6, provenance 391 exact bodies.**
 
 Concrete sequence:
 
@@ -446,7 +456,7 @@ Preferred next milestone: **complete the `sub_820A7990` suffix far enough that t
 
 ### Checkpoint 019
 
-- Closed observed 640×480 `sub_820CBBF0` presentation/resource path.
+- Closed observed 640Ã—480 `sub_820CBBF0` presentation/resource path.
 - Created/published all three resource-like objects through original code.
 - Verified 1,228,800-byte backing allocation and two 240-tile surface allocations.
 - Closed exact resource binders and gamma/presentation state.
@@ -506,7 +516,7 @@ Always distinguish:
 - [ ] Preserve all resource/tile/ring/worker/HSIO invariants.
 - [ ] Recognize the 2026-09-25 xemu `0.8.136-15-gc231997ef0` Widget011 run as the latest actual XEMU execution; it passed fresh telemetry/visual validation but is still a retained diagnostic ISO, not a fresh WIP 021 nxdk build.
 - [ ] Do not conflate the new Complex-BIOS/dev-XEMU run with historical Checkpoint 011's debug-BIOS/official-0.8.136 tuple.
-- [ ] Make a small focused work turn per the user’s current preference.
+- [ ] Make a small focused work turn per the userâ€™s current preference.
 - [ ] Preserve inherited regressions/provenance.
 - [ ] Seal the next checkpoint only after meaningful closure.
 - [ ] Update and fully re-read this handoff before final response.
@@ -517,6 +527,6 @@ Always distinguish:
 
 When the user sends `continue` or `go`:
 
-> Read `CastleCrashers-PROJECT_STATUS.md` first. Prefer persistent inputs from `/CastleCrashers-Xbox-TestKit` when materializing project/Xbox test artifacts. Resume immediately from `NEXT_ACTION`. Make a **small focused engineering turn** per the user’s current preference. Preserve fail-closed behavior and provenance. Continue the real `PlatformRenderer::Init` suffix rather than revisiting closed lower-device work. Treat the diagnostic harness only as recovery/verification tooling; the project deliverable is the Xbox build. When a fresh nxdk/Xbox build is possible, distinguish it from xemu re-execution of retained artifacts. Before ending, update this file with exact new state/checksums/NEXT_ACTION, read it fully, report completed work/artifacts, and stop until the next trigger.
+> Read `CastleCrashers-PROJECT_STATUS.md` first. Prefer persistent inputs from `/CastleCrashers-Xbox-TestKit` when materializing project/Xbox test artifacts. Resume immediately from `NEXT_ACTION`. Make a **small focused engineering turn** per the userâ€™s current preference. Preserve fail-closed behavior and provenance. Continue the real `PlatformRenderer::Init` suffix rather than revisiting closed lower-device work. Treat the diagnostic harness only as recovery/verification tooling; the project deliverable is the Xbox build. When a fresh nxdk/Xbox build is possible, distinguish it from xemu re-execution of retained artifacts. Before ending, update this file with exact new state/checksums/NEXT_ACTION, read it fully, report completed work/artifacts, and stop until the next trigger.
 
 **Do not depend on hidden conversational context for the next turn. Put durable project state here.**
