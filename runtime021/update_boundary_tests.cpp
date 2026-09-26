@@ -2,16 +2,26 @@
 // Checkpoint 020: bounded acceptance through map-hit lookup and timeline owner entry.
 #include "../runtime008/fixtures.h"
 #include "selftest.h"
+#include "cc_log.h"
+#ifdef CC_XBOX_DRIVER
+#include <hal/video.h>
+#include <windows.h>
+#endif
 #include <array>
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
+#include <cstdio>
 #include <iterator>
 #include <vector>
 using namespace cc::tree;
 static uint64_t assertions = 0;
+#ifdef CC_XBOX_DRIVER
+[[noreturn]] static void cc_fail_exit() { for(;;) { Sleep(1000); } } // keep failure text on screen
+#else
+[[noreturn]] static void cc_fail_exit() { std::exit(1); }
+#endif
 #define CHECK(x) do { ++assertions; if (!(x)) { \
-  std::fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#x); std::exit(1); } } while(0)
+  cc_elog("FAIL line %d: %s\n",__LINE__,#x); cc_fail_exit(); } } while(0)
 static bool bind_ok(void*,uint32_t,const uint32_t[20]) { return true; }
 static bool draw_ok(void*,const Draw&) { return true; }
 static Sink sink() { return {nullptr,bind_ok,draw_ok}; }
@@ -177,7 +187,7 @@ static void map_hit_and_wrapper_controls() {
   CHECK(m.load_be(0x63000+108,4,v)==cc::xbox::MemoryError::ok && v==1);
   CHECK(m.load_be(0x63300,2,v)==cc::xbox::MemoryError::ok && v==1);
   CHECK(m.load_be(0x50000+8248,4,v)==cc::xbox::MemoryError::ok && v==0);
-  std::printf("init_chain result=%s funcs=%u inserted_key=%u\n",name(r.error),r.functions,1u);
+  cc_log("init_chain result=%s funcs=%u inserted_key=%u\n",name(r.error),r.functions,1u);
 
   // Empty-depth path with a real synthetic RB-tree hit: wrapper -> exact
   // 0x82097720 hit -> exact 0x820915F0 active-timeline body -> the first
@@ -217,13 +227,13 @@ static void map_hit_and_wrapper_controls() {
   store(m,0x62100+12,4,0x820772B0u);
   store(m,0x822666dc,4,0);
   c=initial; r=invoke(0x8209DE50,c,m,sink());
-  std::printf("active_chain result=%s@%08x funcs=%u dispatches=%u\n",name(r.error),r.address,r.functions,r.dispatches);
+  cc_log("active_chain result=%s@%08x funcs=%u dispatches=%u\n",name(r.error),r.address,r.functions,r.dispatches);
   CHECK(r.error==Error::ok && r.dispatches==3);
   CHECK(m.load_be(manager_ptr+72,4,v)==cc::xbox::MemoryError::ok && v==0);
   CHECK(m.load_be(manager_ptr+88,4,v)==cc::xbox::MemoryError::ok && v==root_context_value);
   CHECK(m.load_be(0x822666dc,4,v)==cc::xbox::MemoryError::ok && v==0);
   CHECK(m.load_be(0x50000+10340,4,v)==cc::xbox::MemoryError::ok && v!=0x40000000u);
-  std::printf("synthetic_chain manager=%08x root_value=%08x timeline_result=%s timeline_bits=%08x\n",
+  cc_log("synthetic_chain manager=%08x root_value=%08x timeline_result=%s timeline_bits=%08x\n",
               manager_ptr, root_context_value, name(r.error), uint32_t(v));
 }
 static void manager_initializer_controls() {
@@ -275,7 +285,7 @@ static void manager_initializer_controls() {
   c.r28.u32=0;
   c.lr=0x0badf00d;
   auto r=invoke(0x82070434,c,m,sink());
-  std::printf("manager_init result=%s@%08x funcs=%u memops=%u global=%08x\n",
+  cc_log("manager_init result=%s@%08x funcs=%u memops=%u global=%08x\n",
               name(r.error),r.address,r.functions,r.memory_ops,c.r31.u32);
   CHECK(r.error==Error::ok);
   uint64_t v=0;
@@ -295,20 +305,26 @@ static void manager_initializer_controls() {
   CHECK(m.load_be(node+29,1,v)==cc::xbox::MemoryError::ok && v==0);
   CHECK(m.load_be(manager+88,4,v)==cc::xbox::MemoryError::ok && v==node+16);
   CHECK(m.load_be(node+20,4,v)==cc::xbox::MemoryError::ok && v==0x71170);
-  std::printf("manager_init global=%08x sentinel=%08x root=%08x value=%08x nested_sentinel=%08x\n",
+  cc_log("manager_init global=%08x sentinel=%08x root=%08x value=%08x nested_sentinel=%08x\n",
               manager,sentinel,node,node+16,0x71170u);
   store(m,0x69000,4,0x40000);
   Context k{}; k.r1.u32=0x30800; k.r13.u32=0x68000; k.r3.u32=manager+76; k.r4.u32=0x69000;
   auto kr=invoke(0x82097720,k,m,sink());
-  std::printf("manager_second_insert result=%s@%08x funcs=%u memops=%u ret=%08x\n",
+  cc_log("manager_second_insert result=%s@%08x funcs=%u memops=%u ret=%08x\n",
               name(kr.error),kr.address,kr.functions,kr.memory_ops,k.r3.u32);
 }
 
 
 static void startup_full_controls(const char* image_path) {
-  std::ifstream stream(image_path,std::ios::binary);
-  CHECK(bool(stream));
-  std::vector<uint8_t> image((std::istreambuf_iterator<char>(stream)),{});
+  std::FILE* stream=std::fopen(image_path,"rb");
+  CHECK(stream!=nullptr);
+  std::fseek(stream,0,SEEK_END);
+  const long image_size=std::ftell(stream);
+  std::fseek(stream,0,SEEK_SET);
+  CHECK(image_size>0);
+  std::vector<uint8_t> image(static_cast<size_t>(image_size));
+  CHECK(std::fread(image.data(),1,image.size(),stream)==image.size());
+  std::fclose(stream);
   CHECK(image.size()==0x2d0000u);
   std::array<uint8_t,0x10000> stack{};
   std::array<uint8_t,0x1000> tls{};
@@ -342,7 +358,7 @@ static void startup_full_controls(const char* image_path) {
   c.r13.u32=0x68000;
   c.lr=0x0c0160c0;
   auto r=invoke(0x820701d0,c,m,sink(),12000000);
-  std::printf("startup_full result=%s@%08x funcs=%u dispatch=%u memops=%u r1=%08x r31=%08x\n",
+  cc_log("startup_full result=%s@%08x funcs=%u dispatch=%u memops=%u r1=%08x r31=%08x\n",
               name(r.error),r.address,r.functions,r.dispatches,r.memory_ops,c.r1.u32,c.r31.u32);
   CHECK(r.error==Error::ok);
   CHECK(c.r1.u32==0x3f000u);
@@ -434,15 +450,21 @@ static void startup_full_controls(const char* image_path) {
       CHECK(m.load_be(cs+j,1,v)==cc::xbox::MemoryError::ok && v==0);
     }
   }
-  std::printf("startup_full globals label=%08x small=%08x input=%08x hash=%08x pool=%08x manager=%08x async=%08x event=%08x game_manager=%08x state_pool=%08x system_state=%08x workers=%08x lookup=%08x state_block=%08x sentinel=%08x root=%08x\n",
+  cc_log("startup_full globals label=%08x small=%08x input=%08x hash=%08x pool=%08x manager=%08x async=%08x event=%08x game_manager=%08x state_pool=%08x system_state=%08x workers=%08x lookup=%08x state_block=%08x sentinel=%08x root=%08x\n",
               label_owner,small_state,input_state,hash_state,pool_state,manager,async_state,event_state,game_manager,state_pool,system_state,worker_handles,lookup_state,state_block,sentinel,root);
 }
 
 
 static void renderer_caller_prefix_controls(const char* image_path) {
-  std::ifstream stream(image_path,std::ios::binary);
-  CHECK(bool(stream));
-  std::vector<uint8_t> image((std::istreambuf_iterator<char>(stream)),{});
+  std::FILE* stream=std::fopen(image_path,"rb");
+  CHECK(stream!=nullptr);
+  std::fseek(stream,0,SEEK_END);
+  const long image_size=std::ftell(stream);
+  std::fseek(stream,0,SEEK_SET);
+  CHECK(image_size>0);
+  std::vector<uint8_t> image(static_cast<size_t>(image_size));
+  CHECK(std::fread(image.data(),1,image.size(),stream)==image.size());
+  std::fclose(stream);
   CHECK(image.size()==0x2d0000u);
   std::array<uint8_t,0x10000> stack{};
   std::array<uint8_t,0x1000> tls{};
@@ -509,7 +531,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   store(m,0x0250002Cu,4,0u);
   // Guest arena backing the bounded NtAllocateVirtualMemory contract used by
   // the exact CRT heap (reservations start at 0x04000000).
-  static std::vector<uint8_t> heap_arena(0x400000);
+  static std::vector<uint8_t> heap_arena(0x100000); // CRT heap reserves 64 KiB; 1 MiB arena leaves growth headroom
   CHECK(m.map(0x04000000u,uint32_t(heap_arena.size()),heap_arena.data(),3)==cc::xbox::MemoryError::ok);
   // Guest arena backing the single observed MmAllocatePhysicalMemoryEx main
   // pool (16 MiB + guard page) requested by exact sub_8209BC98 after Init.
@@ -517,7 +539,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   CHECK(m.map(0x10000000u,uint32_t(main_pool_arena.size()),main_pool_arena.data(),3)==cc::xbox::MemoryError::ok);
   // Cursor arena backing the smaller observed physical blocks (font/texture
   // memory allocated write-combined by the exact font loader).
-  static std::vector<uint8_t> phys_arena(0x00800000);
+  static std::vector<uint8_t> phys_arena(0x00400000); // font texture block + read window use < 2.5 MiB
   CHECK(m.map(0x12000000u,uint32_t(phys_arena.size()),phys_arena.data(),3)==cc::xbox::MemoryError::ok);
 
   // Execute the exact CRT heap initialization (sub_820B7880 -> exact
@@ -531,7 +553,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
     auto hr=invoke(0x820b7880,hc,m,sink(),200000);
     uint64_t hv=0;
     const bool hok=m.load_be(0x82290B3Cu,4,hv)==cc::xbox::MemoryError::ok;
-    std::printf("crt_heap_init result=%s@%08x funcs=%u memops=%u r3=%08x handle=%08x\n",
+    cc_log("crt_heap_init result=%s@%08x funcs=%u memops=%u r3=%08x handle=%08x\n",
                 name(hr.error),hr.address,hr.functions,hr.memory_ops,hc.r3.u32,
                 hok?uint32_t(hv):0xffffffffu);
     CHECK(hr.error==Error::ok);
@@ -544,7 +566,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   c.r13.u32=0x68000;
   c.lr=0x0c0160c0;
   auto r=invoke(0x82070ac8,c,m,sink(),12000000);
-  std::printf("renderer_prefix result=%s@%08x funcs=%u dispatch=%u memops=%u r1=%08x r3=%08x lr=%08x\n",
+  cc_log("renderer_prefix result=%s@%08x funcs=%u dispatch=%u memops=%u r1=%08x r3=%08x lr=%08x\n",
               name(r.error),r.address,r.functions,r.dispatches,r.memory_ops,
               c.r1.u32,c.r3.u32,uint32_t(c.lr));
   CHECK(r.error==Error::ok);
@@ -565,13 +587,13 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   CHECK(m.load_be(0x8225e604,4,v)==cc::xbox::MemoryError::ok && v!=0);
   const uint32_t small_state=uint32_t(v);
   CHECK(m.load_be(small_state+4,1,v)==cc::xbox::MemoryError::ok && v==1u);
-  std::printf("renderer_prefix published=%08x next_original_call=820A7990 platform_renderer_init\n",renderer);
+  cc_log("renderer_prefix published=%08x next_original_call=820A7990 platform_renderer_init\n",renderer);
 
   // Continue at the exact PlatformRenderer::Init entry using the state and stack
   // prepared by the original caller. This prefix consumes XGetVideoMode and
   // stops immediately before the first graphics-device helper.
   auto pr=invoke(0x820a7990,c,m,sink(),20000);
-  std::printf("platform_init_prefix result=%s@%08x funcs=%u memops=%u r1=%08x r3=%08x r4=%08x r7=%08x r8=%08x\n",
+  cc_log("platform_init_prefix result=%s@%08x funcs=%u memops=%u r1=%08x r3=%08x r4=%08x r7=%08x r8=%08x\n",
               name(pr.error),pr.address,pr.functions,pr.memory_ops,c.r1.u32,c.r3.u32,c.r4.u32,c.r7.u32,c.r8.u32);
   CHECK(pr.error==Error::ok);
   CHECK(c.r1.u32==0x3ed30u);
@@ -583,7 +605,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   CHECK(m.load_be(renderer+28712,1,v)==cc::xbox::MemoryError::ok && v==0u);
   CHECK(m.load_be(renderer+28713,1,v)==cc::xbox::MemoryError::ok && v==0u);
   CHECK(m.load_be(renderer+28714,1,v)==cc::xbox::MemoryError::ok && v==0u);
-  std::printf("platform_init_prefix presentation=640x480 next_original_call=820BEFD0 graphics_device_helper\n");
+  cc_log("platform_init_prefix presentation=640x480 next_original_call=820BEFD0 graphics_device_helper\n");
 
   // Enter the first graphics-device helper with the exact registers and stack
   // produced above. Original game-side code allocates/zeros the lower renderer,
@@ -592,7 +614,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // and returns through sub_820CC100/sub_820BEFD0. The lower graphics object is
   // published to renderer+4 only by that original successful return path.
   auto gr=invoke(0x820befd0,c,m,sink(),1000000);
-  std::printf("graphics_init_prefix result=%s@%08x funcs=%u memops=%u r1=%08x r3=%08x r4=%u\n",
+  cc_log("graphics_init_prefix result=%s@%08x funcs=%u memops=%u r1=%08x r3=%08x r4=%u\n",
               name(gr.error),gr.address,gr.functions,gr.memory_ops,c.r1.u32,c.r3.u32,c.r4.u32);
   CHECK(gr.error==Error::ok);
   CHECK(c.r1.u32==0x3ed30u);         // returned to the still-live PlatformRenderer::Init frame
@@ -611,7 +633,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // caller continuation at lr=0x820A7BC8 (first unrecovered call: 0x820AA5B8).
   c.r3.u32=0u; c.lr=0x820A7B18u;
   auto ps=invoke(0x820a7b34,c,m,sink(),400000);
-  std::printf("platform_post_graphics result=%s@%08x funcs=%u memops=%u r1=%08x lr=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r8=%08x r9=%08x r10=%08x ctr=%08x\n",
+  cc_log("platform_post_graphics result=%s@%08x funcs=%u memops=%u r1=%08x lr=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r8=%08x r9=%08x r10=%08x ctr=%08x\n",
               name(ps.error),ps.address,ps.functions,ps.memory_ops,c.r1.u32,uint32_t(c.lr),c.r3.u32,c.r4.u32,c.r5.u32,c.r6.u32,c.r7.u32,c.r8.u32,c.r9.u32,c.r10.u32,c.ctr.u32);
   CHECK(ps.error==Error::ok);
   CHECK(ps.address==0u);
@@ -642,7 +664,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   CHECK(m.load_be(renderer+8,4,v)==cc::xbox::MemoryError::ok && v!=0u); // tail sub_820C44A0 resource
   // Durable presentation-state stores executed after the vtable call and
   // before the fail-closed loc_820A7BF0 loop stop.
-  std::printf("post_vtable_presentation f30=%08x f31=%08x r28=%08x fields=[28740..28752]\n",
+  cc_log("post_vtable_presentation f30=%08x f31=%08x r28=%08x fields=[28740..28752]\n",
               uint32_t(m.load_be(renderer+28756,4,v)==cc::xbox::MemoryError::ok?v:~0ull),
               uint32_t(m.load_be(renderer+28760,4,v)==cc::xbox::MemoryError::ok?v:~0ull),
               uint32_t(m.load_be(renderer+29124,4,v)==cc::xbox::MemoryError::ok?v:~0ull));
@@ -809,7 +831,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   CHECK(m.load_be(device+21616u,4,cf9_f21616)==cc::xbox::MemoryError::ok);
   CHECK(m.load_be(device+21620u,4,cf9_f21620)==cc::xbox::MemoryError::ok);
   CHECK(m.load_be(device+21648u,4,cf9_f21648)==cc::xbox::MemoryError::ok);
-  std::printf("cf9d0_state f16720=%08x f16724=%08x tdiff=%08x tlo=%08x thi=%08x q0=%016llx q1=%016llx copy0=%08x copy1=%08x state=%u r7=%08x\n",
+  cc_log("cf9d0_state f16720=%08x f16724=%08x tdiff=%08x tlo=%08x thi=%08x q0=%016llx q1=%016llx copy0=%08x copy1=%08x state=%u r7=%08x\n",
               uint32_t(cf9_f16720),uint32_t(cf9_f16724),uint32_t(cf9_f21576),uint32_t(cf9_f21584),uint32_t(cf9_f21580),
               (unsigned long long)cf9_f21600,(unsigned long long)cf9_f21608,uint32_t(cf9_f21616),uint32_t(cf9_f21620),uint32_t(cf9_f21648),c.r7.u32);
 
@@ -946,9 +968,9 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   CHECK(m.load_be(device+14940u,4,s14940)==cc::xbox::MemoryError::ok && s14940==13u);
   CHECK(m.load_be(device+52u,4,d52)==cc::xbox::MemoryError::ok && d52==0x0202f37cu);
   CHECK(m.load_be(device+56u,4,d56)==cc::xbox::MemoryError::ok && d56==0x0202f2dcu);
-  std::printf("post_restore_ring s14912=%08x s14916=%08x s14928=%08x s14932=%08x s14940=%08x d52=%08x d56=%08x next=820A7BC8_before_820AA5B8\n",
+  cc_log("post_restore_ring s14912=%08x s14916=%08x s14928=%08x s14932=%08x s14940=%08x d52=%08x d56=%08x next=820A7BC8_before_820AA5B8\n",
               uint32_t(s14912),uint32_t(s14916),uint32_t(s14928),uint32_t(s14932),uint32_t(s14940),uint32_t(d52),uint32_t(d56));
-  std::printf("post_c0bc0 device21544=%u device21548=%u device21552=%u wptr=%08x packet=%08x..%08x\n",
+  cc_log("post_c0bc0 device21544=%u device21548=%u device21552=%u wptr=%08x packet=%08x..%08x\n",
               uint32_t(di44),uint32_t(di48),uint32_t(di52),uint32_t(wptr),c0bc0_addr,c0bc0_addr+60u);
   CHECK(wptr==0x0201f73cu);
   // Exact post-free sub_820C7228 appends twelve dwords before the second
@@ -979,7 +1001,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   }
   CHECK(c8e98_hash==0x1de1b325315c84acull);
   CHECK(c8e98_tail_hash==0x1ca6adb697e47ca5ull);
-  std::printf("c8e98_packet start=%08x words=2309 hash=%016llx tail=%08x words=17 tail_hash=%016llx\n",
+  cc_log("c8e98_packet start=%08x words=2309 hash=%016llx tail=%08x words=17 tail_hash=%016llx\n",
               c8e98_start,(unsigned long long)c8e98_hash,c8e98_tail_start,(unsigned long long)c8e98_tail_hash);
   // Exact sub_820C0A98 writes six dwords beginning immediately after the prior
   // write pointer. The observed format 0x28280106 does not equal 0x28280136,
@@ -1013,19 +1035,19 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   for (uint32_t i=0;i<16u;++i)
     CHECK(m.load_be(scaler_copy_start+(184u+i)*4u,4,q)==cc::xbox::MemoryError::ok &&
           q==scaler_tail[i]);
-  std::printf("post_scaler_init final_wptr=%08x copy_start=%08x nops=184 tail_words=16 persist_free=closed second_retrain=closed next=820A7BC8_before_820AA5B8\n",
+  cc_log("post_scaler_init final_wptr=%08x copy_start=%08x nops=184 tail_words=16 persist_free=closed second_retrain=closed next=820A7BC8_before_820AA5B8\n",
               uint32_t(wptr),scaler_copy_start);
-  std::printf("vdswap_packet addr=%08x frontbuffer=%08x size=%ux%u persist_free=closed second_retrain=closed next=820A7BC8_before_820AA5B8\n",
+  cc_log("vdswap_packet addr=%08x frontbuffer=%08x size=%ux%u persist_free=closed second_retrain=closed next=820A7BC8_before_820AA5B8\n",
               swap_addr,swap_head[9],swap_head[10],swap_head[11]);
 
-  std::printf("graphics_state device=%08x ring=%08x secondary=%08x descriptor=%08x workers=2 resources=%08x,%08x,%08x output_published=%08x hsio=ok\n",
+  cc_log("graphics_state device=%08x ring=%08x secondary=%08x descriptor=%08x workers=2 resources=%08x,%08x,%08x output_published=%08x hsio=ok\n",
               device,0x02007140u,0x0200f140u,0x0220f140u,0x02211730u,0x0233d770u,0x0233dad0u,device);
 
   // WIP 022: with PlatformRenderer::Init returned, resume the original
   // sub_82070AC8 caller at 0x82070BA4 with the live restored registers and
   // stop fail-closed before the first still-unrecovered call.
   auto pi=invoke(0x82070ba4,c,m,sink(),8000000);
-  std::printf("caller_post_init result=%s@%08x funcs=%u memops=%u r1=%08x lr=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r11=%08x\n",
+  cc_log("caller_post_init result=%s@%08x funcs=%u memops=%u r1=%08x lr=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r11=%08x\n",
               name(pi.error),pi.address,pi.functions,pi.memory_ops,c.r1.u32,uint32_t(c.lr),
               c.r3.u32,c.r4.u32,c.r5.u32,c.r6.u32,c.r7.u32,c.r11.u32);
   CHECK(pi.error==Error::ok);
@@ -1064,9 +1086,15 @@ static void renderer_caller_prefix_controls(const char* image_path) {
 }
 
 static void captured_startup_boundary(const char* path) {
-  std::ifstream stream(path,std::ios::binary);
-  CHECK(bool(stream));
-  std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(stream)),{});
+  std::FILE* stream=std::fopen(path,"rb");
+  CHECK(stream!=nullptr);
+  std::fseek(stream,0,SEEK_END);
+  const long stream_size=std::ftell(stream);
+  std::fseek(stream,0,SEEK_SET);
+  CHECK(stream_size>0);
+  std::vector<uint8_t> bytes(static_cast<size_t>(stream_size));
+  CHECK(std::fread(bytes.data(),1,bytes.size(),stream)==bytes.size());
+  std::fclose(stream);
   Fixtures f; CHECK(parse(bytes.data(),bytes.size(),f)==FixtureError::ok); CHECK(f.count>0);
   auto *w=new Workspace; Case c; CHECK(restore(f,0,*w,c)==FixtureError::ok);
   CHECK(c.entry==0x8209CD08);
@@ -1079,31 +1107,57 @@ static void captured_startup_boundary(const char* path) {
   uint64_t owner_stack=0,owner_depth=0;
   const bool have_owner_stack = w->memory.load_be(0x8225e62c,4,owner_stack)==cc::xbox::MemoryError::ok;
   const bool have_owner_depth = have_owner_stack && w->memory.load_be(uint32_t(owner_stack)+72,4,owner_depth)==cc::xbox::MemoryError::ok;
-  std::printf("captured_owner_stack mapped=%u ptr=%08x depth=%u\n",unsigned(have_owner_stack&&have_owner_depth),uint32_t(owner_stack),uint32_t(owner_depth));
+  cc_log("captured_owner_stack mapped=%u ptr=%08x depth=%u\n",unsigned(have_owner_stack&&have_owner_depth),uint32_t(owner_stack),uint32_t(owner_depth));
   // Run the new original walker against the real captured root. The next original
   // virtual target is intentionally not implemented yet, so this must hard-fail
   // at exactly 0x8209DE50 rather than fake a successful update.
   auto ctx=c.initial; ctx.f1.f64=1.0/60.0;
   auto r=invoke(0x8209CC98,ctx,w->memory,sink());
   CHECK(r.error==Error::memory && r.address==0x8225e62c && r.dispatches==1);
-  std::printf("captured_startup root=%08x head=%08x vtable=%08x update=%08x boundary=%s@%08x\n",
+  cc_log("captured_startup root=%08x head=%08x vtable=%08x update=%08x boundary=%s@%08x\n",
               c.initial.r3.u32,uint32_t(head),uint32_t(vt),uint32_t(update),name(r.error),r.address);
   delete w;
 }
+#ifdef CC_XBOX_DRIVER
+// Original-Xbox driver: the same boundary chain runs natively from the
+// nxdk-checkpoint022 XBE with its inputs on the disc. Results render on
+// screen through the nxdk debug console.
+static int cc_boundary_main(int argc,char** argv);
+int main() {
+  XVideoSetMode(640,480,32,REFRESH_DEFAULT);
+  cc_log("Castle Crashers X - Checkpoint 022 native boundary run\n");
+  static const char* xargv[4] = {
+    "default.xbe",
+    "D:\\data\\startup.cct",
+    "D:\\data\\default.image.bin",
+    "D:\\data\\game-data",
+  };
+  const int rc = cc_boundary_main(4, const_cast<char**>(xargv));
+  cc_log("native boundary run complete rc=%d\n", rc);
+  for(;;) { Sleep(1000); }
+}
+static int cc_boundary_main(int argc,char** argv) {
+#else
 int main(int argc,char** argv) {
+#endif
   CHECK(argc==3 || argc==4);
   if (argc==4) {
     cc::tree::set_game_root(argv[3]);
   } else {
     // Default: game-data/extracted next to castle-crashers-port (argv[2] is
-    // <root>/castle-crashers-port/reference/default.image.bin).
-    std::string img(argv[2]);
+    // <root>/castle-crashers-port/reference/default.image.bin). Plain char
+    // handling keeps the identical source linkable on the nxdk target.
+    char img[512]{};
+    std::snprintf(img,sizeof(img),"%s",argv[2]);
     for (int up=0; up<3; ++up) {
-      const auto cut=img.find_last_of("/\\");
-      CHECK(cut!=std::string::npos);
-      img.resize(cut);
+      char* cut=nullptr;
+      for (char* p=img; *p; ++p) if (*p=='/'||*p=='\\') cut=p;
+      CHECK(cut!=nullptr);
+      *cut=0;
     }
-    cc::tree::set_game_root((img+"/game-data/extracted").c_str());
+    char root[560]{};
+    std::snprintf(root,sizeof(root),"%s/game-data/extracted",img);
+    cc::tree::set_game_root(root);
   }
   CHECK(cc::update014::synthetic_chain_test()==cc::update014::synthetic_chain_mask);
   synthetic_controls();
@@ -1112,6 +1166,7 @@ int main(int argc,char** argv) {
   startup_full_controls(argv[2]);
   renderer_caller_prefix_controls(argv[2]);
   captured_startup_boundary(argv[1]);
-  std::printf("PASS update_boundary assertions=%llu full_synthetic_update=ok startup_full=820701D0..return renderer_prefix=82070AC8..before_820A7990 manager_writer=820701D0@82070434 workers=5 lookup_entries=613 originals=8209CC98,8209DE50,82097720,820915F0,820772B0 platform_init_prefix=820A7990..before_820BEFD0 graphics_init_chain=820BEFD0..return gfx_workers=2 resources=3 output_published=1 next_host_graphics_boundary=platform_renderer_init_returned_820A7990_complete next_real_capture_boundary=8225E62C\n",
+  cc_log("PASS update_boundary assertions=%llu full_synthetic_update=ok startup_full=820701D0..return renderer_prefix=82070AC8..before_820A7990 manager_writer=820701D0@82070434 workers=5 lookup_entries=613 originals=8209CC98,8209DE50,82097720,820915F0,820772B0 platform_init_prefix=820A7990..before_820BEFD0 graphics_init_chain=820BEFD0..return gfx_workers=2 resources=3 output_published=1 next_host_graphics_boundary=platform_renderer_init_returned_820A7990_complete next_real_capture_boundary=8225E62C\n",
               (unsigned long long)assertions);
+  return 0;
 }

@@ -12,13 +12,14 @@
 static void ppc_trap([[maybe_unused]] Context& ctx, Machine& base, uint32_t code) {
   if (code == 20u) {
     const uint32_t len = ctx.r4.u32 <= 512u ? ctx.r4.u32 : 512u;
-    std::fprintf(stderr, "GUEST DBGPRINT: ");
+    char msg[513]{};
+    uint32_t used = 0;
     for (uint32_t i = 0; i < len; ++i) {
-      const int chv = int(base.load(ctx.r3.u32 + i, 1));
+      const char chv = char(base.load(ctx.r3.u32 + i, 1));
       if (!chv) break;
-      std::fputc(chv, stderr);
+      msg[used++] = chv;
     }
-    std::fputc('\n', stderr);
+    cc_elog("GUEST DBGPRINT: %s\n", msg);
     return;
   }
   base.fail(Error::context, code);
@@ -209,10 +210,12 @@ static void __imp__RtlInitializeCriticalSection(Context& ctx, Machine& base) {
   const uint32_t p=ctx.r3.u32;
   if (p > 0xffffffe4u) base.fail(Error::context,p);
   for (unsigned i=0;i<28;++i) base.store(p+i,1,0);
-  for (uint32_t slot : g_registered_cs)
-    if (slot==p) { ctx.r3.u64=0; return; }
-  g_registered_cs.push_back(p);
-  g_registered_cs_locked.push_back(false);
+  for (uint32_t i=0;i<g_registered_cs_count;++i)
+    if (g_registered_cs[i]==p) { ctx.r3.u64=0; return; }
+  if (g_registered_cs_count>=64u) base.fail(Error::unsupported,0x8214A854u);
+  g_registered_cs[g_registered_cs_count]=p;
+  g_registered_cs_locked[g_registered_cs_count]=false;
+  ++g_registered_cs_count;
   ctx.r3.u64=0;
 }
 
@@ -418,7 +421,7 @@ static void __imp__RtlEnterCriticalSection(Context& ctx, Machine& base) {
   // Critical sections created by exact code through the bounded
   // RtlInitializeCriticalSection contract: single-thread diagnostic, so a
   // registered CS may simply toggle. Recursion is not observed and fails.
-  for (unsigned i=0;i<unsigned(g_registered_cs.size());++i) {
+  for (unsigned i=0;i<g_registered_cs_count;++i) {
     if (g_registered_cs[i]==ctx.r3.u32 && ctx.r3.u32) {
       if (g_registered_cs_locked[i]) base.fail(Error::unsupported,0x8214A434u);
       g_registered_cs_locked[i]=true; ctx.r3.u64=0; return;
@@ -434,7 +437,7 @@ static void __imp__RtlEnterCriticalSection(Context& ctx, Machine& base) {
   base.hsio_cs_locked=true; ctx.r3.u64=0;
 }
 static void __imp__RtlLeaveCriticalSection(Context& ctx, Machine& base) {
-  for (unsigned i=0;i<unsigned(g_registered_cs.size());++i) {
+  for (unsigned i=0;i<g_registered_cs_count;++i) {
     if (g_registered_cs[i]==ctx.r3.u32 && ctx.r3.u32) {
       if (!g_registered_cs_locked[i]) base.fail(Error::unsupported,0x8214A444u);
       g_registered_cs_locked[i]=false; ctx.r3.u64=0; return;
@@ -1491,7 +1494,7 @@ static void __imp__MmAllocatePhysicalMemoryEx(Context& ctx, Machine& base) {
     ctx.r3.u64=p;
     return;
   }
-  std::fprintf(stderr,
+  cc_elog(
     "MMALLOCPHYSEX unsupported r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r8=%08x lr=%08x\n",
     ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32,
     uint32_t(ctx.lr));
@@ -2525,7 +2528,7 @@ static void __imp__NtAllocateVirtualMemory(Context& ctx, Machine& base) {
     ctx.r3.u64=0;
     return;
   }
-  std::fprintf(stderr,
+  cc_elog(
     "NTALLOCVM unsupported r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x [r3]=%08x [r4]=%08x lr=%08x\n",
     ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32,
     want_base, want_size, uint32_t(ctx.lr));
@@ -2577,7 +2580,7 @@ static void __imp__RtlImageXexHeaderField([[maybe_unused]] Context& ctx, Machine
   base.fail(Error::unsupported, 0x8214A684u);
 }
 static void __imp__NtQueryVirtualMemory(Context& ctx, Machine& base) {
-  std::fprintf(stderr,
+  cc_elog(
     "NTQUERYVM r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r1=%08x lr=%08x\n",
     ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32,
     ctx.r1.u32, uint32_t(ctx.lr));

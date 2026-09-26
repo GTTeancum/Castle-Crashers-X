@@ -2,19 +2,25 @@
 #include "../runtime008/bridge.h"
 #include <climits>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <csetjmp>
 #include <cstring>
 #include <cstdio>
+#include "cc_log.h"
 #include <string>
 #include <vector>
 namespace cc::tree {
 // WIP 021 bounded shader-file platform contract: host directory holding the
 // files extracted from the retail container (set by the test harness; the
 // contract fails closed when unset).
-static std::string g_game_root;
-void set_game_root(const char* p) noexcept { g_game_root = p ? p : ""; }
+// Fixed buffer (no libc++ heap string) so the identical runtime links on
+// the original-Xbox target against nxdk without extern string templates.
+static char g_game_root[260] = {0};
+void set_game_root(const char* p) noexcept {
+  unsigned i = 0;
+  if (p) for (; i + 1 < sizeof(g_game_root) && p[i]; ++i) g_game_root[i] = p[i];
+  g_game_root[i] = 0;
+}
 // WIP 021 persistent kernel-fixture state. Unlike per-invoke Machine state,
 // these model kernel-side facts that survive between diagnostic invocations
 // exactly as they would across calls on hardware: TLS slot values, critical
@@ -25,8 +31,9 @@ static uint32_t g_tls_slots[64]{};
 // (initialized by XAPI process startup on hardware, not by any code on the
 // recovered path): the notification-listener lock used by exact
 // sub_820D84A8. Registered up front like a loader fixture.
-static std::vector<uint32_t> g_registered_cs = { 0x82151A6Cu, 0x82235A5Cu };
-static std::vector<bool> g_registered_cs_locked = { false, false };
+static uint32_t g_registered_cs[64] = { 0x82151A6Cu, 0x82235A5Cu };
+static bool g_registered_cs_locked[64] = { false, false };
+static uint32_t g_registered_cs_count = 2;
 [[maybe_unused]] static uint32_t g_valloc_cursor = 0x04000000u;
 // Raised-IRQL balance flag for the single-threaded spinlock model.
 static uint32_t g_irql_level = 0; // 0=PASSIVE, 2=DISPATCH
@@ -180,11 +187,10 @@ struct Machine {
   std::array<const char*,32> recent_functions{};
   std::array<uint32_t,32> recent_r1{};
   uint32_t recent_pos{};
-  std::chrono::steady_clock::time_point timebase_epoch = std::chrono::steady_clock::now();
+  uint64_t timebase_epoch_ns = cc_monotonic_ns();
   static constexpr uint64_t timebase_hz = 49875000ull;
   uint64_t query_timebase() const noexcept {
-    using namespace std::chrono;
-    const uint64_t ns = uint64_t(duration_cast<nanoseconds>(steady_clock::now()-timebase_epoch).count());
+    const uint64_t ns = cc_monotonic_ns() - timebase_epoch_ns;
     return (ns/1000000000ull)*timebase_hz + ((ns%1000000000ull)*timebase_hz)/1000000000ull;
   }
   const Context* last_ctx{};
@@ -210,14 +216,14 @@ struct Machine {
   [[noreturn]] void fail(Error e, uint32_t a = 0) {
     result.error = e;
     result.address = a;
-    std::fprintf(stderr,"TRACE020 fail error=%u address=%08x last=%s funcs=%u memops=%u",unsigned(e),a,last_function,result.functions,result.memory_ops);
+    cc_elog("TRACE020 fail error=%u address=%08x last=%s funcs=%u memops=%u",unsigned(e),a,last_function,result.functions,result.memory_ops);
     if (last_ctx)
-      std::fprintf(stderr," r1=%08x r3=%08x r4=%08x r5=%08x r6=%08x r11=%08x lr=%08x",
+      cc_elog(" r1=%08x r3=%08x r4=%08x r5=%08x r6=%08x r11=%08x lr=%08x",
                    last_ctx->r1.u32,last_ctx->r3.u32,last_ctx->r4.u32,last_ctx->r5.u32,
                    last_ctx->r6.u32,last_ctx->r11.u32,uint32_t(last_ctx->lr));
-    std::fprintf(stderr," recent=");
-    for (unsigned k=0;k<32;++k) { const char* n=recent_functions[(recent_pos+k)&31u]; if(n) std::fprintf(stderr,"%s%s@%08x",k?",":"",n,recent_r1[(recent_pos+k)&31u]); }
-    std::fprintf(stderr,"\n");
+    cc_elog(" recent=");
+    for (unsigned k=0;k<32;++k) { const char* n=recent_functions[(recent_pos+k)&31u]; if(n) cc_elog("%s%s@%08x",k?",":"",n,recent_r1[(recent_pos+k)&31u]); }
+    cc_elog("\n");
     std::longjmp(escape, 1);
   }
   // The original widget list uses +12 for its head and +20 for siblings.
@@ -553,7 +559,7 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
         uint32_t(base.load(ctx.r1.u32+84,4))!=0x60u ||
         uint32_t(base.load(oa+0,4))!=0xFFFFFFFDu ||
         uint32_t(base.load(oa+8,4))!=0x40u) {
-      std::fprintf(stderr,"NTCREATE reject open=%d r4=%08x r7=%08x r8=%08x r9=%08x r10=%08x s84=%08x oa0=%08x oa8=%08x\n",
+      cc_elog("NTCREATE reject open=%d r4=%08x r7=%08x r8=%08x r9=%08x r10=%08x s84=%08x oa0=%08x oa8=%08x\n",
         int(base.file_open),ctx.r4.u32,ctx.r7.u32,ctx.r8.u32,ctx.r9.u32,ctx.r10.u32,
         uint32_t(base.load(ctx.r1.u32+84,4)),uint32_t(base.load(oa+0,4)),uint32_t(base.load(oa+8,4)));
       base.fail(Error::unsupported, address);
@@ -582,10 +588,14 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
         base.fail(Error::unsupported, address);
       fname[i-plen]=chv;
     }
-    if (g_game_root.empty())
+    if (!g_game_root[0])
       base.fail(Error::unsupported, address);
-    const std::string host=g_game_root+host_dir+fname;
-    std::FILE* f=std::fopen(host.c_str(),"rb");
+    char host[360];
+    std::snprintf(host,sizeof(host),"%s%s%s",g_game_root,host_dir,fname);
+#ifdef CC_XBOX_DRIVER
+    for (char* p=host; *p; ++p) if (*p=='/') *p='\\';
+#endif
+    std::FILE* f=std::fopen(host,"rb");
     if (!f) {
       // The sealed shader-name table requests SobelEdge.xpu (the container
       // ships SobelEdgePS.xpu) and VertexColorFillPS.xpu (absent from the
@@ -594,7 +604,7 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
       // continues. Any other miss is an environment problem and fails closed.
       if (std::strcmp(fname,"SobelEdge.xpu")!=0 &&
           std::strcmp(fname,"VertexColorFillPS.xpu")!=0) {
-        std::fprintf(stderr,"NTCREATE miss name='%s' root='%s'\n",fname,g_game_root.c_str());
+        cc_elog("NTCREATE miss name='%s' root='%s'\n",fname,g_game_root);
         base.fail(Error::unsupported, address);
       }
       ctx.r3.u64=0xC0000034u;
