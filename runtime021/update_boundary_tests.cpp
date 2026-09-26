@@ -1038,9 +1038,9 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // chain (sub_820C3568/sub_820C3930/sub_820C4488/sub_820C4498) creates the
   // font texture. The slice ends by dispatching renderer vtable slot +12 to
   // exact sub_820A7E80 (with exact sub_820BFB50), which returns normally.
-  CHECK(pi.functions==767u && pi.memory_ops==2268979u);
+  CHECK(pi.functions==808u && pi.memory_ops==2269363u);
   CHECK(c.r1.u32==0x0003eee0u);
-  CHECK(uint32_t(c.lr)==0x82070D34u); // last completed original call: sub_8209BDD8
+  CHECK(uint32_t(c.lr)==0x82070D98u); // last completed original call before the main monitor loop
   CHECK(m.load_be(0x00075240u,4,v)==cc::xbox::MemoryError::ok && v==0x01000000u); // pool size
   CHECK(m.load_be(0x00075244u,4,v)==cc::xbox::MemoryError::ok && v==0x10000000u); // pool base
   // The XPR container header read into the physical block, byte-exact from

@@ -327,6 +327,16 @@ New/extended contracts: nested-IRQL level model with raised-IRQL spinlocks (`KeR
 
 Focused result: `caller_post_init result=ok`, **767 executions / 2,268,979 memory operations**, `lr=0x82070D34` (last completed call `sub_8209BDD8`), 4,026 assertions, Release CTest 6/6, ASan/UBSan CTest 6/6 + widget/fixture. Next: `sub_820A1BF8` and the remaining `sub_82070AC8` tail (`sub_820757C8`, `sub_82075C88`, `sub_820759A8`, `sub_8212B180`, final indirect call, `sub_82070908`) — after which the game's init caller itself completes.
 
+### CHECKPOINT 022 SEALED — COMPLETE TITLE STARTUP TO THE MAIN LOOP (2026-09-26)
+
+The `sub_82070AC8_post_init` slice now covers the caller byte-for-byte from `0x82070BA4` to the `loc_82070DB0` **main monitor loop** — the game's entire one-time initialization is executed. Beyond Checkpoint 021's graphics/font/present/audio closure this adds the XAM/Live-era profile-manager entry (`sub_820A1BF8` and the `sub_82075C88`/`sub_820759A8`/`sub_82070908` tail families; local provenance now **1,139 byte-exact bodies**) with these observed-shape platform contracts: `XamGetSystemVersion` (2.0.17559 lineage), `XexGetModuleHandle("xam.xex")` + `XexGetProcedureAddress`→`STATUS_NOT_FOUND` (original fallback path), `NetDll_XNetStartup`/`NetDll_WSAStartup` title-caller success with `NetDll_XNetCleanup`/`NetDll_WSACleanup` teardown mirrors (all other network operations fail-closed), one-shot `XamNotifyCreateListener` token, and the second static data-segment critical section `0x82235A5C`.
+
+**ORIGINAL-XBOX PORT POLICY (user directive):** Xbox Live and achievements are 360-only services with no counterpart on the original Xbox. The Live session/profile singleton constructor (`sub_8210C860`) is deliberately stubbed to return `E_FAIL`; the exact caller `sub_8210C908` ships its own error path (refcount reset + propagate), and the game continues exactly as retail does with Live unavailable — it tears down XNet/WSA and proceeds offline. Achievements ride the same stack and are covered by the same refusal; remaining XAM imports (sign-in, profiles, enumerators) stay fail-closed/not-signed-in stubs and are bound individually if the offline path ever queries them.
+
+Sealing acceptance: `caller_post_init result=ok`, **808 executions / 2,269,363 memory operations**, stop at the main monitor loop (`lr=0x82070D98`); `update_boundary` **4,026 assertions**; Release CTest **6/6**; ASan/UBSan CTest **6/6** plus widget 1,922×2, fixture 12,047+6,000, visibility 43,528. Sealed artifact: git history (private remote).
+
+Startup state at the seal: renderer + device fully initialized, 15 shader pairs + font loaded from the retail container, first frame presented with the doorbell-consumption GPU contract, complete audio driver registered with two pinned workers, notification listener live, 16 MiB main pool published, CRT heap serving allocations, main-loop thread created (suspended, priority 1), Live declined by port policy. **The next frontier is the main loop itself and, in parallel, the fresh nxdk XBE/ISO build for XEMU validation — the diagnostic recovery has now reached the state a booting original-Xbox port must reproduce.**
+
 ## 4. XBOX / XEMU STATUS
 
 ### Persistent Xbox/XEMU test kit
@@ -461,7 +471,7 @@ Do **not** describe WIP 021 as sealed Checkpoint 021 or completed `PlatformRende
 
 ## 6. NEXT_ACTION
 
-**Checkpoint 021 is sealed: `PlatformRenderer::Init` is complete and returns to the original `sub_82070AC8` frame. Resume at the `sub_82070AC8` caller continuation: extend the renderer caller prefix (currently `entry..before_820A7990`) through the Init call's return, execute only the observed path, and stop at the first next genuine boundary. Reproduce first: `platform_post_graphics ok`, 2,277 / 67,387, 4,001 assertions, Release+ASan CTest 6/6, provenance 395 exact bodies. In parallel, a fresh nxdk XBE/ISO containing WIP/Checkpoint 021 logic plus a XEMU run (local emulator under `C:\Games\Emulators`) is the top validation follow-up.**
+**Checkpoint 022 is sealed: the complete title startup executes to the `loc_82070DB0` main monitor loop, with Xbox Live/achievements declined by original-Xbox port policy (see the 2026-09-26 Checkpoint 022 subsection). Reproduce first: `caller_post_init ok`, 808 / 2,269,363, 4,026 assertions, Release+ASan CTest 6/6, provenance 1,139 exact bodies. Two frontiers, in preference order: (1) the fresh nxdk XBE/ISO build for the original-Xbox target and a XEMU run (local emulator under `C:\Games\Emulators`) — the recovered startup is now substantial enough to be worth carrying into a real Xbox artifact; (2) the main monitor loop / frame loop itself (the suspended main-loop thread's routine `0x82070828` and the monitor's frame-wait behavior).**
 
 Concrete sequence:
 

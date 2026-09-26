@@ -1733,7 +1733,10 @@ static void __imp__XamContentCreateEx([[maybe_unused]] Context& ctx, Machine& ba
 static void __imp__XamFree([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AA94u); }
 static void __imp__XamLoaderLaunchTitle([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A354u); }
 static void __imp__XamUserCreateStatsEnumerator([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A284u); }
-static void __imp__NetDll_WSACleanup([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AAE4u); }
+static void __imp__NetDll_WSACleanup(Context& ctx, [[maybe_unused]] Machine& base) {
+  // Teardown mirror of the accepted title-caller WSAStartup.
+  ctx.r3.u64=0u;
+}
 static void __imp__NetDll_WSAGetLastError([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AB94u); }
 static void __imp__NetDll_WSASendTo([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AB84u); }
 static void __imp__NetDll_WSAStartup(Context& ctx, Machine& base) {
@@ -1745,7 +1748,10 @@ static void __imp__NetDll_WSAStartup(Context& ctx, Machine& base) {
   base.store(ctx.r5.u32+2,2,0x0202u);
   ctx.r3.u64=0u;
 }
-static void __imp__NetDll_XNetCleanup([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A9C4u); }
+static void __imp__NetDll_XNetCleanup(Context& ctx, [[maybe_unused]] Machine& base) {
+  // Teardown mirror of the accepted title-caller XNetStartup.
+  ctx.r3.u64=0u;
+}
 static void __imp__NetDll_XNetGetConnectStatus([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AA24u); }
 static void __imp__NetDll_XNetGetOpt([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AA74u); }
 static void __imp__NetDll_XNetQosListen([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AA34u); }
@@ -1882,7 +1888,17 @@ static void __imp__XexGetProcedureAddress(Context& ctx, Machine& base) {
 #include "generated/sub_82078FE8.inc"
 #include "generated/sub_8206DD58.inc"
 #include "generated/sub_82053BC8.inc"
-#include "generated/sub_8210C860.inc"
+// ORIGINAL-XBOX PORT DECISION: Xbox Live does not exist on the original
+// Xbox (its online stack is entirely different), so the Live session/
+// profile singleton constructor is deliberately stubbed to report failure
+// (E_FAIL). The exact caller sub_8210C908 ships its own error path for
+// this: it resets the singleton refcount and propagates the failure, and
+// the game continues exactly as it does on retail hardware when Live is
+// unavailable. Achievements ride on the same stack and are covered by the
+// same refusal. This is a port policy stub, not fail-closed recovery.
+static void sub_8210C860(Context& ctx, [[maybe_unused]] Machine& base) {
+  ctx.r3.u64 = 0x80004005u; // E_FAIL: Live unavailable on this platform
+}
 #include "generated/sub_820FE418.inc"
 #include "generated/sub_82108F48.inc"
 #include "generated/sub_821090C8.inc"
