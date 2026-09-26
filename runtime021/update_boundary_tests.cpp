@@ -498,10 +498,9 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   store(m,0x02500028u,4,500u);
   store(m,0x68100,4,0x02501000u);
   store(m,0x02501000u+332u,4,0x44556677u);
-  // The exact file wrappers publish GetLastError-style state through the PCR:
-  // sub_820B7278 stores to [[r13+256]+352] when [r13+336] is zero. Point the
-  // bounded per-thread error block inside the already-mapped PCR page.
-  store(m,0x68000+256,4,0x68400u);
+  // The exact file wrappers publish GetLastError-style state through the same
+  // per-thread block already resolved via [r13+256]=0x02501000 (owner cookie
+  // at +332, last error at +352); no separate error-block fixture is needed.
   // Xbox kernel ordinal 403 is XexExecutableModuleHandle, a loader-resolved
   // variable. The fixture resolves it to a slot holding a null module handle,
   // so exact sub_820B7880 takes its default 1 MiB heap-reserve path without
@@ -635,7 +634,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // epilogue. PlatformRenderer::Init has therefore returned to the still-live
   // original sub_82070AC8 frame.
   CHECK(ps.functions==2277u);
-  CHECK(ps.memory_ops==67387u);
+  CHECK(ps.memory_ops==67417u); // +30 over pre-WIP022: doorbell read-index writebacks
   CHECK(c.r1.u32==0x0003eee0u);       // caller sub_82070AC8 frame restored
   CHECK(c.r3.u32==0x0003ef50u);       // original result-struct argument returned
   CHECK(m.load_be(0x0003ef50u,4,v)==cc::xbox::MemoryError::ok && v==0u); // Init result: success
@@ -680,10 +679,9 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   CHECK(m.load_be(device-4,4,v)==cc::xbox::MemoryError::ok && v==0x02000000u);
   CHECK(m.load_be(0x02500000u,4,v)==cc::xbox::MemoryError::ok && v==device);
   CHECK(m.load_be(device+60,4,v)==cc::xbox::MemoryError::ok && v==1u);
-  // The exact shader-creation chain (sub_820BFDF0) legitimately clears the
-  // loader-fixture canary previously bound at device+10888; the observed
-  // durable value after the descriptor loop is zero.
-  CHECK(m.load_be(device+10888,4,v)==cc::xbox::MemoryError::ok && v==0u);
+  // With the per-thread block correctly resolved (owner cookie at
+  // [0x02501000+332]), the device retains the checkpoint-020 owner canary.
+  CHECK(m.load_be(device+10888,4,v)==cc::xbox::MemoryError::ok && v==0x44556677u);
   CHECK(m.load_be(device+10892,4,v)==cc::xbox::MemoryError::ok && v==0u);
   CHECK(m.load_be(device+16728,4,v)==cc::xbox::MemoryError::ok && v==0x02005e80u);
   CHECK(m.load_be(device+23980,4,v)==cc::xbox::MemoryError::ok && v==0x0c000000u);
@@ -701,7 +699,9 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   CHECK(m.load_be(device+14900,4,v)==cc::xbox::MemoryError::ok && v==8191u);
   CHECK(m.load_be(device+14936,4,v)==cc::xbox::MemoryError::ok && v==524288u);
   CHECK(m.load_be(device+10908,4,v)==cc::xbox::MemoryError::ok && v==15u); // post-restore command-state phase
-  CHECK(m.load_be(0x0220f140u+0,4,v)==cc::xbox::MemoryError::ok && v==1u);
+  // WIP 022: the fixture GPU publishes its caught-up read index through the
+  // descriptor at every doorbell, so the word now equals the submission phase.
+  CHECK(m.load_be(0x0220f140u+0,4,v)==cc::xbox::MemoryError::ok && v==uint64_t(15));
   CHECK(m.load_be(0x0220f140u+4,4,v)==cc::xbox::MemoryError::ok && v==0x0200f13cu);
   CHECK(m.load_be(device+10924,2,v)==cc::xbox::MemoryError::ok && v==1u);
   CHECK(m.load_be(device+10926,2,v)==cc::xbox::MemoryError::ok && v==2048u);
@@ -1038,10 +1038,9 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // chain (sub_820C3568/sub_820C3930/sub_820C4488/sub_820C4498) creates the
   // font texture. The slice ends by dispatching renderer vtable slot +12 to
   // exact sub_820A7E80 (with exact sub_820BFB50), which returns normally.
-  CHECK(pi.functions==56u && pi.memory_ops==2254372u);
+  CHECK(pi.functions==591u && pi.memory_ops==2264597u);
   CHECK(c.r1.u32==0x0003eee0u);
-  CHECK(uint32_t(c.lr)==0x82070C0Cu);
-  CHECK(c.r3.u32==0x02000080u);
+  CHECK(uint32_t(c.lr)==0x82070C78u);
   CHECK(m.load_be(0x00075240u,4,v)==cc::xbox::MemoryError::ok && v==0x01000000u); // pool size
   CHECK(m.load_be(0x00075244u,4,v)==cc::xbox::MemoryError::ok && v==0x10000000u); // pool base
   // The XPR container header read into the physical block, byte-exact from

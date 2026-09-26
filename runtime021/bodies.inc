@@ -548,8 +548,11 @@ static void __imp__KeLeaveCriticalRegion(Context& ctx, Machine& base) {
   const bool suffix021_complete =
       base.edram_suffix021_shape && base.edram_worker_calls==0u &&
       base.edram_retrain_calls==1u;
+  const bool frame022_complete =
+      base.edram_frame022_shape && base.edram_worker_calls==0u &&
+      base.edram_retrain_calls==1u;
   if (base.critical_region_depth!=1u || base.hsio_cs_locked ||
-      (!checkpoint020_complete && !suffix021_complete))
+      (!checkpoint020_complete && !suffix021_complete && !frame022_complete))
     base.fail(Error::unsupported,0x8214A8F4u);
   base.critical_region_depth=0u; ctx.r3.u64=0;
 }
@@ -576,13 +579,23 @@ static void __imp__VdRetrainEDRAM(Context& ctx, Machine& base) {
       ctx.r9.u32==0x02012320u && ctx.r10.u32==0x0201231Cu &&
       ctx.r11.u32==0u && ctx.r12.u32==0x820C1318u &&
       base.edram_worker_calls==0u && !base.edram_suffix021_shape;
+  // WIP 022: the post-Init frame's present path re-enters sub_820D19E8 on its
+  // own stack (again with r5=0 skipping the worker), issuing the same
+  // r1-relative retrain shape as the WIP 021 suffix from the same call site.
+  const bool frame022_shape =
+      uint32_t(ctx.lr)==0x820D1A48u &&
+      ctx.r3.u32==0u && ctx.r4.u32==sp+80u && ctx.r5.u32==4096u &&
+      ctx.r6.u32==sp+84u && ctx.r7.u32==sp+96u && ctx.r8.u32==2048u &&
+      base.edram_worker_calls==0u && !base.edram_suffix021_shape;
   if (base.critical_region_depth!=1u || !base.hsio_cs_locked ||
-      base.edram_retrain_calls!=0u || (!checkpoint020_shape && !suffix021_shape) ||
+      base.edram_retrain_calls!=0u ||
+      (!checkpoint020_shape && !suffix021_shape && !frame022_shape) ||
       uint32_t(base.load(ctx.r4.u32,4))!=0u || uint32_t(base.load(ctx.r6.u32,4))!=0u)
     base.fail(Error::unsupported,0x8214A904u);
   // The Xbox 360 kernel model returns zero and leaves the caller-owned output
   // words/workspace untouched. Zero selects the exact original success branch.
   base.edram_suffix021_shape=suffix021_shape;
+  base.edram_frame022_shape=frame022_shape;
   ++base.edram_retrain_calls; ctx.r3.u64=0u;
 }
 #include "generated/sub_820D19E8.inc"
@@ -979,7 +992,19 @@ static void checkpoint020_mm_store_u32(Machine& base, uint32_t a, uint32_t v) {
     // Observed CP_RB_WPTR write: Xenos MMIO base 0x7FC80000 + register 0x714.
     // The current ring has 8192 dwords, so reject any unobserved/out-of-ring value.
     if (a!=0x7FC80714u || v>=8192u) base.fail(Error::unsupported,a);
-    base.cp_rb_wptr=v; ++base.cp_rb_wptr_writes; return;
+    base.cp_rb_wptr=v; ++base.cp_rb_wptr_writes;
+    // WIP 022: the fixture Xenos consumes every submitted command
+    // synchronously at the doorbell. The exact ring-space wait
+    // (sub_820C6B18 -> sub_820BE9F0) compares the descriptor's read-index
+    // writeback word against the device's submission phase; publish the
+    // caught-up value exactly as the hardware writeback would.
+    {
+      const uint32_t dev=0x02000080u;
+      const uint32_t desc=uint32_t(base.load(dev+10896u,4));
+      const uint32_t phase=uint32_t(base.load(dev+10908u,4));
+      if (desc) base.store(desc,4,phase);
+    }
+    return;
   }
   base.store(a,4,v);
 }
@@ -1165,7 +1190,7 @@ static void __imp__VdInitializeScalerCommandBuffer(Context& ctx, Machine& base) 
 #include "generated/sub_820C8E98.inc"
 static void sub_820C8F90([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported,0x820C8F90u); }
 #include "generated/sub_820C0580.inc"
-static void sub_820C0B40([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported,0x820C0B40u); }
+#include "generated/sub_820C0B40.inc"
 static void sub_820CF038([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported,0x820CF038u); }
 #include "generated/sub_820CF728.inc"
 // WIP 021: exact sub_820CF9D0 recovered byte-for-byte. Adjacent direct
@@ -1190,6 +1215,21 @@ static void sub_820CD258([[maybe_unused]] Context& ctx, Machine& base) { base.fa
 // first dword is 0xBEEF0000 plus companion dword 0xBEEF0001. Model only this
 // exact call shape and fail closed on every other invocation.
 static void __imp__VdGetSystemCommandBuffer(Context& ctx, Machine& base) {
+  // WIP 022 second observed query: the post-Init frame path (exact
+  // sub_820D3EF8 at lr=0x820C0FB0) re-reads the system command buffer with
+  // the same output layout on its own frame.
+  if (uint32_t(ctx.lr)==0x820C0FB0u &&
+      ctx.r3.u32==ctx.r1.u32+208u && ctx.r4.u32==ctx.r1.u32+116u) {
+    const uint32_t p0=ctx.r3.u32, p1=ctx.r4.u32;
+    if (p0>0xffffff6bu || p1>0xfffffffbu)
+      base.fail(Error::context,0x8214A784u);
+    for (uint32_t i=0;i<0x94u;i+=4u) base.store(p0+i,4,0u);
+    base.store(p0,4,0xBEEF0000u);
+    base.store(p1,4,0xBEEF0001u);
+    base.system_command_buffer_queried=true;
+    ctx.r3.u64=0u;
+    return;
+  }
   if (base.system_command_buffer_queried || ctx.r1.u32!=0x0003EAA0u ||
       ctx.r3.u32!=ctx.r1.u32+208u || ctx.r4.u32!=ctx.r1.u32+116u)
     base.fail(Error::unsupported,0x8214A784u);
@@ -1208,12 +1248,21 @@ static void __imp__VdGetSystemCommandBuffer(Context& ctx, Machine& base) {
 // no kernel MMU/physical mapper, so only the observed low-memory identity map
 // (frontbuffer virtual == deterministic fixture physical) is accepted.
 static void __imp__VdSwap(Context& ctx, Machine& base) {
-  if (!base.system_command_buffer_queried || base.vd_swap_called ||
-      ctx.r1.u32 != 0x0003EAA0u || ctx.r3.u32 != 0x0200F950u ||
-      ctx.r4.u32 != 0x0003EB20u || ctx.r5.u32 != 0x0220F148u ||
-      ctx.r6.u32 != 0x0003EB70u || ctx.r7.u32 != 0xBEEF0001u ||
-      ctx.r8.u32 != 0x0003EB0Cu || ctx.r9.u32 != 0x0003EB10u ||
-      ctx.r10.u32 != 0x0003EB08u)
+  // WIP 022: the observed swap call shape is frame-relative — the exact
+  // caller (sub_820C7458 at lr=0x820C1014) always passes the fetch block at
+  // r1+0x80, sysbuf tokens at r1+0xD0/r1+0x74, and metadata pointers at
+  // r1+0x6C/0x70/0x68. Checkpoint 020's one-shot swap targeted the scaler
+  // command region (0x0200F950); the post-Init frame writes its swap block
+  // through the ring write-pointer window instead. Both are accepted under
+  // the same content validation below; everything else fails closed.
+  const bool ring_target = ctx.r3.u32 >= 0x0201F000u && ctx.r3.u32 <= 0x0202F000u;
+  if (!base.system_command_buffer_queried ||
+      (base.vd_swap_called && !ring_target) ||
+      (ctx.r3.u32 != 0x0200F950u && !ring_target) ||
+      ctx.r4.u32 != ctx.r1.u32 + 0x80u || ctx.r5.u32 != 0x0220F148u ||
+      ctx.r6.u32 != ctx.r1.u32 + 0xD0u || ctx.r7.u32 != 0xBEEF0001u ||
+      ctx.r8.u32 != ctx.r1.u32 + 0x6Cu || ctx.r9.u32 != ctx.r1.u32 + 0x70u ||
+      ctx.r10.u32 != ctx.r1.u32 + 0x68u)
     base.fail(Error::unsupported, 0x8214A774u);
 
   const uint32_t width_ptr = uint32_t(base.load(ctx.r1.u32 + 84u, 4));
@@ -1413,6 +1462,8 @@ static void __imp__MmAllocatePhysicalMemoryEx(Context& ctx, Machine& base) {
 #include "generated/sub_820A9B58.inc"
 #include "generated/sub_820BFB50.inc"
 #include "generated/sub_820A7E80.inc"
+#include "generated/sub_820A8030.inc"
+#include "generated/sub_820A8010.inc"
 #include "generated/sub_82070AC8_post_init.inc"
 
 // KeBugCheck is a terminal kernel failure; reaching it is never success.

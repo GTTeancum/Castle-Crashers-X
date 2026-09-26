@@ -75,6 +75,7 @@ struct Machine {
   uint32_t edram_worker_calls{};
   uint32_t edram_retrain_calls{};
   bool edram_suffix021_shape{};
+  bool edram_frame022_shape{};
   uint32_t hsio_status_calls{};
   uint32_t tile_next{};
   bool graphics_notification_sent{};

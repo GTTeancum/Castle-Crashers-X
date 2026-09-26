@@ -307,6 +307,18 @@ A second continuation slice, `sub_82070AC8_post_init` (byte-exact fragment `8207
 
 Next boundary: extend `sub_82070AC8_post_init` beyond the indirect dispatch toward the next unrecovered call (`sub_8209D028`, `sub_82096828`, `sub_820756E0`, `sub_820B5F50`, `sub_820A71E8` (currently a hard stub), `sub_820A1BF8`, `sub_820757C8`, `sub_82075C88`, `sub_820759A8`, `sub_8212B180`, `sub_82070908`, ... remain ahead).
 
+### WIP 022 — first frame presented: text measure + present + GPU consumption model (2026-09-26)
+
+The post-Init slice now runs through **both** renderer-vtable dispatches (`82070BA4..through lr=0x82070C78`): exact `sub_8209D028` → `sub_820A9E98`/`sub_820A9D78` (font text measurement, 300+ exact executions), then vtable slot `+16` resolves to exact `sub_820A8010` → `sub_820A8030` → exact `sub_820C13B8`, i.e. the game's own **first frame present**. Verified at **4,026 assertions**, Release CTest 6/6, ASan/UBSan CTest 6/6 + widget/fixture.
+
+Present-path platform closures, each bound to observed shapes: `VdGetSystemCommandBuffer` accepts the frame path's second query from `lr=0x820C0FB0`; `VdSwap` was rewritten frame-relative (identical r1-relative layout for both observed swaps; the post-Init frame writes its swap block through the ring write-pointer window `0x0201F000..0x0202F000` rather than the scaler region); `VdRetrainEDRAM`/`KeLeaveCriticalRegion` accept the frame's own `sub_820D19E8` re-entry (`frame022` shape, worker skipped); newly exact `sub_820C0B40` replaced its stub; renderer-vtable slots `+12/+16` targets `sub_820A7E80` (+`sub_820BFB50`, needing new host `VectorMaskR`/`setzero` lvrx helpers) and `sub_820A8010`/`sub_820A8030` are recovered and dispatched.
+
+**GPU consumption contract:** the fixture Xenos now consumes submitted commands synchronously at the `CP_RB_WPTR` doorbell, publishing the caught-up read index through the ring descriptor word — this is what unblocks the exact ring-space wait (`sub_820C6B18` → `sub_820BE9F0`) that polls the read-index writeback against the submission phase. The descriptor word binding updated accordingly (now equals submission phase 15 after init; +30/+6 memops in the two earlier focused segments).
+
+Also fixed: the per-thread block at `[r13+256]` is one structure (owner cookie +332, last error +352); the earlier separate error-block fixture wrongly repointed it and has been removed, restoring the checkpoint-020 owner-canary binding at `device+10888`.
+
+Focused result: `caller_post_init result=ok`, **591 executions / 2,264,597 memory operations**, ending after the completed present at `lr=0x82070C78`. Next: extend the slice to the next unrecovered caller call (`sub_82096828` etc.).
+
 ## 4. XBOX / XEMU STATUS
 
 ### Persistent Xbox/XEMU test kit

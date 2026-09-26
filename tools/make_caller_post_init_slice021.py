@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 STOP = 'AFTER_INDIRECT_82070C0C'
-STOP_NOTE = 'the unresolved indirect dispatch result at lr=0x82070C0C'
+STOP_NOTE = 'the unresolved indirect dispatch result at lr=0x82070C78'
 
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / 'tools'))
@@ -21,7 +21,7 @@ from extract_generated021 import expected  # noqa: E402
 orig = expected('sub_82070AC8').decode()
 call = '\tsub_820A7990(ctx, base);\n'
 st = orig.index(call) + len(call)
-en = orig.index('ctx.lr = 0x82070C0C;', st)
+en = orig.index('ctx.lr = 0x82070C78;', st)
 en = orig.index('REX_CALL_INDIRECT_FUNC(ctx.ctr.u32);', en)
 en = orig.index(chr(10), en) + 1
 frag = orig[st:en]
