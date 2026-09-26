@@ -187,11 +187,19 @@ struct Machine {
   std::array<const char*,32> recent_functions{};
   std::array<uint32_t,32> recent_r1{};
   uint32_t recent_pos{};
-  uint64_t timebase_epoch_ns = cc_monotonic_ns();
   static constexpr uint64_t timebase_hz = 49875000ull;
-  uint64_t query_timebase() const noexcept {
-    const uint64_t ns = cc_monotonic_ns() - timebase_epoch_ns;
-    return (ns/1000000000ull)*timebase_hz + ((ns%1000000000ull)*timebase_hz)/1000000000ull;
+  // WIP 023: deterministic virtual timebase. The native Xbox run reproduced
+  // the frame loop with funcs identical to the host but one memory op fewer,
+  // because raw clock magnitudes differ between platforms and one recovered
+  // path stores a value derived from them. The diagnostic timebase therefore
+  // advances a fixed 1 ms (49,875 ticks) per guest read, making every
+  // time-derived value — and thus the measured op counts — identical on the
+  // host and on the Xbox target. Real hosts reintroduce a real clock only at
+  // the eventual product presentation layer, never in this harness.
+  uint64_t timebase_virtual_ticks = 0;
+  uint64_t query_timebase() noexcept {
+    timebase_virtual_ticks += timebase_hz / 1000ull;  // 1 ms per read
+    return timebase_virtual_ticks;
   }
   const Context* last_ctx{};
   void prologue(const char *name, const Context& ctx) {

@@ -40,3 +40,4 @@ nxdk-*/main.map
 **/*.su
 **/*.cpp.d
 **/*.c.d
+.claude/
