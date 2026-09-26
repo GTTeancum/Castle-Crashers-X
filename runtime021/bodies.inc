@@ -141,6 +141,35 @@ static void sub_82127778(Context& ctx, Machine& base) {
     ctx.r3.u64 = written;
     return;
   }
+  // WIP 022 third accepted sprintf shape: the sealed font-path format
+  // "game:\Fonts\%s.xpr" at 0x820420CC with a single bounded string argument,
+  // used by exact sub_820A9B58 to build font resource paths.
+  if (ctx.r4.u32 == 0x820420CCu) {
+    static const char font_fmt[] = "game:\\Fonts\\%s.xpr";
+    for (unsigned i = 0; i <= sizeof(font_fmt) - 1; ++i)
+      if (base.load(ctx.r4.u32 + i, 1) != uint8_t(font_fmt[i]))
+        base.fail(Error::unsupported, 0x82127778u);
+    uint32_t out = ctx.r3.u32;
+    unsigned written = 0;
+    for (const char* p = "game:\\Fonts\\"; *p; ++p) {
+      base.store(out++, 1, uint8_t(*p));
+      ++written;
+    }
+    for (unsigned i = 0;; ++i) {
+      if (i >= 64u) base.fail(Error::unsupported, 0x82127778u);
+      const uint8_t chv = uint8_t(base.load(ctx.r5.u32 + i, 1));
+      if (!chv) break;
+      base.store(out++, 1, chv);
+      ++written;
+    }
+    for (const char* p = ".xpr"; *p; ++p) {
+      base.store(out++, 1, uint8_t(*p));
+      ++written;
+    }
+    base.store(out, 1, 0);
+    ctx.r3.u64 = written;
+    return;
+  }
   // The only other accepted checkpoint-016 call shape is sprintf-like "%i"
   // used by sub_8209CA70 to create its monotonically numbered startup label.
   if (ctx.r4.u32 != 0x8203DF98u ||
@@ -1325,6 +1354,40 @@ static void __imp__NtWaitForSingleObjectEx([[maybe_unused]] Context& ctx, Machin
 #include "generated/sub_820BFEE8.inc"
 #include "generated/sub_820BFC30.inc"
 #include "generated/sub_820C00B8.inc"
+
+// WIP 022: sub_82070AC8 caller continuation after the completed
+// PlatformRenderer::Init. Exact sub_8209BC98 -> sub_820B6108 request the
+// title's main physical pool through MmAllocatePhysicalMemoryEx; the bounded
+// contract below serves it from the dedicated fixture arena and fails closed
+// outside the observed shape.
+static void __imp__MmAllocatePhysicalMemoryEx(Context& ctx, Machine& base) {
+  // Accept only the observed main-pool request: flags 0, size 0x01000FFF,
+  // PAGE_READWRITE, no address bounds, 4 KiB alignment. Served once from the
+  // dedicated fixture arena at 0x10000000.
+  if (ctx.r3.u32!=0u || ctx.r4.u32!=0x01000FFFu || ctx.r5.u32!=4u ||
+      ctx.r6.u32!=0u || ctx.r7.u32!=0xFFFFFFFFu || ctx.r8.u32!=0x1000u ||
+      g_main_pool_allocated)
+    base.fail(Error::unsupported, 0x8214A4F4u);
+  const uint32_t p=0x10000000u;
+  if (base.memory.check(p,0x01001000u,3)!=cc::xbox::MemoryError::ok)
+    base.fail(Error::memory,p);
+  g_main_pool_allocated=true;
+  ctx.r3.u64=p;
+}
+#include "generated/sub_820B6108.inc"
+#include "generated/sub_8209BC98.inc"
+#include "generated/__savegprlr_15.inc"
+#include "generated/__restgprlr_15.inc"
+#include "generated/sub_820C2D58.inc"
+#include "generated/sub_820C3568.inc"
+#include "generated/sub_820C7D48.inc"
+#include "generated/sub_820C3930.inc"
+#include "generated/sub_820C4488.inc"
+#include "generated/sub_820C4498.inc"
+#include "generated/sub_820D7D70.inc"
+#include "generated/sub_820A7390.inc"
+#include "generated/sub_820A9B58.inc"
+#include "generated/sub_82070AC8_post_init.inc"
 
 // KeBugCheck is a terminal kernel failure; reaching it is never success.
 static void __imp__KeBugCheck([[maybe_unused]] Context& ctx, Machine& base) {

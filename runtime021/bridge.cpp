@@ -29,6 +29,8 @@ static std::vector<bool> g_registered_cs_locked;
 // as physical allocations do on hardware.
 static uint32_t g_graphics_alloc_index = 0;
 static uint32_t g_graphics_alloc_cursor = 0x02000000u;
+// The title's single observed 16 MiB main-pool physical allocation.
+static bool g_main_pool_allocated = false;
 #include "../runtime007/float_scope.inc"
 struct Machine {
   struct ThreadSlot {
@@ -650,6 +652,7 @@ static void execute(uint32_t entry, Context &ctx, Machine &m) {
   switch (entry) {
   case 0x820701d0: sub_820701D0_startup_full(ctx,m); break;
   case 0x820b7880: sub_820B7880(ctx,m); break;
+  case 0x82070ba4: sub_82070AC8_post_init(ctx,m); break;
   case 0x82070ac8: sub_82070AC8_renderer_prefix(ctx,m); break;
   case 0x820a7990: sub_820A7990_platform_prefix(ctx,m); break;
   case 0x820a7b34: sub_820A7990_platform_post_graphics(ctx,m); break;
@@ -682,7 +685,7 @@ static void execute(uint32_t entry, Context &ctx, Machine &m) {
 Result invoke(uint32_t entry, Context &ctx, AddressSpace &memory, Sink sink,
               uint32_t budget) noexcept {
   Result error;
-  if (entry != 0x820c13b8 && entry != 0x820c2c98 && entry != 0x820befd0 && entry != 0x820a7b34 && entry != 0x820a7990 && entry != 0x82070ac8 && entry != 0x820701d0 && entry != 0x820b7880 && entry != 0x82070434 && entry != 0x8208a7a0 && entry != 0x820a8ff8 && entry != 0x82091248 && entry != 0x8209cd08 && entry != 0x8209cc98 && entry != 0x8209de50 && entry != 0x82097720 && entry != 0x820915f0 && entry != 0x8209df48 && entry != 0x820a1ac0 && entry != 0x8209ce40 && entry != 0x8209ce48) {
+  if (entry != 0x820c13b8 && entry != 0x820c2c98 && entry != 0x820befd0 && entry != 0x820a7b34 && entry != 0x820a7990 && entry != 0x82070ac8 && entry != 0x820701d0 && entry != 0x820b7880 && entry != 0x82070ba4 && entry != 0x82070434 && entry != 0x8208a7a0 && entry != 0x820a8ff8 && entry != 0x82091248 && entry != 0x8209cd08 && entry != 0x8209cc98 && entry != 0x8209de50 && entry != 0x82097720 && entry != 0x820915f0 && entry != 0x8209df48 && entry != 0x820a1ac0 && entry != 0x8209ce40 && entry != 0x8209ce48) {
     error.error = Error::entry;
     return error;
   }

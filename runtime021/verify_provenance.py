@@ -20,7 +20,7 @@ def expected(name):
 # runtime010/runtime011 bodies are already sealed by their checkpoint inputs.
 bodies=(root/'runtime021/bodies.inc').read_text()
 local_includes=re.findall(r'#include "generated/([^"/]+)\.inc"',bodies)
-slices={'sub_820701D0_manager_slice','sub_820701D0_startup_full','sub_82070AC8_renderer_prefix','sub_820A7990_platform_prefix','sub_820A7990_platform_post_graphics'}
+slices={'sub_820701D0_manager_slice','sub_820701D0_startup_full','sub_82070AC8_renderer_prefix','sub_82070AC8_post_init','sub_820A7990_platform_prefix','sub_820A7990_platform_post_graphics'}
 names=[n for n in local_includes if n not in slices]
 if len(names)!=len(set(names)):
     raise SystemExit('duplicate local generated include in runtime021/bodies.inc')
@@ -116,6 +116,29 @@ if actual!=want:
 print('PASS platform post-graphics slice source=820A7990 range=820A7B34..return bytes=%d sha256=%s' %
       (len(frag.encode()),hashlib.sha256(frag.encode()).hexdigest()))
 
+
+# Verify the WIP 022 sub_82070AC8 continuation slice resuming immediately
+# after the completed PlatformRenderer::Init call (0x82070BA4) and stopping
+# before the first still-unrecovered call. Wrapper header/return are
+# diagnostic scaffolding; the fragment is byte-exact from sealed sub_82070AC8.
+orig=expected('sub_82070AC8').decode()
+call='\tsub_820A7990(ctx, base);\n'
+st=orig.index(call)+len(call)
+en=orig.index('ctx.lr = 0x82070C0C;', st)
+en=orig.index('REX_CALL_INDIRECT_FUNC(ctx.ctr.u32);', en)
+en=orig.index(chr(10), en)+1
+frag=orig[st:en]
+want=('DEFINE_REX_FUNC(sub_82070AC8_post_init) {\n'
+      '\tREX_FUNC_PROLOGUE();\n'
+      '\tPPCRegister temp{};\n'
+      '\t(void)temp;\n'+frag+
+      '\t// Diagnostic continuation stop: next original instruction is the unresolved indirect dispatch result at lr=0x82070C0C.\n'
+      '\treturn;\n}\n')
+actual=(root/'runtime021/generated/sub_82070AC8_post_init.inc').read_text()
+if actual!=want:
+    print('FAIL caller post-init slice differs from sealed sub_82070AC8',file=sys.stderr);sys.exit(1)
+print('PASS caller post-init slice source=82070AC8 range=82070BA4..through_82070C0C bytes=%d sha256=%s' %
+      (len(frag.encode()),hashlib.sha256(frag.encode()).hexdigest()))
 
 # Bind immutable constants and the 10,500-object virtual initializer to the
 # sealed mapped image.
