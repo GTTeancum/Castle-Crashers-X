@@ -121,3 +121,4 @@ case 0x820BD918: sub_820BD918(ctx,base); return;
 case 0x820BE198: sub_820BE198(ctx,base); return;
 case 0x820C2C98: sub_820C2C98(ctx,base); return;
 case 0x820A85E8: sub_820A85E8(ctx,base); return;
+case 0x820A7E80: sub_820A7E80(ctx,base); return;

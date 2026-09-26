@@ -296,6 +296,17 @@ Checkpoint 021's sealed artifact is the git history of this repository (private 
 
 New boundary: the original `sub_82070AC8` caller continuation immediately after `bl 0x820A7990` (the renderer-prefix slice still stops before that call; it must now be extended through the Init call's return and onward to the next genuine boundary).
 
+### WIP 022 — caller continuation: main pool + font load closed (2026-09-26)
+
+A second continuation slice, `sub_82070AC8_post_init` (byte-exact fragment `82070BA4..through the indirect dispatch at lr=0x82070C0C`, verified by `verify_provenance.py`), resumes the original caller with the live registers left by the completed Init. Verified closed on the observed path, **4,028 `update_boundary` assertions**, Release CTest 6/6, ASan/UBSan CTest 6/6 + widget/fixture regressions:
+
+- exact `sub_8209BC98` → exact `sub_820B6108` obtain the title's **16 MiB main pool** through the new bounded `MmAllocatePhysicalMemoryEx` contract (one 0x01000FFF/PAGE_READWRITE/4 KiB-align request at fixture arena `0x10000000`; publication bound at `0x75240/0x75244`);
+- exact `sub_820A9B58` (font create) with newly recovered exact `sub_820A7390`, `sub_820D7D70`, `sub_820C4498/4488/3930/3568`, `sub_820C7D48`, `sub_820C2D58`, `__save/__restgprlr_15`: builds the path via a third accepted sprintf shape (`game:\Fonts\%s.xpr` at `0x820420CC`), opens/reads the container's `fonts\synjUnicode_20.xpr` (2,252,812 bytes) through the bounded file contracts (font open shape r8=1/r9=1, 4 MiB size cap), allocates a **2 MiB write-combined texture block** (`0x404` protect, cursor arena `0x12000000`), and creates the font texture through the exact XPR chain — glyph bytes in guest memory bound byte-for-byte against the container file (offset `0x28834` ↔ block `+0x2828`);
+- the caller's renderer-vtable slot `+12` dispatch resolves to exact `sub_820A7E80` (with exact `sub_820BFB50`), executed and returned; host bridge gained the PPC `lvrx` mask table (`VectorMaskR`) and `setzero` helper;
+- focused result: `caller_post_init result=ok`, **56 executions / 2,254,372 guest-memory operations** (the 2.25 MB font read dominates), stop after `lr=0x82070C0C`.
+
+Next boundary: extend `sub_82070AC8_post_init` beyond the indirect dispatch toward the next unrecovered call (`sub_8209D028`, `sub_82096828`, `sub_820756E0`, `sub_820B5F50`, `sub_820A71E8` (currently a hard stub), `sub_820A1BF8`, `sub_820757C8`, `sub_82075C88`, `sub_820759A8`, `sub_8212B180`, `sub_82070908`, ... remain ahead).
+
 ## 4. XBOX / XEMU STATUS
 
 ### Persistent Xbox/XEMU test kit

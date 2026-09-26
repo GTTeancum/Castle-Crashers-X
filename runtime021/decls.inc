@@ -569,3 +569,5 @@ static void sub_820C4498(Context&, Machine&);
 static void sub_820D7D70(Context&, Machine&);
 static void sub_820A7390(Context&, Machine&);
 static void sub_820A9B58(Context&, Machine&);
+static void sub_820A7E80(Context&, Machine&);
+static void sub_820BFB50(Context&, Machine&);

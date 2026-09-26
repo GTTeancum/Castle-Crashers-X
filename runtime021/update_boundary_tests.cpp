@@ -516,6 +516,10 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // pool (16 MiB + guard page) requested by exact sub_8209BC98 after Init.
   static std::vector<uint8_t> main_pool_arena(0x01001000);
   CHECK(m.map(0x10000000u,uint32_t(main_pool_arena.size()),main_pool_arena.data(),3)==cc::xbox::MemoryError::ok);
+  // Cursor arena backing the smaller observed physical blocks (font/texture
+  // memory allocated write-combined by the exact font loader).
+  static std::vector<uint8_t> phys_arena(0x00800000);
+  CHECK(m.map(0x12000000u,uint32_t(phys_arena.size()),phys_arena.data(),3)==cc::xbox::MemoryError::ok);
 
   // Execute the exact CRT heap initialization (sub_820B7880 -> exact
   // sub_820B93B0) that original startup performs before any game code runs.
@@ -1020,21 +1024,44 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // WIP 022: with PlatformRenderer::Init returned, resume the original
   // sub_82070AC8 caller at 0x82070BA4 with the live restored registers and
   // stop fail-closed before the first still-unrecovered call.
-  auto pi=invoke(0x82070ba4,c,m,sink(),400000);
+  auto pi=invoke(0x82070ba4,c,m,sink(),8000000);
   std::printf("caller_post_init result=%s@%08x funcs=%u memops=%u r1=%08x lr=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r11=%08x\n",
               name(pi.error),pi.address,pi.functions,pi.memory_ops,c.r1.u32,uint32_t(c.lr),
               c.r3.u32,c.r4.u32,c.r5.u32,c.r6.u32,c.r7.u32,c.r11.u32);
   CHECK(pi.error==Error::ok);
-  // Exact sub_8209BC98 obtained the observed 16 MiB main pool through exact
+  // Exact sub_8209BC98 obtains the observed 16 MiB main pool through exact
   // sub_820B6108 / bounded MmAllocatePhysicalMemoryEx (fixture arena at
-  // 0x10000000) and published it through the startup hash object; exact
-  // sub_82053A00 then prepared the string argument for the pending
-  // bl 0x820A9B58 where the slice stops.
-  CHECK(pi.functions==9u && pi.memory_ops==496u);
+  // 0x10000000) and publishes it through the startup hash object. Exact
+  // sub_820A9B58 then loads the game's font: the bounded file contracts read
+  // the container's fonts\synjUnicode_20.xpr (2,252,812 bytes) into a
+  // write-combined physical block at 0x12000000, and the exact XPR texture
+  // chain (sub_820C3568/sub_820C3930/sub_820C4488/sub_820C4498) creates the
+  // font texture. The slice ends by dispatching renderer vtable slot +12 to
+  // exact sub_820A7E80 (with exact sub_820BFB50), which returns normally.
+  CHECK(pi.functions==56u && pi.memory_ops==2254372u);
   CHECK(c.r1.u32==0x0003eee0u);
-  CHECK(uint32_t(c.lr)==0x82070BD4u);
+  CHECK(uint32_t(c.lr)==0x82070C0Cu);
+  CHECK(c.r3.u32==0x02000080u);
   CHECK(m.load_be(0x00075240u,4,v)==cc::xbox::MemoryError::ok && v==0x01000000u); // pool size
   CHECK(m.load_be(0x00075244u,4,v)==cc::xbox::MemoryError::ok && v==0x10000000u); // pool base
+  // The XPR container header read into the physical block, byte-exact from
+  // the extracted retail container ("XPR2", data size, header size).
+  // Font texture content evidence: the write-combined block at 0x12000000
+  // holds the XPR data section (its first nonzero glyph bytes correspond
+  // byte-for-byte to fonts\synjUnicode_20.xpr at file offset 0x28834). The
+  // main pool has also received its first original writes.
+  {
+    size_t first_phys=phys_arena.size(), first_pool=main_pool_arena.size();
+    for (size_t i=0;i<phys_arena.size();++i) if (phys_arena[i]) { first_phys=i; break; }
+    for (size_t i=0;i<main_pool_arena.size();++i) if (main_pool_arena[i]) { first_pool=i; break; }
+    CHECK(first_phys==0x2828u);
+    CHECK(first_pool==9u);
+    static constexpr uint8_t glyph_probe[16] = {
+      0xab,0xbb,0xee,0xee,0xde,0xee,0xbc,0xcc,0x67,0x77,0x00,0x00,0x00,0x00,0x00,0x00
+    };
+    for (unsigned i=0;i<16u;++i)
+      CHECK(phys_arena[0x2828u+i]==glyph_probe[i]);
+  }
 }
 
 static void captured_startup_boundary(const char* path) {

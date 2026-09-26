@@ -31,6 +31,8 @@ static uint32_t g_graphics_alloc_index = 0;
 static uint32_t g_graphics_alloc_cursor = 0x02000000u;
 // The title's single observed 16 MiB main-pool physical allocation.
 static bool g_main_pool_allocated = false;
+// Cursor for the smaller observed physical blocks (font/texture memory).
+static uint32_t g_phys_cursor = 0x12000000u;
 #include "../runtime007/float_scope.inc"
 struct Machine {
   struct ThreadSlot {
@@ -433,6 +435,30 @@ static constexpr uint8_t VectorMaskL[256] = {
   0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0x0F,0x0E,
   0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0x0F
 };
+// PPC lvrx shuffle table, the right-load counterpart of VectorMaskL: with
+// shift sh the vector's low big-endian lanes 16-sh..15 receive block bytes
+// 0..sh-1 and the rest are zero. In host mirrored-lane order that is
+// m[i] = (i < sh) ? sh-1-i : 0xFF. Row 0 is unreachable (the generated code
+// branches to setzero when the shift is zero).
+static constexpr uint8_t VectorMaskR[256] = {
+  0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+  0x00,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+  0x01,0x00,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+  0x02,0x01,0x00,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+  0x03,0x02,0x01,0x00,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+  0x04,0x03,0x02,0x01,0x00,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+  0x05,0x04,0x03,0x02,0x01,0x00,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+  0x06,0x05,0x04,0x03,0x02,0x01,0x00,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+  0x07,0x06,0x05,0x04,0x03,0x02,0x01,0x00,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+  0x08,0x07,0x06,0x05,0x04,0x03,0x02,0x01,0x00,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+  0x09,0x08,0x07,0x06,0x05,0x04,0x03,0x02,0x01,0x00,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+  0x0A,0x09,0x08,0x07,0x06,0x05,0x04,0x03,0x02,0x01,0x00,0xFF,0xFF,0xFF,0xFF,0xFF,
+  0x0B,0x0A,0x09,0x08,0x07,0x06,0x05,0x04,0x03,0x02,0x01,0x00,0xFF,0xFF,0xFF,0xFF,
+  0x0C,0x0B,0x0A,0x09,0x08,0x07,0x06,0x05,0x04,0x03,0x02,0x01,0x00,0xFF,0xFF,0xFF,
+  0x0D,0x0C,0x0B,0x0A,0x09,0x08,0x07,0x06,0x05,0x04,0x03,0x02,0x01,0x00,0xFF,0xFF,
+  0x0E,0x0D,0x0C,0x0B,0x0A,0x09,0x08,0x07,0x06,0x05,0x04,0x03,0x02,0x01,0x00,0xFF
+};
+static simde__m128i simde_mm_setzero_si128() { return simde__m128i{}; }
 static uint8_t* raw_addr021(Machine& base,uint32_t a) { auto* p=base.memory.contiguous(a,16,3); if(!p) base.fail(Error::memory,a); return p; }
 #define REX_RAW_ADDR(a) raw_addr021(base,uint32_t(a))
 using PPCRegister = Register;
@@ -482,8 +508,13 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     // OBJ_CASE_INSENSITIVE, FILE_OPEN, options 0x60) of "game:\shaders\<name>"
     // backed by the extracted retail-container files.
     const uint32_t handle_out=ctx.r3.u32, oa=ctx.r5.u32, iosb=ctx.r6.u32;
+    // Two observed open shapes share access 0x80100080, OBJ root -3,
+    // OBJ_CASE_INSENSITIVE, FILE_OPEN, options 0x60: the shader loader passes
+    // FileAttributes=0/ShareAccess=0, the font loader passes 1/1.
+    const bool shader_open_shape = ctx.r8.u32==0u && ctx.r9.u32==0u;
+    const bool font_open_shape   = ctx.r8.u32==1u && ctx.r9.u32==1u;
     if (base.file_open || ctx.r4.u32!=0x80100080u || ctx.r7.u32!=0u ||
-        ctx.r8.u32!=0u || ctx.r9.u32!=0u || ctx.r10.u32!=1u ||
+        (!shader_open_shape && !font_open_shape) || ctx.r10.u32!=1u ||
         uint32_t(base.load(ctx.r1.u32+84,4))!=0x60u ||
         uint32_t(base.load(oa+0,4))!=0xFFFFFFFDu ||
         uint32_t(base.load(oa+8,4))!=0x40u) {
@@ -495,9 +526,16 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     const uint32_t str=uint32_t(base.load(oa+4,4));
     const uint32_t len=uint32_t(base.load(str+0,2));
     const uint32_t buf=uint32_t(base.load(str+4,4));
+    // Accepted path prefixes, each mapped to its extracted-container
+    // directory and its per-family size bound.
+    static constexpr char shader_prefix[]="game:\\shaders\\";
+    static constexpr char font_prefix[]="game:\\Fonts\\";
+    const char* prefix = shader_open_shape ? shader_prefix : font_prefix;
+    const uint32_t plen = shader_open_shape ? uint32_t(sizeof(shader_prefix))-1u
+                                            : uint32_t(sizeof(font_prefix))-1u;
+    const char* host_dir = shader_open_shape ? "/shaders/" : "/Fonts/";
+    const long size_cap = shader_open_shape ? 65536 : 4*1024*1024;
     char fname[80]{};
-    static constexpr char prefix[]="game:\\shaders\\";
-    constexpr uint32_t plen=uint32_t(sizeof(prefix))-1u;
     if (len<=plen || len>=plen+64u)
       base.fail(Error::unsupported, address);
     for (uint32_t i=0;i<plen;++i)
@@ -505,13 +543,13 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
         base.fail(Error::unsupported, address);
     for (uint32_t i=plen;i<len;++i) {
       const char chv=char(base.load(buf+i,1));
-      if (!((chv>='A'&&chv<='Z')||(chv>='a'&&chv<='z')||(chv>='0'&&chv<='9')||chv=='.'))
+      if (!((chv>='A'&&chv<='Z')||(chv>='a'&&chv<='z')||(chv>='0'&&chv<='9')||chv=='.'||chv=='_'))
         base.fail(Error::unsupported, address);
       fname[i-plen]=chv;
     }
     if (g_game_root.empty())
       base.fail(Error::unsupported, address);
-    const std::string host=g_game_root+"/shaders/"+fname;
+    const std::string host=g_game_root+host_dir+fname;
     std::FILE* f=std::fopen(host.c_str(),"rb");
     if (!f) {
       // The sealed shader-name table requests SobelEdge.xpu (the container
@@ -530,7 +568,7 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     std::fseek(f,0,SEEK_END);
     const long sz=std::ftell(f);
     std::fseek(f,0,SEEK_SET);
-    if (sz<=0 || sz>65536) { std::fclose(f); base.fail(Error::unsupported, address); }
+    if (sz<=0 || sz>size_cap) { std::fclose(f); base.fail(Error::unsupported, address); }
     base.file_bytes.assign(size_t(sz),0);
     const bool ok=std::fread(base.file_bytes.data(),1,size_t(sz),f)==size_t(sz);
     std::fclose(f);

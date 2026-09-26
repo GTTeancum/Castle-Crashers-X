@@ -1361,18 +1361,42 @@ static void __imp__NtWaitForSingleObjectEx([[maybe_unused]] Context& ctx, Machin
 // contract below serves it from the dedicated fixture arena and fails closed
 // outside the observed shape.
 static void __imp__MmAllocatePhysicalMemoryEx(Context& ctx, Machine& base) {
-  // Accept only the observed main-pool request: flags 0, size 0x01000FFF,
-  // PAGE_READWRITE, no address bounds, 4 KiB alignment. Served once from the
-  // dedicated fixture arena at 0x10000000.
-  if (ctx.r3.u32!=0u || ctx.r4.u32!=0x01000FFFu || ctx.r5.u32!=4u ||
-      ctx.r6.u32!=0u || ctx.r7.u32!=0xFFFFFFFFu || ctx.r8.u32!=0x1000u ||
-      g_main_pool_allocated)
+  // Bounded physical-memory contract. Two observed request families:
+  //  - the single 16 MiB title main pool (flags 0, size 0x01000FFF,
+  //    PAGE_READWRITE, no bounds, 4 KiB alignment), served once at
+  //    0x10000000;
+  //  - font/texture blocks (flags 0, PAGE_READWRITE or write-combined
+  //    0x404, no bounds, <=4 MiB), served from the cursor arena at
+  //    0x12000000.
+  if (ctx.r3.u32!=0u || ctx.r6.u32!=0u || ctx.r7.u32!=0xFFFFFFFFu)
     base.fail(Error::unsupported, 0x8214A4F4u);
-  const uint32_t p=0x10000000u;
-  if (base.memory.check(p,0x01001000u,3)!=cc::xbox::MemoryError::ok)
-    base.fail(Error::memory,p);
-  g_main_pool_allocated=true;
-  ctx.r3.u64=p;
+  if (ctx.r4.u32==0x01000FFFu && ctx.r5.u32==4u && ctx.r8.u32==0x1000u &&
+      !g_main_pool_allocated) {
+    const uint32_t p=0x10000000u;
+    if (base.memory.check(p,0x01001000u,3)!=cc::xbox::MemoryError::ok)
+      base.fail(Error::memory,p);
+    g_main_pool_allocated=true;
+    ctx.r3.u64=p;
+    return;
+  }
+  if ((ctx.r5.u32==4u || ctx.r5.u32==0x404u) && ctx.r4.u32>=0x1000u &&
+      ctx.r4.u32<=0x400000u) {
+    const uint32_t align = ctx.r8.u32 ? ctx.r8.u32 : 0x1000u;
+    if (align & (align-1u))
+      base.fail(Error::unsupported, 0x8214A4F4u);
+    const uint32_t size=(ctx.r4.u32+0xFFFu)&~0xFFFu;
+    const uint32_t p=(g_phys_cursor+align-1u)&~(align-1u);
+    if (p+size<p || base.memory.check(p,size,3)!=cc::xbox::MemoryError::ok)
+      base.fail(Error::memory,p);
+    g_phys_cursor=p+size;
+    ctx.r3.u64=p;
+    return;
+  }
+  std::fprintf(stderr,
+    "MMALLOCPHYSEX unsupported r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r8=%08x lr=%08x\n",
+    ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32,
+    uint32_t(ctx.lr));
+  base.fail(Error::unsupported, 0x8214A4F4u);
 }
 #include "generated/sub_820B6108.inc"
 #include "generated/sub_8209BC98.inc"
@@ -1387,6 +1411,8 @@ static void __imp__MmAllocatePhysicalMemoryEx(Context& ctx, Machine& base) {
 #include "generated/sub_820D7D70.inc"
 #include "generated/sub_820A7390.inc"
 #include "generated/sub_820A9B58.inc"
+#include "generated/sub_820BFB50.inc"
+#include "generated/sub_820A7E80.inc"
 #include "generated/sub_82070AC8_post_init.inc"
 
 // KeBugCheck is a terminal kernel failure; reaching it is never success.
