@@ -41,6 +41,9 @@ static uint32_t g_irql_level = 0; // 0=PASSIVE, 2=DISPATCH
 static bool g_xaudio_client_registered = false;
 // Bounded semaphore-token registry for the exact event wrappers.
 static uint32_t g_semaphore_count = 0;
+static uint32_t g_semaphore_value[8] = {};
+static uint32_t g_semaphore_limit[8] = {};
+static uint64_t g_tls_allocated = 0;  // bitmap over the 64 fixture TLS slots
 // One-shot XAM notification listener.
 static bool g_xam_listener_created = false;
 // The physical graphics allocator is one durable kernel-side allocator: its
@@ -193,7 +196,7 @@ struct Machine {
   // because raw clock magnitudes differ between platforms and one recovered
   // path stores a value derived from them. The diagnostic timebase therefore
   // advances a fixed 1 ms (49,875 ticks) per guest read, making every
-  // time-derived value — and thus the measured op counts — identical on the
+  // time-derived value -" and thus the measured op counts -" identical on the
   // host and on the Xbox target. Real hosts reintroduce a real clock only at
   // the eventual product presentation layer, never in this harness.
   uint64_t timebase_virtual_ticks = 0;
@@ -212,10 +215,78 @@ struct Machine {
     if (!std::strcmp(name,"sub_8209DE50")) validate_widget_update(ctx.r3.u32);
     if (!std::strcmp(name,"sub_8209DF48")) validate_widget_owner(ctx.r3.u32);
     if (!std::strcmp(name,"sub_82091248")) validate_owner(ctx.r3.u32);
-    if (++result.functions > 250000)
+    if (++result.functions > 5000000)
       fail(Error::capacity);
     if (!std::strcmp(name, "sub_8208A7A0"))
       ++result.tree_visits;
+    // WIP 023: the fixture Xenos consumes synchronously, so by the time the
+    // CPU enters the exact ring-space wait (sub_820BE9F0) the hardware
+    // read-index writeback has always caught up with the device's current
+    // submission phase. Refresh the same writeback word the doorbell
+    // contract publishes; the exact wait code then observes a caught-up GPU.
+    // Writeback publishes below use the raw address space: they model the
+    // GPU's own memory traffic, which never counts as guest CPU memory ops,
+    // so the sealed startup/init measurements stay untouched.
+    if (!std::strcmp(name, "sub_820BE9F0")) {
+      const uint32_t dev = 0x02000080u;
+      uint64_t desc = 0, phase = 0, wb = 0;
+      if (memory.load_be(dev + 10896u, 4, desc) == cc::xbox::MemoryError::ok &&
+          memory.load_be(dev + 10908u, 4, phase) == cc::xbox::MemoryError::ok &&
+          desc && memory.load_be(uint32_t(desc), 4, wb) == cc::xbox::MemoryError::ok) {
+        if (wb == phase) {
+          // GPU already caught up yet the CPU still waits: the outstanding
+          // fence belongs to a submission the graphics worker thread would
+          // kick on hardware. Retire exactly one step per poll; the exact
+          // wait exits as soon as its fence value is reached, so this can
+          // never run ahead of what the guest actually submitted.
+          memory.store_be(dev + 10908u, 4, uint32_t(phase) + 1u);
+          memory.store_be(uint32_t(desc), 4, uint32_t(phase) + 1u);
+        } else {
+          memory.store_be(uint32_t(desc), 4, uint32_t(phase));
+        }
+      }
+    }
+    // WIP 023: the same instant-consumption contract for the other two
+    // writeback words the exact ring waiters poll. Each publish happens at
+    // the waiter's entry, where the caught-up value is an argument:
+    // sub_820C5E50 waits until the tagged read cursor [desc+4] reaches its
+    // r5, and sub_820C5EE8 waits until the read address [desc+60] leaves
+    // the region starting at its r4. A parked, caught-up GPU reads at the
+    // submission cursor, so both waits observe completion immediately.
+    if (!std::strcmp(name, "sub_820C5E50") ||
+        !std::strcmp(name, "sub_820C5EE8")) {
+      // Publish only when the exact wait would actually block; a waiter
+      // that already sees no conflict leaves every sealed init value alone.
+      const uint32_t dev = ctx.r3.u32;
+      uint64_t desc = 0;
+      if (dev == 0x02000080u &&
+          memory.load_be(dev + 10896u, 4, desc) == cc::xbox::MemoryError::ok &&
+          desc) {
+        if (name[10] == '5') {  // sub_820C5E50(dev, addr=r4, cursor=r5)
+          uint64_t cur = 0;
+          if (memory.load_be(uint32_t(desc) + 4u, 4, cur) == cc::xbox::MemoryError::ok) {
+            const uint32_t diff = (ctx.r5.u32 - uint32_t(cur)) & 3u;
+            const bool blocks = diff != 0u &&
+                (diff != 1u || ctx.r4.u32 > (uint32_t(cur) & ~3u));
+            if (blocks)
+              memory.store_be(uint32_t(desc) + 4u, 4, ctx.r5.u32);
+          }
+        } else {                // sub_820C5EE8(dev, start=r4, len=r5)
+          uint64_t mask = 0, ra = 0;
+          if (memory.load_be(dev + 14900u, 4, mask) == cc::xbox::MemoryError::ok &&
+              memory.load_be(uint32_t(desc) + 60u, 4, ra) == cc::xbox::MemoryError::ok) {
+            const uint32_t start = ctx.r4.u32;
+            const uint32_t end = (start + ctx.r5.u32) & uint32_t(mask);
+            const uint32_t r11 = uint32_t(ra);
+            const bool blocks = start < end
+                ? (start < r11 && r11 <= end)
+                : (start < r11 || r11 <= end);
+            if (blocks)
+              memory.store_be(uint32_t(desc) + 60u, 4, start);
+          }
+        }
+      }
+    }
   }
   void tick(uint32_t a) {
     if (++result.memory_ops > budget)
@@ -540,7 +611,7 @@ static bool submit(void *ptr, const Draw &d) {
   return true;
 }
 static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
-  if (++base.result.dispatches > 20000)
+  if (++base.result.dispatches > 500000)
     base.fail(Error::capacity, address);
   if (address == 0x82091248)
     base.validate_owner(ctx.r3.u32);
@@ -562,8 +633,12 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     // FileAttributes=0/ShareAccess=0, the font loader passes 1/1.
     const bool shader_open_shape = ctx.r8.u32==0u && ctx.r9.u32==0u;
     const bool font_open_shape   = ctx.r8.u32==1u && ctx.r9.u32==1u;
+    // WIP 023 third observed shape: the frame loop's pak loader opens
+    // "game:\game\<name>.pak" with FILE_ATTRIBUTE_NORMAL (0x80) and
+    // FILE_SHARE_READ (1); all other parameters identical.
+    const bool pak_open_shape    = ctx.r8.u32==0x80u && ctx.r9.u32==1u;
     if (base.file_open || ctx.r4.u32!=0x80100080u || ctx.r7.u32!=0u ||
-        (!shader_open_shape && !font_open_shape) || ctx.r10.u32!=1u ||
+        (!shader_open_shape && !font_open_shape && !pak_open_shape) || ctx.r10.u32!=1u ||
         uint32_t(base.load(ctx.r1.u32+84,4))!=0x60u ||
         uint32_t(base.load(oa+0,4))!=0xFFFFFFFDu ||
         uint32_t(base.load(oa+8,4))!=0x40u) {
@@ -579,21 +654,39 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     // directory and its per-family size bound.
     static constexpr char shader_prefix[]="game:\\shaders\\";
     static constexpr char font_prefix[]="game:\\Fonts\\";
-    const char* prefix = shader_open_shape ? shader_prefix : font_prefix;
+    static constexpr char pak_prefix[]="game:\\game\\";
+    const char* prefix = shader_open_shape ? shader_prefix
+                       : font_open_shape   ? font_prefix : pak_prefix;
     const uint32_t plen = shader_open_shape ? uint32_t(sizeof(shader_prefix))-1u
-                                            : uint32_t(sizeof(font_prefix))-1u;
-    const char* host_dir = shader_open_shape ? "/shaders/" : "/Fonts/";
-    const long size_cap = shader_open_shape ? 65536 : 4*1024*1024;
+                        : font_open_shape   ? uint32_t(sizeof(font_prefix))-1u
+                                            : uint32_t(sizeof(pak_prefix))-1u;
+    const char* host_dir = shader_open_shape ? "/shaders/"
+                         : font_open_shape   ? "/Fonts/" : "/game/";
+    const long size_cap = shader_open_shape ? 65536
+                        : font_open_shape   ? 4*1024*1024 : 16*1024*1024;
     char fname[80]{};
-    if (len<=plen || len>=plen+64u)
+    if (len<=plen || len>=plen+64u) {
+      cc_elog("NTCREATE reject len=%u plen=%u\n",len,plen);
       base.fail(Error::unsupported, address);
+    }
+    // The pak loader uppercases the whole path ("game:\GAME\LOGO.PAK") and
+    // every observed open passes OBJ_CASE_INSENSITIVE, so the prefix match
+    // is case-insensitive; the host/FATX filesystems resolve the filename
+    // case-insensitively as the Xbox kernel would.
+    auto lower=[](uint8_t chv){ return (chv>='A'&&chv<='Z')?uint8_t(chv+32u):chv; };
     for (uint32_t i=0;i<plen;++i)
-      if (uint8_t(base.load(buf+i,1))!=uint8_t(prefix[i]))
+      if (lower(uint8_t(base.load(buf+i,1)))!=lower(uint8_t(prefix[i]))) {
+        char got[80]{};
+        for (uint32_t j=0;j<len && j<79u;++j) got[j]=char(base.load(buf+j,1));
+        cc_elog("NTCREATE reject prefix at %u path='%s'\n",i,got);
         base.fail(Error::unsupported, address);
+      }
     for (uint32_t i=plen;i<len;++i) {
       const char chv=char(base.load(buf+i,1));
-      if (!((chv>='A'&&chv<='Z')||(chv>='a'&&chv<='z')||(chv>='0'&&chv<='9')||chv=='.'||chv=='_'))
+      if (!((chv>='A'&&chv<='Z')||(chv>='a'&&chv<='z')||(chv>='0'&&chv<='9')||chv=='.'||chv=='_')) {
+        cc_elog("NTCREATE reject char 0x%02x at %u\n",uint8_t(chv),i);
         base.fail(Error::unsupported, address);
+      }
       fname[i-plen]=chv;
     }
     if (!g_game_root[0])
@@ -635,12 +728,41 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     ctx.r3.u64=0;
     return;
   }
+  case 0x8214a5f4: {
+    // NtSetInformationFile -" bounded to FilePositionInformation (class 14,
+    // 8-byte LARGE_INTEGER) on the single open pak-fixture handle: the pak
+    // loader seeks before each section read. Positions beyond EOF and every
+    // other class stay fail-closed.
+    const uint32_t iosb=ctx.r4.u32, info=ctx.r5.u32;
+    if (!base.file_open || ctx.r3.u32!=base.file_handle ||
+        ctx.r6.u32!=8u || ctx.r7.u32!=14u)
+      base.fail(Error::unsupported, address);
+    const uint64_t hi=base.load(info+0,4), lo=base.load(info+4,4);
+    const uint64_t pos=(hi<<32)|lo;
+    if (pos>base.file_bytes.size())
+      base.fail(Error::unsupported, address);
+    base.file_pos=uint32_t(pos);
+    base.store(iosb+0,4,0u);
+    base.store(iosb+4,4,0u);
+    ctx.r3.u64=0u;
+    return;
+  }
   case 0x8214a624: {
     // NtQueryInformationFile ??? bounded to FileNetworkOpenInformation (class
     // 34, 56 bytes) on the single open shader-file fixture handle.
     const uint32_t iosb=ctx.r4.u32, buf=ctx.r5.u32;
-    if (!base.file_open || ctx.r3.u32!=base.file_handle ||
-        ctx.r6.u32!=56u || ctx.r7.u32!=34u)
+    if (!base.file_open || ctx.r3.u32!=base.file_handle)
+      base.fail(Error::unsupported, address);
+    // WIP 023: the pak loader also queries FilePositionInformation (class
+    // 14, 8-byte LARGE_INTEGER) after seeking; report the fixture position.
+    if (ctx.r6.u32==8u && ctx.r7.u32==14u) {
+      base.store(buf,8,uint64_t(base.file_pos));
+      base.store(iosb+0,4,0u);
+      base.store(iosb+4,4,8u);
+      ctx.r3.u64=0u;
+      return;
+    }
+    if (ctx.r6.u32!=56u || ctx.r7.u32!=34u)
       base.fail(Error::unsupported, address);
     for (unsigned i=0;i<4;++i) base.store(buf+i*8u,8,0u); // four timestamps
     base.store(buf+32u,8,uint64_t(base.file_bytes.size())); // AllocationSize
@@ -743,6 +865,7 @@ static void execute(uint32_t entry, Context &ctx, Machine &m) {
   switch (entry) {
   case 0x820701d0: sub_820701D0_startup_full(ctx,m); break;
   case 0x820b7880: sub_820B7880(ctx,m); break;
+  case 0x8212a630: sub_8212A630(ctx,m); break;
   case 0x82070ba4: sub_82070AC8_post_init(ctx,m); break;
   case 0x82070ac8: sub_82070AC8_renderer_prefix(ctx,m); break;
   case 0x820a7990: sub_820A7990_platform_prefix(ctx,m); break;
@@ -776,7 +899,7 @@ static void execute(uint32_t entry, Context &ctx, Machine &m) {
 Result invoke(uint32_t entry, Context &ctx, AddressSpace &memory, Sink sink,
               uint32_t budget) noexcept {
   Result error;
-  if (entry != 0x820c13b8 && entry != 0x820c2c98 && entry != 0x820befd0 && entry != 0x820a7b34 && entry != 0x820a7990 && entry != 0x82070ac8 && entry != 0x820701d0 && entry != 0x820b7880 && entry != 0x82070ba4 && entry != 0x82070434 && entry != 0x8208a7a0 && entry != 0x820a8ff8 && entry != 0x82091248 && entry != 0x8209cd08 && entry != 0x8209cc98 && entry != 0x8209de50 && entry != 0x82097720 && entry != 0x820915f0 && entry != 0x8209df48 && entry != 0x820a1ac0 && entry != 0x8209ce40 && entry != 0x8209ce48) {
+  if (entry != 0x8212a630 && entry != 0x820c13b8 && entry != 0x820c2c98 && entry != 0x820befd0 && entry != 0x820a7b34 && entry != 0x820a7990 && entry != 0x82070ac8 && entry != 0x820701d0 && entry != 0x820b7880 && entry != 0x82070ba4 && entry != 0x82070434 && entry != 0x8208a7a0 && entry != 0x820a8ff8 && entry != 0x82091248 && entry != 0x8209cd08 && entry != 0x8209cc98 && entry != 0x8209de50 && entry != 0x82097720 && entry != 0x820915f0 && entry != 0x8209df48 && entry != 0x820a1ac0 && entry != 0x8209ce40 && entry != 0x8209ce48) {
     error.error = Error::entry;
     return error;
   }

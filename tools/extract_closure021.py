@@ -24,7 +24,7 @@ for rt in ('runtime008', 'runtime010', 'runtime011', 'runtime021'):
     bodies_path = root / rt / 'bodies.inc'
     if not bodies_path.exists():
         continue
-    bodies = bodies_path.read_text()
+    bodies = bodies_path.read_bytes().decode('latin1')
     included |= set(re.findall(r'#include "generated/([^"]+)\.inc"', bodies))
     defined |= set(re.findall(r'static void (\w+)\(', bodies))
     defined |= set(re.findall(r'HARD_\w+\((\w+),', bodies))

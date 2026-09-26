@@ -170,6 +170,83 @@ static void sub_82127778(Context& ctx, Machine& base) {
     ctx.r3.u64 = written;
     return;
   }
+  // WIP 023 fourth accepted sprintf shape: the sealed pak-path format
+  // "game\%s.pak" at 0x8203FDD0 with a single bounded string argument,
+  // used by the frame loop's asset loader (first observed building
+  // "game\logo.pak" for the intro logo screen).
+  if (ctx.r4.u32 == 0x8203FDD0u) {
+    static const char pak_fmt[] = "game\\%s.pak";
+    for (unsigned i = 0; i <= sizeof(pak_fmt) - 1; ++i)
+      if (base.load(ctx.r4.u32 + i, 1) != uint8_t(pak_fmt[i]))
+        base.fail(Error::unsupported, 0x82127778u);
+    uint32_t out = ctx.r3.u32;
+    unsigned written = 0;
+    for (const char* p = "game\\"; *p; ++p) {
+      base.store(out++, 1, uint8_t(*p));
+      ++written;
+    }
+    for (unsigned i = 0;; ++i) {
+      if (i >= 64u) base.fail(Error::unsupported, 0x82127778u);
+      const uint8_t chv = uint8_t(base.load(ctx.r5.u32 + i, 1));
+      if (!chv) break;
+      base.store(out++, 1, chv);
+      ++written;
+    }
+    for (const char* p = ".pak"; *p; ++p) {
+      base.store(out++, 1, uint8_t(*p));
+      ++written;
+    }
+    base.store(out, 1, 0);
+    ctx.r3.u64 = written;
+    return;
+  }
+  // WIP 023 fifth accepted sprintf shape: the sealed device-path format
+  // "game:\%s" at 0x82040BF4 with a single bounded string argument, used by
+  // the frame loop's asset loader to prefix the pak-relative path (first
+  // observed building "game:\game\logo.pak").
+  if (ctx.r4.u32 == 0x82040BF4u) {
+    static const char dev_fmt[] = "game:\\%s";
+    for (unsigned i = 0; i <= sizeof(dev_fmt) - 1; ++i)
+      if (base.load(ctx.r4.u32 + i, 1) != uint8_t(dev_fmt[i]))
+        base.fail(Error::unsupported, 0x82127778u);
+    uint32_t out = ctx.r3.u32;
+    unsigned written = 0;
+    for (const char* p = "game:\\"; *p; ++p) {
+      base.store(out++, 1, uint8_t(*p));
+      ++written;
+    }
+    for (unsigned i = 0;; ++i) {
+      if (i >= 128u) base.fail(Error::unsupported, 0x82127778u);
+      const uint8_t chv = uint8_t(base.load(ctx.r5.u32 + i, 1));
+      if (!chv) break;
+      base.store(out++, 1, chv);
+      ++written;
+    }
+    base.store(out, 1, 0);
+    ctx.r3.u64 = written;
+    return;
+  }
+  // WIP 023 sixth accepted sprintf shape: the sealed plain "%s" format at
+  // 0x8203E464 with a single bounded string argument - a straight copy used
+  // by the frame loop's asset loader while resolving the logo pak path.
+  if (ctx.r4.u32 == 0x8203E464u) {
+    if (base.load(ctx.r4.u32 + 0, 1) != uint8_t('%') ||
+        base.load(ctx.r4.u32 + 1, 1) != uint8_t('s') ||
+        base.load(ctx.r4.u32 + 2, 1) != 0u)
+      base.fail(Error::unsupported, 0x82127778u);
+    uint32_t out = ctx.r3.u32;
+    unsigned written = 0;
+    for (unsigned i = 0;; ++i) {
+      if (i >= 128u) base.fail(Error::unsupported, 0x82127778u);
+      const uint8_t chv = uint8_t(base.load(ctx.r5.u32 + i, 1));
+      if (!chv) break;
+      base.store(out++, 1, chv);
+      ++written;
+    }
+    base.store(out, 1, 0);
+    ctx.r3.u64 = written;
+    return;
+  }
   // The only other accepted checkpoint-016 call shape is sprintf-like "%i"
   // used by sub_8209CA70 to create its monotonically numbered startup label.
   if (ctx.r4.u32 != 0x8203DF98u ||
@@ -430,6 +507,19 @@ static void __imp__RtlEnterCriticalSection(Context& ctx, Machine& base) {
     if (base.tile_cs_locked) base.fail(Error::unsupported,0x8214A434u);
     base.tile_cs_locked=true; ctx.r3.u64=0; return;
   }
+  // WIP 023: the CRT's static lock table lives in image .data at
+  // 0x821500C0.. (same page as the two pre-seeded CRT locks); these
+  // critical sections are image-initialized and never pass through
+  // RtlInitializeCriticalSection. First entry registers them with the
+  // same single-threaded toggle semantics; anything outside that page
+  // still requires an observed initialization.
+  if (ctx.r3.u32>=0x82150000u && ctx.r3.u32<0x82152000u &&
+      g_registered_cs_count<64u) {
+    const unsigned i=g_registered_cs_count++;
+    g_registered_cs[i]=ctx.r3.u32;
+    g_registered_cs_locked[i]=true;
+    ctx.r3.u64=0; return;
+  }
   const uint32_t hsio_slot=uint32_t(base.load(0x82000594u,4));
   if (!hsio_slot || ctx.r3.u32!=hsio_slot || base.hsio_cs_locked || base.critical_region_depth!=1u)
     base.fail(Error::unsupported,0x8214A434u);
@@ -451,15 +541,9 @@ static void __imp__RtlLeaveCriticalSection(Context& ctx, Machine& base) {
     base.fail(Error::unsupported,0x8214A444u);
   base.hsio_cs_locked=false; ctx.r3.u64=0;
 }
-HARD_BOUNDARY_017(sub_821287B0, 0x821287B0u)
-HARD_BOUNDARY_017(sub_82128A60, 0x82128A60u)
-HARD_BOUNDARY_017(sub_820B00D8, 0x820B00D8u)
-HARD_BOUNDARY_017(sub_820B0330, 0x820B0330u)
 HARD_BOUNDARY_017(sub_820B0D80, 0x820B0D80u)
 #include "generated/sub_820B6498.inc"
 HARD_BOUNDARY_017(sub_820B02B0, 0x820B02B0u)
-HARD_BOUNDARY_017(sub_820A7400, 0x820A7400u)
-HARD_BOUNDARY_017(sub_820B0750, 0x820B0750u)
 #undef HARD_BOUNDARY_017
 
 #include "generated/sub_8209A728.inc"
@@ -1038,7 +1122,7 @@ static void sub_820C6088(Context& ctx, Machine& base) {
 // frames, then stops fail-closed at this exact boundary with Error::capacity
 // so the harness measures whole frames and never fakes an exit path.
 static uint32_t g_frame_delay_calls = 0;
-static constexpr uint32_t k_frame_budget = 3;
+static constexpr uint32_t k_frame_budget = 1000;
 static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   if (ctx.r3.u32 != 1u || ctx.r4.u32 != 0u || ctx.r5.u32 == 0u ||
       uint32_t(ctx.lr) != 0x820B7504u)
@@ -1334,11 +1418,18 @@ static void __imp__VdSwap(Context& ctx, Machine& base) {
   // command region (0x0200F950); the post-Init frame writes its swap block
   // through the ring write-pointer window instead. Both are accepted under
   // the same content validation below; everything else fails closed.
-  // WIP 023: the first full game-loop frame writes far more ring commands
-  // than startup did, so its swap block lands past 0x0202F000 (observed
-  // 0x0202FBB0). Accept the whole ring/secondary command window instead of
-  // the startup-era slice; content validation below is unchanged.
-  const bool ring_target = ctx.r3.u32 >= 0x0201F000u && ctx.r3.u32 <= 0x02030000u;
+  // WIP 023: each game-loop frame advances the guest's own command write
+  // cursor, so successive swap blocks walk the graphics command arena
+  // (frame 1 at 0x0202FBB0, frame 8 at 0x0203FCE0, ...). Accept any
+  // 4-byte-aligned target inside the command arena below the descriptor
+  // heap at 0x0220F140; the 64-dword content contract below is unchanged
+  // and still rejects anything that is not the exact observed swap block.
+  // After enough frames the guest's command cursor wraps, so swap blocks
+  // appear anywhere in the secondary/command arena from its 0x0200F140
+  // base upward (observed 0x0200F820 post-wrap).
+  const bool ring_target = ctx.r3.u32 >= 0x0200F140u &&
+                           ctx.r3.u32 < 0x0220F000u &&
+                           (ctx.r3.u32 & 3u) == 0u;
   if (!base.system_command_buffer_queried ||
       (base.vd_swap_called && !ring_target) ||
       (ctx.r3.u32 != 0x0200F950u && !ring_target) ||
@@ -1561,8 +1652,24 @@ static void __imp__NtCreateSemaphore(Context& ctx, Machine& base) {
       g_semaphore_count>=8u)
     base.fail(Error::unsupported, 0x8214A4A4u);
   base.store(ctx.r3.u32,4,0x0F5E0001u+g_semaphore_count);
+  g_semaphore_value[g_semaphore_count]=ctx.r5.u32;
+  g_semaphore_limit[g_semaphore_count]=ctx.r6.u32;
   ++g_semaphore_count;
   ctx.r3.u64=0u;
+}
+// WIP 023: the frame loop signals a fixture semaphore through the exact
+// sub_820B5F50 wrapper (lr=0x820B5FF8). Release is modeled against the
+// recorded initial/limit values; exceeding a limit or an unknown handle
+// stays fail-closed. Waits remain fail-closed until observed.
+static void __imp__NtReleaseSemaphore(Context& ctx, Machine& base) {
+  const uint32_t ix = ctx.r3.u32 - 0x0F5E0001u;
+  if (ix >= g_semaphore_count || ctx.r4.u32 == 0u ||
+      g_semaphore_value[ix] + ctx.r4.u32 > g_semaphore_limit[ix])
+    base.fail(Error::unsupported, 0x8214A4B4u);
+  if (ctx.r5.u32 != 0u)
+    base.store(ctx.r5.u32, 4, g_semaphore_value[ix]);
+  g_semaphore_value[ix] += ctx.r4.u32;
+  ctx.r3.u64 = 0u;  // STATUS_SUCCESS
 }
 // WIP 022 notification-listener service creation (exact sub_820D7FD0 family).
 // KeInitializeSemaphore models the trusted kernel object initialization; the
@@ -1680,6 +1787,27 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_820A1640.inc"
 #include "generated/sub_82053888.inc"
 #include "generated/sub_820A7470.inc"
+#include "generated/sub_82130408.inc"
+#include "generated/sub_8212A2E0.inc"
+#include "generated/sub_8212F288.inc"
+#include "generated/sub_8212C3E0.inc"
+#include "generated/sub_821303E0.inc"
+#include "generated/sub_8212C288.inc"
+#include "generated/sub_8212EC40.inc"
+#include "generated/sub_821303F8.inc"
+#include "generated/sub_8212F208.inc"
+#include "generated/sub_8212A340.inc"
+#include "generated/sub_8212A280.inc"
+#include "generated/sub_820B7810.inc"
+#include "generated/sub_8212A630.inc"
+#include "generated/sub_820B0750.inc"
+#include "generated/sub_820B0330.inc"
+#include "generated/sub_820A7400.inc"
+#include "generated/sub_820AFF40.inc"
+#include "generated/sub_820B06C0.inc"
+#include "generated/sub_820B00D8.inc"
+#include "generated/sub_82128A60.inc"
+#include "generated/sub_821287B0.inc"
 #include "generated/sub_820C74D0.inc"
 #include "generated/sub_820A75E0.inc"
 #include "generated/sub_820A7DE0.inc"
@@ -1857,7 +1985,6 @@ static void __imp__XamInputSetState(Context& ctx, [[maybe_unused]] Machine& base
   // Rumble on the fixture pad: accepted and ignored.
   ctx.r3.u64 = (ctx.r3.u32 == 0u) ? 0u : 0x48Fu;
 }
-static void __imp__NtReleaseSemaphore([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A4B4u); }
 // WIP 023 observed shape (lr=820FBE24): app 0xFA (XMP system music
 // player), message 0x00070009 (get playback state), r5 = out status
 // pointer, r6 = 0. The original Xbox has no system music player, so the
@@ -1902,7 +2029,25 @@ static void __imp__NetDll_XNetGetConnectStatus([[maybe_unused]] Context& ctx, Ma
 static void __imp__NetDll_XNetGetOpt([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AA74u); }
 static void __imp__NetDll_XNetQosListen([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AA34u); }
 static void __imp__NetDll_XNetQosRelease([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AA54u); }
-static void __imp__NetDll_XNetRandom([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A9D4u); }
+// WIP 023: the game seeds its RNG through the exact wrapper sub_820D7EA8
+// (NetDll_XNetRandom(1, pb, cb)). The original-Xbox port has no XNet, so
+// the fixture fills the buffer with a fixed deterministic byte sequence -"
+// keeping every measurement reproducible on host and target -" and returns
+// success. Unobserved shapes fail closed.
+static void __imp__NetDll_XNetRandom(Context& ctx, Machine& base) {
+  const uint32_t pb = ctx.r4.u32, cb = ctx.r5.u32;
+  if (ctx.r3.u32 != 1u || pb == 0u || cb == 0u || cb > 0x1000u) {
+    cc_elog("XNETRANDOM reject r3=%08x pb=%08x cb=%08x\n",
+            ctx.r3.u32, pb, cb);
+    base.fail(Error::unsupported, 0x8214A9D4u);
+  }
+  uint32_t s = 0x43435821u;  // 'CCX!' fixture seed
+  for (uint32_t i = 0; i < cb; ++i) {
+    s = s * 1664525u + 1013904223u;
+    base.store(pb + i, 1, (s >> 24) & 0xFFu);
+  }
+  ctx.r3.u64 = 0u;
+}
 static void __imp__NetDll_XNetStartup(Context& ctx, Machine& base) {
   // Title-caller startup succeeds; every later XNet operation remains
   // fail-closed. The parameter block is read-only input.
@@ -2620,12 +2765,34 @@ static void __imp__KeBugCheck([[maybe_unused]] Context& ctx, Machine& base) {
 static void __imp__KeBugCheckEx([[maybe_unused]] Context& ctx, Machine& base) {
   base.fail(Error::unsupported, 0x8214AA04u);
 }
+// WIP 023: KeTlsAlloc/KeTlsFree back the exact CRT _mtinit (sub_8212A630),
+// run as a bounded harness pre-step exactly as the sealed XEX entry would
+// have. Slots come from the same 64-entry fixture table the get/set shims
+// already use; exhaustion fails closed rather than returning TLS_OUT_OF_INDEXES.
+static void __imp__KeTlsAlloc(Context& ctx, Machine& base) {
+  for (uint32_t i = 0; i < 64u; ++i)
+    if (!(g_tls_allocated >> i & 1u)) {
+      g_tls_allocated |= 1ull << i;
+      g_tls_slots[i] = 0u;
+      ctx.r3.u64 = i;
+      return;
+    }
+  base.fail(Error::unsupported, 0x8214ACB4u);
+}
+static void __imp__KeTlsFree(Context& ctx, Machine& base) {
+  const uint32_t ix = ctx.r3.u32;
+  if (ix >= 64u || !(g_tls_allocated >> ix & 1u))
+    base.fail(Error::unsupported, 0x8214ACE4u);
+  g_tls_allocated &= ~(1ull << ix);
+  g_tls_slots[ix] = 0u;
+  ctx.r3.u64 = 1u;
+}
 static void __imp__KeTlsGetValue(Context& ctx, Machine& base) {
-  if (ctx.r3.u32 >= 64u) base.fail(Error::unsupported, 0x8214A9D4u);
+  if (ctx.r3.u32 >= 64u) base.fail(Error::unsupported, 0x8214ACC4u);
   ctx.r3.u64 = g_tls_slots[ctx.r3.u32];
 }
 static void __imp__KeTlsSetValue(Context& ctx, Machine& base) {
-  if (ctx.r3.u32 >= 64u) base.fail(Error::unsupported, 0x8214A9E4u);
+  if (ctx.r3.u32 >= 64u) base.fail(Error::unsupported, 0x8214ACD4u);
   g_tls_slots[ctx.r3.u32] = ctx.r4.u32;
   ctx.r3.u64 = 1u;
 }

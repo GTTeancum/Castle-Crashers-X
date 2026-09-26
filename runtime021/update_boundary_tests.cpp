@@ -561,6 +561,30 @@ static void renderer_caller_prefix_controls(const char* image_path) {
     CHECK(hok && hv!=0u);
   }
 
+  // WIP 023: execute the exact CRT _mtinit (sub_8212A630), the second
+  // startup step the sealed XEX entry performs before game code: it
+  // allocates the CRT TLS index (KeTlsAlloc fixture), publishes the
+  // per-thread-data accessors, and creates the main thread's ptd through
+  // the exact CRT heap. Without it the frame loop's first rand()-family
+  // call reads TLS index -1.
+  {
+    Context tc{};
+    tc.r1.u32=0x3f000;
+    tc.r13.u32=0x68000;
+    tc.lr=0x0c0160c0;
+    auto tr=invoke(0x8212a630,tc,m,sink(),400000);
+    uint64_t tls_index=0xffffffffu, ptd=0;
+    const bool iok=m.load_be(0x82157A08u,4,tls_index)==cc::xbox::MemoryError::ok;
+    const bool pok=m.load_be(0x82157A04u,4,ptd)==cc::xbox::MemoryError::ok;
+    cc_log("crt_mtinit result=%s@%08x funcs=%u memops=%u r3=%08x tls_index=%08x ptd=%08x\n",
+                name(tr.error),tr.address,tr.functions,tr.memory_ops,tc.r3.u32,
+                iok?uint32_t(tls_index):0xffffffffu,pok?uint32_t(ptd):0u);
+    CHECK(tr.error==Error::ok);
+    CHECK(tc.r3.u32==1u);           // _mtinit success
+    CHECK(iok && tls_index<64u);    // CRT TLS index allocated
+    CHECK(pok && ptd!=0u);          // main-thread ptd published
+  }
+
   Context c{};
   c.r1.u32=0x3f000;
   c.r13.u32=0x68000;
@@ -1049,9 +1073,9 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // update (sub_82075C88), render (sub_820759A8), VdSwap present and EDRAM
   // retrain against the fixtures (idle pad on port 0, no user music). The
   // bounded KeDelayExecutionThread contract stops the diagnostic at the
-  // third frame's pacing sleep with Error::capacity — a deliberate frame
+  // third frame's pacing sleep with Error::capacity -" a deliberate frame
   // budget, never a faked exit path.
-  auto pi=invoke(0x82070ba4,c,m,sink(),8000000);
+  auto pi=invoke(0x82070ba4,c,m,sink(),20000000);
   cc_log("caller_post_init result=%s@%08x funcs=%u memops=%u r1=%08x lr=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r11=%08x\n",
               name(pi.error),pi.address,pi.functions,pi.memory_ops,c.r1.u32,uint32_t(c.lr),
               c.r3.u32,c.r4.u32,c.r5.u32,c.r6.u32,c.r7.u32,c.r11.u32);
@@ -1067,7 +1091,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // chain (sub_820C3568/sub_820C3930/sub_820C4488/sub_820C4498) creates the
   // font texture. The slice ends by dispatching renderer vtable slot +12 to
   // exact sub_820A7E80 (with exact sub_820BFB50), which returns normally.
-  CHECK(pi.functions==1331u && pi.memory_ops==2276618u);
+  CHECK(pi.functions==330612u && pi.memory_ops==7127931u);
   CHECK(c.r1.u32==0x0003ee70u); // Sleep wrapper frame at the pacing boundary
   CHECK(m.load_be(0x00075240u,4,v)==cc::xbox::MemoryError::ok && v==0x01000000u); // pool size
   CHECK(m.load_be(0x00075244u,4,v)==cc::xbox::MemoryError::ok && v==0x10000000u); // pool base
