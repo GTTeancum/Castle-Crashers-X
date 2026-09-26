@@ -1043,14 +1043,21 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   cc_log("graphics_state device=%08x ring=%08x secondary=%08x descriptor=%08x workers=2 resources=%08x,%08x,%08x output_published=%08x hsio=ok\n",
               device,0x02007140u,0x0200f140u,0x0220f140u,0x02211730u,0x0233d770u,0x0233dad0u,device);
 
-  // WIP 022: with PlatformRenderer::Init returned, resume the original
+  // WIP 023: with PlatformRenderer::Init returned, resume the original
   // sub_82070AC8 caller at 0x82070BA4 with the live restored registers and
-  // stop fail-closed before the first still-unrecovered call.
+  // run the loc_82070DB0 main game loop. Each frame executes the original
+  // update (sub_82075C88), render (sub_820759A8), VdSwap present and EDRAM
+  // retrain against the fixtures (idle pad on port 0, no user music). The
+  // bounded KeDelayExecutionThread contract stops the diagnostic at the
+  // third frame's pacing sleep with Error::capacity — a deliberate frame
+  // budget, never a faked exit path.
   auto pi=invoke(0x82070ba4,c,m,sink(),8000000);
   cc_log("caller_post_init result=%s@%08x funcs=%u memops=%u r1=%08x lr=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r11=%08x\n",
               name(pi.error),pi.address,pi.functions,pi.memory_ops,c.r1.u32,uint32_t(c.lr),
               c.r3.u32,c.r4.u32,c.r5.u32,c.r6.u32,c.r7.u32,c.r11.u32);
-  CHECK(pi.error==Error::ok);
+  CHECK(pi.error==Error::capacity);
+  CHECK(pi.address==0x8214A614u); // KeDelayExecutionThread frame boundary
+  CHECK(uint32_t(c.lr)==0x820B7504u); // exact Sleep wrapper sub_820B6068
   // Exact sub_8209BC98 obtains the observed 16 MiB main pool through exact
   // sub_820B6108 / bounded MmAllocatePhysicalMemoryEx (fixture arena at
   // 0x10000000) and publishes it through the startup hash object. Exact
@@ -1060,9 +1067,8 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // chain (sub_820C3568/sub_820C3930/sub_820C4488/sub_820C4498) creates the
   // font texture. The slice ends by dispatching renderer vtable slot +12 to
   // exact sub_820A7E80 (with exact sub_820BFB50), which returns normally.
-  CHECK(pi.functions==808u && pi.memory_ops==2269363u);
-  CHECK(c.r1.u32==0x0003eee0u);
-  CHECK(uint32_t(c.lr)==0x82070D98u); // last completed original call before the main monitor loop
+  CHECK(pi.functions==1331u && pi.memory_ops==2276618u);
+  CHECK(c.r1.u32==0x0003ee70u); // Sleep wrapper frame at the pacing boundary
   CHECK(m.load_be(0x00075240u,4,v)==cc::xbox::MemoryError::ok && v==0x01000000u); // pool size
   CHECK(m.load_be(0x00075244u,4,v)==cc::xbox::MemoryError::ok && v==0x10000000u); // pool base
   // The XPR container header read into the physical block, byte-exact from

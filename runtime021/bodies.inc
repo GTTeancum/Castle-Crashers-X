@@ -59,7 +59,6 @@ HARD_BOUNDARY(sub_82078668, 0x82078668u)
 HARD_BOUNDARY(sub_820516F8, 0x820516F8u)
 HARD_BOUNDARY(sub_82127588, 0x82127588u)
 HARD_BOUNDARY(sub_8209A170, 0x8209A170u)
-HARD_BOUNDARY(sub_82053888, 0x82053888u)
 HARD_BOUNDARY(sub_82053648, 0x82053648u)
 HARD_BOUNDARY(sub_8208B8D0, 0x8208B8D0u)
 HARD_BOUNDARY(sub_82086D30, 0x82086D30u)
@@ -571,7 +570,6 @@ static void __imp__VdEnableRingBufferRPtrWriteBack(Context& ctx, Machine& base) 
 
 #define HARD_BOUNDARY_019(sym, addr) \
   static void sym([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, addr); }
-HARD_BOUNDARY_019(sub_820C74D0,0x820C74D0u)
 HARD_BOUNDARY_019(sub_820CC318,0x820CC318u)
 HARD_BOUNDARY_019(sub_820BECA0,0x820BECA0u)
 #include "generated/sub_820C7458.inc"
@@ -601,6 +599,15 @@ static void __imp__KeLeaveCriticalRegion(Context& ctx, Machine& base) {
   if (base.critical_region_depth!=1u || base.hsio_cs_locked ||
       (!checkpoint020_complete && !suffix021_complete && !frame022_complete))
     base.fail(Error::unsupported,0x8214A8F4u);
+  // WIP 023: the present path runs Enter -> VdRetrainEDRAM -> Leave once per
+  // frame from the same sub_820D19E8 call sites. A completed frame/suffix
+  // shape re-arms the sequence for the next frame; the Checkpoint 020
+  // worker-assisted init sequence stays one-shot.
+  if (suffix021_complete || frame022_complete) {
+    base.edram_retrain_calls=0u;
+    base.edram_suffix021_shape=false;
+    base.edram_frame022_shape=false;
+  }
   base.critical_region_depth=0u; ctx.r3.u64=0;
 }
 static void __imp__VdRetrainEDRAMWorker(Context& ctx, Machine& base) {
@@ -1023,7 +1030,26 @@ static void sub_820C6088(Context& ctx, Machine& base) {
 // Compile-time fail-closed imports used only by deeper branches of this exact
 // command-buffer family. A branch reaching one must establish its observed
 // platform/CRT contract before execution can proceed.
-static void __imp__KeDelayExecutionThread([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported,0x8214A614u); }
+// WIP 023 frame boundary. The main game loop paces itself with
+// KeDelayExecutionThread(WaitMode=1, Alertable=0, Interval=&stack qword)
+// from the exact Sleep wrapper sub_820B6068 (lr=0x820B7504). Each accepted
+// call is one completed frame (update sub_82075C88 + render sub_820759A8 +
+// VdSwap present + EDRAM retrain). The diagnostic runs a bounded number of
+// frames, then stops fail-closed at this exact boundary with Error::capacity
+// so the harness measures whole frames and never fakes an exit path.
+static uint32_t g_frame_delay_calls = 0;
+static constexpr uint32_t k_frame_budget = 3;
+static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
+  if (ctx.r3.u32 != 1u || ctx.r4.u32 != 0u || ctx.r5.u32 == 0u ||
+      uint32_t(ctx.lr) != 0x820B7504u)
+    base.fail(Error::unsupported, 0x8214A614u);
+  const uint64_t interval_hi = base.load(ctx.r5.u32, 4);
+  if ((interval_hi & 0x80000000u) == 0u)  // relative (negative) time only
+    base.fail(Error::unsupported, 0x8214A614u);
+  if (++g_frame_delay_calls >= k_frame_budget)
+    base.fail(Error::capacity, 0x8214A614u);
+  ctx.r3.u64 = 0u;  // STATUS_SUCCESS
+}
 static void __imp__KfReleaseSpinLock([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported,0x8214A744u); }
 static void __imp__KfAcquireSpinLock([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported,0x8214A754u); }
 static void __imp___vsnprintf([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported,0x8214A834u); }
@@ -1308,7 +1334,11 @@ static void __imp__VdSwap(Context& ctx, Machine& base) {
   // command region (0x0200F950); the post-Init frame writes its swap block
   // through the ring write-pointer window instead. Both are accepted under
   // the same content validation below; everything else fails closed.
-  const bool ring_target = ctx.r3.u32 >= 0x0201F000u && ctx.r3.u32 <= 0x0202F000u;
+  // WIP 023: the first full game-loop frame writes far more ring commands
+  // than startup did, so its swap block lands past 0x0202F000 (observed
+  // 0x0202FBB0). Accept the whole ring/secondary command window instead of
+  // the startup-era slice; content validation below is unchanged.
+  const bool ring_target = ctx.r3.u32 >= 0x0201F000u && ctx.r3.u32 <= 0x02030000u;
   if (!base.system_command_buffer_queried ||
       (base.vd_swap_called && !ring_target) ||
       (ctx.r3.u32 != 0x0200F950u && !ring_target) ||
@@ -1645,6 +1675,69 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_820E4278.inc"
 #include "generated/sub_820DB298.inc"
 #include "generated/sub_820E31D8.inc"
+#include "generated/sub_8209B790.inc"
+#include "generated/sub_8209B7A8.inc"
+#include "generated/sub_820A1640.inc"
+#include "generated/sub_82053888.inc"
+#include "generated/sub_820A7470.inc"
+#include "generated/sub_820C74D0.inc"
+#include "generated/sub_820A75E0.inc"
+#include "generated/sub_820A7DE0.inc"
+#include "generated/sub_820A7E30.inc"
+#include "generated/sub_820A8650.inc"
+#include "generated/sub_820A86D0.inc"
+#include "generated/sub_820A8750.inc"
+#include "generated/sub_820A8810.inc"
+#include "generated/sub_820A8840.inc"
+#include "generated/sub_820A7550.inc"
+#include "generated/sub_820BECF8.inc"
+#include "generated/sub_820BED90.inc"
+#include "generated/sub_820BFA70.inc"
+#include "generated/sub_820D7D00.inc"
+#include "generated/sub_820D7AF0.inc"
+#include "generated/sub_820A1718.inc"
+#include "generated/sub_820A1720.inc"
+#include "generated/sub_820A1940.inc"
+#include "generated/sub_8209B9D0.inc"
+#include "generated/sub_820B6B80.inc"
+#include "generated/sub_8209B830.inc"
+#include "generated/sub_820798D8.inc"
+#include "generated/sub_820B6B90.inc"
+#include "generated/sub_8209BA50.inc"
+#include "generated/sub_821280E8.inc"
+#include "generated/sub_8209B8D8.inc"
+#include "generated/sub_82128030.inc"
+#include "generated/sub_8212C6F0.inc"
+#include "generated/sub_8212C3F0.inc"
+#include "generated/sub_8212BF08.inc"
+#include "generated/sub_82132B08.inc"
+#include "generated/sub_8212C5C0.inc"
+#include "generated/sub_8212E910.inc"
+#include "generated/sub_821329B8.inc"
+#include "generated/sub_82132B00.inc"
+#include "generated/sub_8212C658.inc"
+#include "generated/sub_821329A8.inc"
+#include "generated/sub_8212EEF0.inc"
+#include "generated/sub_821326A0.inc"
+#include "generated/sub_82132830.inc"
+#include "generated/sub_821329E0.inc"
+#include "generated/sub_821328B8.inc"
+#include "generated/sub_821348A8.inc"
+#include "generated/sub_8212F044.inc"
+#include "generated/sub_8212EC98.inc"
+#include "generated/sub_82129518.inc"
+#include "generated/sub_821325D0.inc"
+#include "generated/sub_821327F8.inc"
+#include "generated/sub_82130438.inc"
+#include "generated/sub_8212F458.inc"
+#include "generated/sub_82134968.inc"
+#include "generated/sub_821349A0.inc"
+#include "generated/sub_82129550.inc"
+#include "generated/sub_82136AA8.inc"
+#include "generated/sub_821347D8.inc"
+#include "generated/sub_8212F318.inc"
+#include "generated/sub_8212F2F8.inc"
+#include "generated/sub_8212F428.inc"
 #include "generated/sub_820A7480.inc"
 #include "generated/sub_820DBF00.inc"
 #include "generated/sub_820DCAF8.inc"
@@ -1727,8 +1820,58 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 // WIP 022: fail-closed XAM/Live kernel imports referenced by the family
 // below; each is bound to its observed shape only when the diagnostic
 // actually reaches it.
+static void __imp__NtWriteFile([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AD14u); }
+// WIP 023 input fixture: exactly one standard gamepad on port 0, idle
+// (no buttons, centered sticks, released triggers). Ports 1-3 report
+// ERROR_DEVICE_NOT_CONNECTED (0x48F), matching a console with one pad.
+// The original-Xbox driver maps real pads through this same boundary.
+static uint32_t g_input_packet_number = 0;
+static void __imp__XamInputGetCapabilities(Context& ctx, Machine& base) {
+  const uint32_t user = ctx.r3.u32, caps = ctx.r5.u32;
+  if (user != 0u) { ctx.r3.u64 = 0x48Fu; return; }
+  base.store(caps + 0, 1, 0x01u);      // Type    = XINPUT_DEVTYPE_GAMEPAD
+  base.store(caps + 1, 1, 0x01u);      // SubType = XINPUT_DEVSUBTYPE_GAMEPAD
+  base.store(caps + 2, 2, 0u);         // Flags
+  base.store(caps + 4, 2, 0xF3FFu);    // Gamepad.wButtons supported mask
+  base.store(caps + 6, 1, 0xFFu);      // Gamepad.bLeftTrigger range
+  base.store(caps + 7, 1, 0xFFu);      // Gamepad.bRightTrigger range
+  base.store(caps + 8, 2, 0xFFC0u);    // Gamepad.sThumbLX resolution
+  base.store(caps + 10, 2, 0xFFC0u);   // Gamepad.sThumbLY
+  base.store(caps + 12, 2, 0xFFC0u);   // Gamepad.sThumbRX
+  base.store(caps + 14, 2, 0xFFC0u);   // Gamepad.sThumbRY
+  base.store(caps + 16, 2, 0xFFu);     // Vibration.wLeftMotorSpeed range
+  base.store(caps + 18, 2, 0xFFu);     // Vibration.wRightMotorSpeed range
+  ctx.r3.u64 = 0u;                     // ERROR_SUCCESS
+}
+static void __imp__XamInputGetState(Context& ctx, Machine& base) {
+  const uint32_t user = ctx.r3.u32, state = ctx.r5.u32;
+  if (user != 0u) { ctx.r3.u64 = 0x48Fu; return; }
+  ++g_input_packet_number;
+  base.store(state + 0, 4, g_input_packet_number); // dwPacketNumber
+  base.store(state + 4, 4, 0u);                    // wButtons | triggers
+  base.store(state + 8, 4, 0u);                    // sThumbLX | sThumbLY
+  base.store(state + 12, 4, 0u);                   // sThumbRX | sThumbRY
+  ctx.r3.u64 = 0u;                                 // ERROR_SUCCESS
+}
+static void __imp__XamInputSetState(Context& ctx, [[maybe_unused]] Machine& base) {
+  // Rumble on the fixture pad: accepted and ignored.
+  ctx.r3.u64 = (ctx.r3.u32 == 0u) ? 0u : 0x48Fu;
+}
 static void __imp__NtReleaseSemaphore([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A4B4u); }
-static void __imp__XMsgInProcessCall([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AA84u); }
+// WIP 023 observed shape (lr=820FBE24): app 0xFA (XMP system music
+// player), message 0x00070009 (get playback state), r5 = out status
+// pointer, r6 = 0. The original Xbox has no system music player, so the
+// port reports "idle / no user music" (state 0) and success. Any other
+// app/message stays fail-closed until observed.
+static void __imp__XMsgInProcessCall(Context& ctx, Machine& base) {
+  if (ctx.r3.u32 == 0xFAu && ctx.r4.u32 == 0x00070009u &&
+      ctx.r5.u32 != 0u && ctx.r6.u32 == 0u) {
+    base.store(ctx.r5.u32, 4, 0u);  // XMP state = idle
+    ctx.r3.u64 = 0u;                // ERROR_SUCCESS
+    return;
+  }
+  base.fail(Error::unsupported, 0x8214AA84u);
+}
 static void __imp__XNotifyGetNext([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A204u); }
 static void __imp__XamAlloc([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AAA4u); }
 static void __imp__XamContentClose([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A324u); }

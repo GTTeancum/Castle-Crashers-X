@@ -124,7 +124,7 @@ print('PASS platform post-graphics slice source=820A7990 range=820A7B34..return 
 orig=expected('sub_82070AC8').decode()
 call='\tsub_820A7990(ctx, base);\n'
 st=orig.index(call)+len(call)
-en=orig.index('loc_82070DB0:\n',st)
+en=orig.rindex('}')
 frag=orig[st:en]
 want=('DEFINE_REX_FUNC(sub_82070AC8_post_init) {\n'
       '\tREX_FUNC_PROLOGUE();\n'
@@ -133,12 +133,11 @@ want=('DEFINE_REX_FUNC(sub_82070AC8_post_init) {\n'
       '#pragma clang diagnostic push\n'
       '#pragma clang diagnostic ignored "-Wunused-label"\n'+frag+
       '#pragma clang diagnostic pop\n'
-      '\t// Diagnostic continuation stop: next original code is the loc_82070DB0 main monitor loop (startup complete).\n'
-      '\treturn;\n}\n')
+      '}\n')
 actual=(root/'runtime021/generated/sub_82070AC8_post_init.inc').read_text()
 if actual!=want:
     print('FAIL caller post-init slice differs from sealed sub_82070AC8',file=sys.stderr);sys.exit(1)
-print('PASS caller post-init slice source=82070AC8 range=82070BA4..before_82070DB0_main_loop bytes=%d sha256=%s' %
+print('PASS caller post-init slice source=82070AC8 range=82070BA4..return_including_main_loop bytes=%d sha256=%s' %
       (len(frag.encode()),hashlib.sha256(frag.encode()).hexdigest()))
 
 # Bind immutable constants and the 10,500-object virtual initializer to the
