@@ -30,3 +30,13 @@ Desktop.ini
 
 # Game data extracted from the retail LIVE container (reproducible via castle-crashers-port/tools/extract_stfs.py)
 game-data/extracted/
+
+# nxdk build outputs (reproducible via tools/build_widget011_nxdk.sh)
+nxdk-*/bin/default.xbe
+nxdk-*/*.iso
+nxdk-*/main.exe
+nxdk-*/main.map
+**/*.obj
+**/*.su
+**/*.cpp.d
+**/*.c.d

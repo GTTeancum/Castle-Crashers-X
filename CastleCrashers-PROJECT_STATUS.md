@@ -337,6 +337,17 @@ Sealing acceptance: `caller_post_init result=ok`, **808 executions / 2,269,363 m
 
 Startup state at the seal: renderer + device fully initialized, 15 shader pairs + font loaded from the retail container, first frame presented with the doorbell-consumption GPU contract, complete audio driver registered with two pinned workers, notification listener live, 16 MiB main pool published, CRT heap serving allocations, main-loop thread created (suspended, priority 1), Live declined by port policy. **The next frontier is the main loop itself and, in parallel, the fresh nxdk XBE/ISO build for XEMU validation — the diagnostic recovery has now reached the state a booting original-Xbox port must reproduce.**
 
+Port-policy addendum (user directive): **leaderboards** are stubbed under the same original-Xbox policy as Live and achievements — they ride the same session/stats stack, which the Live singleton `E_FAIL` gates upstream; any leaderboard call that still surfaces on an observed path receives a graceful no-session stub rather than a hard stop.
+
+### FRESH NXDK XBOX BUILD + LOCAL XEMU RUN (2026-09-26)
+
+The full source→XBE→ISO→XEMU pipeline now works **on this machine**, ending the "no fresh nxdk build" gap carried since Checkpoint 011:
+
+- Toolchain: local `C:\nxdk` checkout driven by MSYS2 CLANG64 (`tools/build_widget011_nxdk.sh`); clang 21.1.8 required `-fms-compatibility-version=19.29` for the bare `i386-pc-win32` triple (build-infrastructure flag in the project Makefile); the prebuilt `cxbe.exe`/`extract-xiso.exe` host tools are passed as command-line make variables and need `/mingw64/bin` on PATH for their runtime DLLs.
+- Fresh artifacts (build outputs, gitignored, reproducible): `nxdk-widget011/bin/default.xbe` SHA-256 `6938330bdd27ef6f10a8e4f6c94bdebff8b84bc1519d5eed822a8831d52cca16` (905,216 bytes); `nxdk-widget011/CastleCrashers-Widget011.iso` SHA-256 `2d0170a52da85d1956b02a4d6aa11e87234560dd4d2bcda38d9cd68becb8eb3f` (44,630,016 bytes).
+- **Actual XEMU execution**: local Windows `xemu.exe` 0.8.136 (`C:\Games\Emulators\Xemu`, its own configured BIOS/EEPROM/HDD tuple — distinct from the Linux CI tuple recorded for Checkpoint 020), launched with `-dvd_path` on the fresh ISO. The diagnostic booted and rendered the Castle Crashers mode-select book scene; window captures at ~50 s and ~75 s are committed under `logs/wip022/`.
+- Honest scope: this fresh ISO carries the **Widget011 diagnostic content** (Checkpoint 011-era logic, rebuilt byte-fresh) — it does **not** yet embed the Checkpoint 022 recovered startup. The established Makefile pattern (the widget build already compiles `runtime011/bridge.cpp` for the Xbox) is the template for the next step: an `nxdk-checkpoint022` target compiling `runtime021/bridge.cpp` + a native driver for the recovered startup chain, with host-file contracts redirected to ISO-resident `game-data` files.
+
 ## 4. XBOX / XEMU STATUS
 
 ### Persistent Xbox/XEMU test kit

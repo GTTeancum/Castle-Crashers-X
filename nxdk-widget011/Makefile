@@ -4,6 +4,11 @@ SRCS = $(CURDIR)/../port009/mode.cpp $(CURDIR)/../runtime007/numeric/fused.cpp $
 SHADER_OBJS = $(CURDIR)/ps.inl $(CURDIR)/vs.inl
 NXDK_DIR ?= $(CURDIR)/../../buildkit/sources/nxdk
 CXXFLAGS += -std=c++20 -O2 -fno-exceptions -fno-rtti -fstack-usage -ffp-contract=off -fno-fast-math
+# Newer clang defaults the bare i386-pc-win32 triple to an ancient MSVC
+# compatibility level where char16_t/char32_t are not keywords; pin a modern
+# level so nxdk's libc++ headers compile (build-infrastructure flag only).
+CXXFLAGS += -fms-compatibility-version=19.29
+CFLAGS += -fms-compatibility-version=19.29
 LDFLAGS += -map:$(CURDIR)/main.map
 include $(NXDK_DIR)/Makefile
 $(CURDIR)/main.obj: $(CURDIR)/ps.inl $(CURDIR)/vs.inl $(CURDIR)/backend.inc $(CURDIR)/telemetry.h $(CURDIR)/expected.h
