@@ -44,6 +44,14 @@ static uint32_t g_semaphore_count = 0;
 static uint32_t g_semaphore_value[8] = {};
 static uint32_t g_semaphore_limit[8] = {};
 static uint64_t g_tls_allocated = 0;  // bitmap over the 64 fixture TLS slots
+// WIP 023: recycling table for the physical cursor arena. MmFree pushes a
+// block here; a later MmAlloc of the same rounded size reuses it, keeping
+// the bounded arena sufficient for the frame loop's steady alloc/free
+// traffic without modeling a general heap.
+static uint32_t g_phys_free_addr[256] = {};
+static uint32_t g_phys_free_size[256] = {};
+static uint32_t g_phys_alloc_addr[512] = {};
+static uint32_t g_phys_alloc_size[512] = {};
 // One-shot XAM notification listener.
 static bool g_xam_listener_created = false;
 // The physical graphics allocator is one durable kernel-side allocator: its
@@ -56,6 +64,12 @@ static bool g_main_pool_allocated = false;
 // Cursor for the smaller observed physical blocks (font/texture memory).
 static uint32_t g_phys_cursor = 0x12000000u;
 #include "../runtime007/float_scope.inc"
+struct Machine;
+static void (*g_drain_workers)(Machine&, uint32_t) = nullptr;
+// WIP 023: the frame loop executes exact sub_820A89F8 for texture binds;
+// the earlier widget checkpoints keep their modeled sink case.
+static bool g_use_exact_texture_bind = false;
+void set_exact_texture_bind(bool v) noexcept { g_use_exact_texture_bind = v; }
 struct Machine {
   struct ThreadSlot {
     bool allocated{};
@@ -112,10 +126,18 @@ struct Machine {
   uint32_t persist_display_allocation{};
   // WIP 021 shader-file fixture: exactly one file open at a time, read-only,
   // backed by the extracted container bytes. All other shapes fail closed.
-  bool file_open{};
-  uint32_t file_handle{};
-  uint32_t file_pos{};
-  std::vector<uint8_t> file_bytes;
+  // WIP 023: the frame loop keeps several files open at once (a streamed
+  // XMA sound bank stays open across pak opens), so the single-file
+  // fixture became a bounded 8-slot handle table.
+  struct FileSlot { bool open{}; uint32_t handle{}; uint32_t pos{}; std::vector<uint8_t> bytes; };
+  std::array<FileSlot,8> files{};
+  FileSlot* find_file(uint32_t h) {
+    for (auto &f : files) if (f.open && f.handle==h) return &f;
+    return nullptr;
+  }
+  unsigned open_files() const {
+    unsigned n=0; for (auto &f : files) if (f.open) ++n; return n;
+  }
   uint32_t ring_virtual{};
   uint32_t ring_physical{};
   uint32_t ring_descriptor{};
@@ -148,13 +170,19 @@ struct Machine {
           flags == 0x608A2002u && size >= 8u && size <= 256u;
       // WIP 022: the exact XAudio driver init (sub_820E35E8 family)
       // allocates its mixing/XMA work buffers with this exact flag word.
+      // WIP 023: the music streamer also takes small stream records with
+      // the same flag words (observed 808 bytes).
       const bool audio_buffer_shape =
-          (flags == 0x61820005u || flags == 0x61820006u) &&
-          size >= 0x1000u && size <= 0x40000u;
+          (flags == 0x61820005u || flags == 0x61820006u ||
+           flags == 0xA7820007u) &&
+          size >= 16u && size <= 0x40000u;
       if (!shader_shape && !resource_header_shape &&
           !resource_backing_shape && !notify_record_shape &&
-          !audio_buffer_shape)
+          !audio_buffer_shape) {
+        cc_elog("GFXALLOC reject size=%u flags=%08x index=%u\n",
+                size, flags, g_graphics_alloc_index);
         fail(Error::unsupported, 0x82136670u);
+      }
       const uint32_t p=(g_graphics_alloc_cursor + 15u) & ~15u;
       if (p > 0xffffffffu-size || memory.check(p,size,3) != cc::xbox::MemoryError::ok)
         fail(Error::memory,p);
@@ -207,6 +235,25 @@ struct Machine {
   const Context* last_ctx{};
   bool trace_one_frame = false;
   bool frame_probe_log = false;
+  bool drain_active = false;
+  const char* prof_names[512] = {};
+  uint64_t prof_counts[512] = {};
+  void prof_hit(const char* name) {
+    for (unsigned i = 0; i < 512; ++i) {
+      if (prof_names[i] == name) { ++prof_counts[i]; return; }
+      if (!prof_names[i]) { prof_names[i] = name; prof_counts[i] = 1; return; }
+    }
+  }
+  void prof_dump() {
+    for (unsigned pass = 0; pass < 12; ++pass) {
+      uint64_t best = 0; unsigned bi = 512;
+      for (unsigned i = 0; i < 512 && prof_names[i]; ++i)
+        if (prof_counts[i] > best) { best = prof_counts[i]; bi = i; }
+      if (bi == 512) break;
+      cc_elog("PROF %10llu %s\n", (unsigned long long)prof_counts[bi], prof_names[bi]);
+      prof_counts[bi] = 0;
+    }
+  }
   const char* trace_names[256] = {};
   unsigned trace_count = 0;
   void prologue(const char *name, const Context& ctx) {
@@ -219,8 +266,25 @@ struct Machine {
     if (!std::strcmp(name,"sub_8209DE50")) validate_widget_update(ctx.r3.u32);
     if (!std::strcmp(name,"sub_8209DF48")) validate_widget_owner(ctx.r3.u32);
     if (!std::strcmp(name,"sub_82091248")) validate_owner(ctx.r3.u32);
-    if (++result.functions > 5000000)
+    prof_hit(name);
+    // WIP 023: the exact in-frame waits poll sub_820B0F18 ("all workers
+    // quiet?") while jobs sit in the pending lists; the bounded worker
+    // model drains them synchronously at that poll, exactly as at the
+    // frame boundary. Guarded against re-entry from the drained jobs.
+    if (g_drain_workers && !drain_active && !std::strcmp(name, "sub_820B0F18")) {
+      drain_active = true;
+      g_drain_workers(*this, ctx.r13.u32);
+      drain_active = false;
+    }
+    if (++result.functions > 50000000) {
+      prof_dump();
+      uint64_t pend=0,done=0,b=0;
+      memory.load_be(0x8228A770u,4,pend); memory.load_be(0x8228A764u,4,done);
+      char busy[6]{};
+      for (unsigned i=0;i<5;++i){ memory.load_be(0x8228A768u+i,1,b); busy[i]=char('0'+(b&1)); }
+      cc_elog("WORKERSTATE pend=%08x done=%08x busy=%s\n",uint32_t(pend),uint32_t(done),busy);
       fail(Error::capacity);
+    }
     if (!std::strcmp(name, "sub_8208A7A0"))
       ++result.tree_visits;
     // WIP 023: the fixture Xenos consumes synchronously, so by the time the
@@ -228,6 +292,21 @@ struct Machine {
     // read-index writeback has always caught up with the device's current
     // submission phase. Refresh the same writeback word the doorbell
     // contract publishes; the exact wait code then observes a caught-up GPU.
+    if (!std::strcmp(name, "sub_82095FF0")) {
+      char nm[48]{}; uint64_t bv=0;
+      for (unsigned i=0;i<47u;++i) {
+        if (memory.load_be(ctx.r5.u32+4u+i,1,bv)!=cc::xbox::MemoryError::ok || !bv) break;
+        nm[i]=char(bv);
+      }
+      cc_elog("RESOLVE '%s' out=%08x lr=%08x\n",nm,ctx.r3.u32,uint32_t(ctx.lr));
+    }
+    if (!std::strcmp(name, "sub_82096530")) {
+      cc_elog("REGISTER pool=%08x id=%08x lr=%08x\n",ctx.r3.u32,ctx.r4.u32,uint32_t(ctx.lr));
+    }
+    if (!std::strcmp(name, "sub_8209DE50") && (result.functions & 0xFFFFFu) < 6u)
+      cc_elog("DE50 fn=%u widget=%08x\n", result.functions, ctx.r3.u32);
+    if (!std::strcmp(name, "sub_820915F0") && (result.functions & 0xFFFFFu) < 12u)
+      { uint64_t pd=0,dn=0,b0=0,b1=0,b2=0,b3=0,b4=0,f0=0,f1v=0,f2=0; memory.load_be(0x8228A770u,4,pd); memory.load_be(0x8228A764u,4,dn); memory.load_be(0x8228A768u,1,b0); memory.load_be(0x8228A769u,1,b1); memory.load_be(0x8228A76Au,1,b2); memory.load_be(0x8228A76Bu,1,b3); memory.load_be(0x8228A76Cu,1,b4); memory.load_be(ctx.r3.u32+10344u,1,f0); memory.load_be(ctx.r3.u32+10345u,1,f1v); memory.load_be(ctx.r3.u32+10346u,1,f2); cc_elog("915F0 fn=%u obj=%08x pend=%08x done=%08x busy=%u%u%u%u%u flags=%u%u%u\n", result.functions, ctx.r3.u32, uint32_t(pd), uint32_t(dn), unsigned(b0),unsigned(b1),unsigned(b2),unsigned(b3),unsigned(b4),unsigned(f0),unsigned(f1v),unsigned(f2)); }
     if (frame_probe_log && !std::strcmp(name, "sub_82075C88")) {
       cc_elog("UPDATE dt=%f obj=%08x\n", ctx.f1.f64, ctx.r3.u32);
       frame_probe_log = false;
@@ -461,6 +540,11 @@ static simde__m128i simde_mm_add_epi32(simde__m128i a, simde__m128i b) {
   simde__m128i r{}; uint32_t av[4]{},bv[4]{},rv[4]{}; std::memcpy(av,a.u8,16); std::memcpy(bv,b.u8,16);
   for(int i=0;i<4;++i) rv[i]=av[i]+bv[i]; std::memcpy(r.u8,rv,16); return r;
 }
+static simde__m128i simde_mm_max_epi32(simde__m128i a, simde__m128i b) {
+  // vmaxsw: per-lane signed 32-bit maximum.
+  simde__m128i r{}; int32_t av[4]{},bv[4]{},rv[4]{}; std::memcpy(av,a.u8,16); std::memcpy(bv,b.u8,16);
+  for(int i=0;i<4;++i) rv[i]=av[i]>bv[i]?av[i]:bv[i]; std::memcpy(r.u8,rv,16); return r;
+}
 static simde__m128i simde_mm_slli_epi32(simde__m128i a, int n) {
   simde__m128i r{}; uint32_t av[4]{},rv[4]{}; std::memcpy(av,a.u8,16);
   for(int i=0;i<4;++i) rv[i]=(n>=32)?0u:(av[i]<<n); std::memcpy(r.u8,rv,16); return r;
@@ -535,6 +619,12 @@ static simde__m128i simde_mm_perm_epi8_(simde__m128i a, simde__m128i b, simde__m
     d.u8[i] = sel < 16 ? a.u8[15 - sel] : b.u8[31 - sel];
   }
   return d;
+}
+static simde__m128i simde_mm_adds_epu32(simde__m128i a, simde__m128i b) {
+  // vadduws: per-lane unsigned 32-bit saturating add.
+  simde__m128i r{}; uint32_t av[4]{},bv[4]{},rv[4]{}; std::memcpy(av,a.u8,16); std::memcpy(bv,b.u8,16);
+  for(int i=0;i<4;++i) { const uint64_t s=uint64_t(av[i])+bv[i]; rv[i]=s>0xFFFFFFFFull?0xFFFFFFFFu:uint32_t(s); }
+  std::memcpy(r.u8,rv,16); return r;
 }
 static simde__m128i simde_mm_vctsxs(simde__m128 a) {
   simde__m128i r{}; int32_t out[4]{};
@@ -624,7 +714,7 @@ static bool submit(void *ptr, const Draw &d) {
   return true;
 }
 static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
-  if (++base.result.dispatches > 500000)
+  if (++base.result.dispatches > 50000000)
     base.fail(Error::capacity, address);
   if (address == 0x82091248)
     base.validate_owner(ctx.r3.u32);
@@ -649,14 +739,20 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     // WIP 023 third observed shape: the frame loop's pak loader opens
     // "game:\game\<name>.pak" with FILE_ATTRIBUTE_NORMAL (0x80) and
     // FILE_SHARE_READ (1); all other parameters identical.
-    const bool pak_open_shape    = ctx.r8.u32==0x80u && ctx.r9.u32==1u;
-    if (base.file_open || ctx.r4.u32!=0x80100080u || ctx.r7.u32!=0u ||
+    // WIP 023 fourth shape: the sound loader opens "game:\sounds\*.xma"
+    // with FileAttributes 0 and FILE_SHARE_READ; path-selected directory
+    // like the pak shape.
+    const bool pak_open_shape    = (ctx.r8.u32==0x80u || ctx.r8.u32==0u) &&
+                                   ctx.r9.u32==1u;
+    Machine::FileSlot* slot=nullptr;
+    for (auto &fs : base.files) if (!fs.open) { slot=&fs; break; }
+    if (!slot || ctx.r4.u32!=0x80100080u || ctx.r7.u32!=0u ||
         (!shader_open_shape && !font_open_shape && !pak_open_shape) || ctx.r10.u32!=1u ||
         uint32_t(base.load(ctx.r1.u32+84,4))!=0x60u ||
         uint32_t(base.load(oa+0,4))!=0xFFFFFFFDu ||
         uint32_t(base.load(oa+8,4))!=0x40u) {
       cc_elog("NTCREATE reject open=%d r4=%08x r7=%08x r8=%08x r9=%08x r10=%08x s84=%08x oa0=%08x oa8=%08x\n",
-        int(base.file_open),ctx.r4.u32,ctx.r7.u32,ctx.r8.u32,ctx.r9.u32,ctx.r10.u32,
+        int(base.open_files()),ctx.r4.u32,ctx.r7.u32,ctx.r8.u32,ctx.r9.u32,ctx.r10.u32,
         uint32_t(base.load(ctx.r1.u32+84,4)),uint32_t(base.load(oa+0,4)),uint32_t(base.load(oa+8,4)));
       base.fail(Error::unsupported, address);
     }
@@ -668,13 +764,38 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     static constexpr char shader_prefix[]="game:\\shaders\\";
     static constexpr char font_prefix[]="game:\\Fonts\\";
     static constexpr char pak_prefix[]="game:\\game\\";
+    static constexpr char snd_prefix[]="game:\\sounds\\";
+    static constexpr char music_prefix[]="game:\\music\\";
+    // WIP 023: the pak-shaped open loads from a small set of observed
+    // directories ("game", "sounds", "music"); pick the mapping by the
+    // guest path's own directory segment, case-insensitively.
+    char dseg[16]{}; unsigned dlen=0;
+    if (pak_open_shape) {
+      uint64_t chv=0;
+      const uint32_t sp=uint32_t(base.load(uint32_t(base.load(ctx.r5.u32+4,4))+4,4));
+      for (unsigned i=6;i<6+15u;++i) {
+        if (base.memory.load_be(sp+i,1,chv)!=cc::xbox::MemoryError::ok) break;
+        char c=char(chv);
+        if (c>='A'&&c<='Z') c=char(c+32);
+        if (c=='\\'||c==0) break;
+        dseg[dlen++]=c;
+      }
+    }
+    const bool sounds_dir = pak_open_shape && !std::strcmp(dseg,"sounds");
+    const bool music_dir  = pak_open_shape && !std::strcmp(dseg,"music");
     const char* prefix = shader_open_shape ? shader_prefix
-                       : font_open_shape   ? font_prefix : pak_prefix;
+                       : font_open_shape   ? font_prefix
+                       : sounds_dir        ? snd_prefix
+                       : music_dir         ? music_prefix : pak_prefix;
     const uint32_t plen = shader_open_shape ? uint32_t(sizeof(shader_prefix))-1u
                         : font_open_shape   ? uint32_t(sizeof(font_prefix))-1u
+                        : sounds_dir        ? uint32_t(sizeof(snd_prefix))-1u
+                        : music_dir         ? uint32_t(sizeof(music_prefix))-1u
                                             : uint32_t(sizeof(pak_prefix))-1u;
     const char* host_dir = shader_open_shape ? "/shaders/"
-                         : font_open_shape   ? "/Fonts/" : "/game/";
+                         : font_open_shape   ? "/Fonts/"
+                         : sounds_dir        ? "/sounds/"
+                         : music_dir         ? "/music/" : "/game/";
     const long size_cap = shader_open_shape ? 65536
                         : font_open_shape   ? 4*1024*1024 : 16*1024*1024;
     char fname[80]{};
@@ -728,15 +849,15 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     const long sz=std::ftell(f);
     std::fseek(f,0,SEEK_SET);
     if (sz<=0 || sz>size_cap) { std::fclose(f); base.fail(Error::unsupported, address); }
-    base.file_bytes.assign(size_t(sz),0);
-    const bool ok=std::fread(base.file_bytes.data(),1,size_t(sz),f)==size_t(sz);
+    slot->bytes.assign(size_t(sz),0);
+    const bool ok=std::fread(slot->bytes.data(),1,size_t(sz),f)==size_t(sz);
     std::fclose(f);
     if (!ok) base.fail(Error::unsupported, address);
     if (pak_open_shape) cc_log("pak_open %s bytes=%ld\n",fname,sz);
-    base.file_open=true;
-    base.file_pos=0;
-    base.file_handle=0x0F11E001u;
-    base.store(handle_out,4,base.file_handle);
+    slot->open=true;
+    slot->pos=0;
+    slot->handle=0x0F11E001u+uint32_t(slot-&base.files[0]);
+    base.store(handle_out,4,slot->handle);
     base.store(iosb+0,4,0u);
     base.store(iosb+4,4,1u); // FILE_OPENED
     ctx.r3.u64=0;
@@ -748,14 +869,14 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     // loader seeks before each section read. Positions beyond EOF and every
     // other class stay fail-closed.
     const uint32_t iosb=ctx.r4.u32, info=ctx.r5.u32;
-    if (!base.file_open || ctx.r3.u32!=base.file_handle ||
-        ctx.r6.u32!=8u || ctx.r7.u32!=14u)
+    auto* fsl=base.find_file(ctx.r3.u32);
+    if (!fsl || ctx.r6.u32!=8u || ctx.r7.u32!=14u)
       base.fail(Error::unsupported, address);
     const uint64_t hi=base.load(info+0,4), lo=base.load(info+4,4);
     const uint64_t pos=(hi<<32)|lo;
-    if (pos>base.file_bytes.size())
+    if (pos>fsl->bytes.size())
       base.fail(Error::unsupported, address);
-    base.file_pos=uint32_t(pos);
+    fsl->pos=uint32_t(pos);
     base.store(iosb+0,4,0u);
     base.store(iosb+4,4,0u);
     ctx.r3.u64=0u;
@@ -765,12 +886,13 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     // NtQueryInformationFile ??? bounded to FileNetworkOpenInformation (class
     // 34, 56 bytes) on the single open shader-file fixture handle.
     const uint32_t iosb=ctx.r4.u32, buf=ctx.r5.u32;
-    if (!base.file_open || ctx.r3.u32!=base.file_handle)
+    auto* fsl=base.find_file(ctx.r3.u32);
+    if (!fsl)
       base.fail(Error::unsupported, address);
     // WIP 023: the pak loader also queries FilePositionInformation (class
     // 14, 8-byte LARGE_INTEGER) after seeking; report the fixture position.
     if (ctx.r6.u32==8u && ctx.r7.u32==14u) {
-      base.store(buf,8,uint64_t(base.file_pos));
+      base.store(buf,8,uint64_t(fsl->pos));
       base.store(iosb+0,4,0u);
       base.store(iosb+4,4,8u);
       ctx.r3.u64=0u;
@@ -779,8 +901,8 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     if (ctx.r6.u32!=56u || ctx.r7.u32!=34u)
       base.fail(Error::unsupported, address);
     for (unsigned i=0;i<4;++i) base.store(buf+i*8u,8,0u); // four timestamps
-    base.store(buf+32u,8,uint64_t(base.file_bytes.size())); // AllocationSize
-    base.store(buf+40u,8,uint64_t(base.file_bytes.size())); // EndOfFile
+    base.store(buf+32u,8,uint64_t(fsl->bytes.size())); // AllocationSize
+    base.store(buf+40u,8,uint64_t(fsl->bytes.size())); // EndOfFile
     base.store(buf+48u,4,0x80u); // FILE_ATTRIBUTE_NORMAL
     base.store(buf+52u,4,0u);
     base.store(iosb+0,4,0u);
@@ -792,15 +914,26 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     // NtReadFile ??? bounded synchronous read of the single open shader-file
     // fixture from the current position (no event/APC/byte-offset observed).
     const uint32_t iosb=ctx.r7.u32, buf=ctx.r8.u32, len=ctx.r9.u32;
-    if (!base.file_open || ctx.r3.u32!=base.file_handle || ctx.r4.u32!=0u ||
-        ctx.r5.u32!=0u || ctx.r6.u32!=0u || ctx.r10.u32!=0u ||
-        base.file_pos>base.file_bytes.size())
+    // WIP 023 second observed read shape (sound loader, lr=0x820B6398):
+    // ApcContext carries the IOSB pointer and an explicit 8-byte BE byte
+    // offset may be supplied through the trailing pointer argument.
+    const bool plain_shape = ctx.r6.u32==0u && ctx.r10.u32==0u;
+    const bool apcctx_shape = ctx.r6.u32==iosb;
+    auto* fsl=base.find_file(ctx.r3.u32);
+    if (!fsl || ctx.r4.u32!=0u ||
+        ctx.r5.u32!=0u || (!plain_shape && !apcctx_shape) ||
+        fsl->pos>fsl->bytes.size())
       base.fail(Error::unsupported, address);
-    const uint32_t avail=uint32_t(base.file_bytes.size()-base.file_pos);
+    if (apcctx_shape && ctx.r10.u32!=0u) {
+      const uint64_t off=base.load(ctx.r10.u32,8);
+      if (off>fsl->bytes.size()) base.fail(Error::unsupported, address);
+      fsl->pos=uint32_t(off);
+    }
+    const uint32_t avail=uint32_t(fsl->bytes.size()-fsl->pos);
     const uint32_t take=len<avail?len:avail;
     for (uint32_t i=0;i<take;++i)
-      base.store(buf+i,1,base.file_bytes[base.file_pos+i]);
-    base.file_pos+=take;
+      base.store(buf+i,1,fsl->bytes[fsl->pos+i]);
+    fsl->pos+=take;
     base.store(iosb+0,4,take?0u:0xC0000011u); // STATUS_END_OF_FILE when empty
     base.store(iosb+4,4,take);
     ctx.r3.u64=take?0u:0xC0000011u;
@@ -808,16 +941,18 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
   }
   case 0x8214a584: {
     // NtClose ??? bounded to the single open shader-file fixture handle.
-    if (!base.file_open || ctx.r3.u32!=base.file_handle)
+    auto* fsl=base.find_file(ctx.r3.u32);
+    if (!fsl)
       base.fail(Error::unsupported, address);
-    base.file_open=false;
-    base.file_handle=0;
-    base.file_pos=0;
-    base.file_bytes.clear();
+    fsl->open=false;
+    fsl->handle=0;
+    fsl->pos=0;
+    fsl->bytes.clear();
     ctx.r3.u64=0;
     return;
   }
   case 0x820a89f8: {
+    if (g_use_exact_texture_bind) { sub_820A89F8(ctx, base); return; }
     const uint32_t obj = ctx.r3.u32, desc = ctx.r4.u32;
     if (obj > 0xffff89efu || desc > 0xffffffafu)
       base.fail(Error::context, address);
@@ -840,6 +975,7 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     return;
   }
   case 0x820a9308: {
+    if (g_use_exact_texture_bind) { sub_820A9308(ctx, base); return; }
     ++base.result.quad_calls;
     unsigned emitted = 0;
     const auto e =
@@ -880,6 +1016,7 @@ static void execute(uint32_t entry, Context &ctx, Machine &m) {
   case 0x820701d0: sub_820701D0_startup_full(ctx,m); break;
   case 0x820b7880: sub_820B7880(ctx,m); break;
   case 0x8212a630: sub_8212A630(ctx,m); break;
+  case 0x82127e48: sub_82127E48(ctx,m); break;
   case 0x82070ba4: sub_82070AC8_post_init(ctx,m); break;
   case 0x82070ac8: sub_82070AC8_renderer_prefix(ctx,m); break;
   case 0x820a7990: sub_820A7990_platform_prefix(ctx,m); break;
@@ -913,12 +1050,12 @@ static void execute(uint32_t entry, Context &ctx, Machine &m) {
 Result invoke(uint32_t entry, Context &ctx, AddressSpace &memory, Sink sink,
               uint32_t budget) noexcept {
   Result error;
-  if (entry != 0x8212a630 && entry != 0x820c13b8 && entry != 0x820c2c98 && entry != 0x820befd0 && entry != 0x820a7b34 && entry != 0x820a7990 && entry != 0x82070ac8 && entry != 0x820701d0 && entry != 0x820b7880 && entry != 0x82070ba4 && entry != 0x82070434 && entry != 0x8208a7a0 && entry != 0x820a8ff8 && entry != 0x82091248 && entry != 0x8209cd08 && entry != 0x8209cc98 && entry != 0x8209de50 && entry != 0x82097720 && entry != 0x820915f0 && entry != 0x8209df48 && entry != 0x820a1ac0 && entry != 0x8209ce40 && entry != 0x8209ce48) {
+  if (entry != 0x82127e48 && entry != 0x8212a630 && entry != 0x820c13b8 && entry != 0x820c2c98 && entry != 0x820befd0 && entry != 0x820a7b34 && entry != 0x820a7990 && entry != 0x82070ac8 && entry != 0x820701d0 && entry != 0x820b7880 && entry != 0x82070ba4 && entry != 0x82070434 && entry != 0x8208a7a0 && entry != 0x820a8ff8 && entry != 0x82091248 && entry != 0x8209cd08 && entry != 0x8209cc98 && entry != 0x8209de50 && entry != 0x82097720 && entry != 0x820915f0 && entry != 0x8209df48 && entry != 0x820a1ac0 && entry != 0x8209ce40 && entry != 0x8209ce48) {
     error.error = Error::entry;
     return error;
   }
   if (!sink.submit || !sink.bind || ctx.r1.u64 < 16384 ||
-      ctx.r1.u64 > 0xffffff7f || budget < 1 || budget > 100000000) {
+      ctx.r1.u64 > 0xffffff7f || budget < 1 || budget > 1000000000) {
     error.error = Error::context;
     return error;
   }

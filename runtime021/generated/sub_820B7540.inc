@@ -1,0 +1,76 @@
+DEFINE_REX_FUNC(sub_820B7540) {
+	REX_FUNC_PROLOGUE();
+	uint32_t ea{};
+	// mflr r12
+	ctx.r12.u64 = ctx.lr;
+	// stw r12,-8(r1)
+	REX_STORE_U32(ctx.r1.u32 + -8, ctx.r12.u32);
+	// std r31,-16(r1)
+	REX_STORE_U64(ctx.r1.u32 + -16, ctx.r31.u64);
+	// stwu r1,-272(r1)
+	ea = -272 + ctx.r1.u32;
+	REX_STORE_U32(ea, ctx.r1.u32);
+	ctx.r1.u32 = ea;
+	// mr r31,r3
+	ctx.r31.u64 = ctx.r3.u64;
+	// addi r3,r1,80
+	ctx.r3.s64 = ctx.r1.s64 + 80;
+	// bl 0x820b7a38
+	ctx.lr = 0x820B755C;
+	sub_820B7A38(ctx, base);
+	// cmplwi cr6,r3,1
+	ctx.cr6.compare<uint32_t>(ctx.r3.u32, 1, ctx.xer);
+	// blt cr6,0x820b7590
+	if (ctx.cr6.lt) goto loc_820B7590;
+	// beq cr6,0x820b7580
+	if (ctx.cr6.eq) goto loc_820B7580;
+	// cmplwi cr6,r3,3
+	ctx.cr6.compare<uint32_t>(ctx.r3.u32, 3, ctx.xer);
+	// blt cr6,0x820b7578
+	if (ctx.cr6.lt) goto loc_820B7578;
+	// li r11,0
+	ctx.r11.s64 = 0;
+	// b 0x820b7594
+	goto loc_820B7594;
+loc_820B7578:
+	// lwz r11,248(r1)
+	ctx.r11.u64 = REX_LOAD_U32(ctx.r1.u32 + 248);
+	// b 0x820b7584
+	goto loc_820B7584;
+loc_820B7580:
+	// lwz r11,164(r1)
+	ctx.r11.u64 = REX_LOAD_U32(ctx.r1.u32 + 164);
+loc_820B7584:
+	// lwz r10,80(r1)
+	ctx.r10.u64 = REX_LOAD_U32(ctx.r1.u32 + 80);
+	// add r11,r11,r10
+	ctx.r11.u64 = ctx.r11.u64 + ctx.r10.u64;
+	// b 0x820b7594
+	goto loc_820B7594;
+loc_820B7590:
+	// lwz r11,80(r1)
+	ctx.r11.u64 = REX_LOAD_U32(ctx.r1.u32 + 80);
+loc_820B7594:
+	// mulli r11,r11,60
+	ctx.r11.s64 = static_cast<int64_t>(ctx.r11.u64 * static_cast<uint64_t>(60));
+	// lis r10,152
+	ctx.r10.s64 = 9961472;
+	// extsw r11,r11
+	ctx.r11.s64 = ctx.r11.s32;
+	// ori r10,r10,38528
+	ctx.r10.u64 = ctx.r10.u64 | 38528;
+	// mulld r11,r11,r10
+	ctx.r11.s64 = static_cast<int64_t>(ctx.r11.u64 * ctx.r10.u64);
+	// std r11,0(r31)
+	REX_STORE_U64(ctx.r31.u32 + 0, ctx.r11.u64);
+	// addi r1,r1,272
+	ctx.r1.s64 = ctx.r1.s64 + 272;
+	// lwz r12,-8(r1)
+	ctx.r12.u64 = REX_LOAD_U32(ctx.r1.u32 + -8);
+	// mtlr r12
+	ctx.lr = ctx.r12.u64;
+	// ld r31,-16(r1)
+	ctx.r31.u64 = REX_LOAD_U64(ctx.r1.u32 + -16);
+	// blr 
+	return;
+}

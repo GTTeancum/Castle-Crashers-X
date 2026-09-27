@@ -13,6 +13,8 @@
 #include <cstdio>
 #include <iterator>
 #include <vector>
+namespace cc { namespace tree { void set_exact_texture_bind(bool) noexcept; } }
+
 using namespace cc::tree;
 static uint64_t assertions = 0;
 #ifdef CC_XBOX_DRIVER
@@ -535,7 +537,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // CRT heap blocks (logo.pak alone is 1.3 MiB), so the startup-era 1 MiB
   // arena starves it and the loader retries forever. 8 MiB covers the
   // observed intro assets; exhaustion still fails closed.
-  static std::vector<uint8_t> heap_arena(0x800000);
+  static std::vector<uint8_t> heap_arena(0x2000000);
   CHECK(m.map(0x04000000u,uint32_t(heap_arena.size()),heap_arena.data(),3)==cc::xbox::MemoryError::ok);
   // Guest arena backing the single observed MmAllocatePhysicalMemoryEx main
   // pool (16 MiB + guard page) requested by exact sub_8209BC98 after Init.
@@ -543,7 +545,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   CHECK(m.map(0x10000000u,uint32_t(main_pool_arena.size()),main_pool_arena.data(),3)==cc::xbox::MemoryError::ok);
   // Cursor arena backing the smaller observed physical blocks (font/texture
   // memory allocated write-combined by the exact font loader).
-  static std::vector<uint8_t> phys_arena(0x00400000); // font texture block + read window use < 2.5 MiB
+  static std::vector<uint8_t> phys_arena(0x06000000); // font/texture blocks + pak/sound streaming buffers
   CHECK(m.map(0x12000000u,uint32_t(phys_arena.size()),phys_arena.data(),3)==cc::xbox::MemoryError::ok);
 
   // Execute the exact CRT heap initialization (sub_820B7880 -> exact
@@ -587,6 +589,24 @@ static void renderer_caller_prefix_controls(const char* image_path) {
     CHECK(tc.r3.u32==1u);           // _mtinit success
     CHECK(iok && tls_index<64u);    // CRT TLS index allocated
     CHECK(pok && ptd!=0u);          // main-thread ptd published
+  }
+
+  // WIP 023: third CRT startup step, exact sub_82127E48 (_init_onexit_table):
+  // calloc's the 32-entry onexit table and publishes it at 0x82290CAC/CB0,
+  // exactly as the sealed XEX entry's _cinit does before any atexit call.
+  {
+    Context oc{};
+    oc.r1.u32=0x3f000;
+    oc.r13.u32=0x68000;
+    oc.lr=0x0c0160c0;
+    auto orr=invoke(0x82127e48,oc,m,sink(),200000);
+    uint64_t tb=0;
+    const bool tok=m.load_be(0x82290CACu,4,tb)==cc::xbox::MemoryError::ok;
+    cc_log("crt_onexit_init result=%s@%08x r3=%08x table=%08x\n",
+                name(orr.error),orr.address,oc.r3.u32,tok?uint32_t(tb):0u);
+    CHECK(orr.error==Error::ok);
+    CHECK(oc.r3.u32==0u);
+    CHECK(tok && tb!=0u);
   }
 
   Context c{};
@@ -1079,13 +1099,20 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // bounded KeDelayExecutionThread contract stops the diagnostic at the
   // third frame's pacing sleep with Error::capacity -" a deliberate frame
   // budget, never a faked exit path.
-  auto pi=invoke(0x82070ba4,c,m,sink(),80000000);
+  cc::tree::set_exact_texture_bind(true);
+  auto pi=invoke(0x82070ba4,c,m,sink(),900000000);
   cc_log("caller_post_init result=%s@%08x funcs=%u memops=%u r1=%08x lr=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r11=%08x\n",
               name(pi.error),pi.address,pi.functions,pi.memory_ops,c.r1.u32,uint32_t(c.lr),
               c.r3.u32,c.r4.u32,c.r5.u32,c.r6.u32,c.r7.u32,c.r11.u32);
   CHECK(pi.error==Error::capacity);
-  CHECK(pi.address==0x8214A614u); // KeDelayExecutionThread frame boundary
-  CHECK(uint32_t(c.lr)==0x820B7504u); // exact Sleep wrapper sub_820B6068
+  // WIP 023d: the run no longer stops at a platform boundary - the game
+  // reaches the main menu (LOGO/LOADING/PAUSE/LEGAL/ATTRACT/MENU paks and
+  // the intro music all load, the injected START press drives the sign-in
+  // flow) and renders menu frames until the deliberate 900M memory-op
+  // diagnostic budget expires mid-draw. All values below are the exact
+  // deterministic measurements of that bounded run.
+  CHECK(pi.address==0x0003E678u);
+  CHECK(uint32_t(c.lr)==0x820A9318u); // inside the exact quad-draw body
   // Exact sub_8209BC98 obtains the observed 16 MiB main pool through exact
   // sub_820B6108 / bounded MmAllocatePhysicalMemoryEx (fixture arena at
   // 0x10000000) and publishes it through the startup hash object. Exact
@@ -1095,8 +1122,8 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // chain (sub_820C3568/sub_820C3930/sub_820C4488/sub_820C4498) creates the
   // font texture. The slice ends by dispatching renderer vtable slot +12 to
   // exact sub_820A7E80 (with exact sub_820BFB50), which returns normally.
-  CHECK(pi.functions==3333939u && pi.memory_ops==51455729u);
-  CHECK(c.r1.u32==0x0003ee70u); // Sleep wrapper frame at the pacing boundary
+  CHECK(pi.functions==41122868u && pi.memory_ops==900000001u);
+  CHECK(c.r1.u32==0x0003e5b0u); // draw-call frame at the budget stop
   CHECK(m.load_be(0x00075240u,4,v)==cc::xbox::MemoryError::ok && v==0x01000000u); // pool size
   CHECK(m.load_be(0x00075244u,4,v)==cc::xbox::MemoryError::ok && v==0x10000000u); // pool base
   // The XPR container header read into the physical block, byte-exact from
@@ -1109,8 +1136,10 @@ static void renderer_caller_prefix_controls(const char* image_path) {
     size_t first_phys=phys_arena.size(), first_pool=main_pool_arena.size();
     for (size_t i=0;i<phys_arena.size();++i) if (phys_arena[i]) { first_phys=i; break; }
     for (size_t i=0;i<main_pool_arena.size();++i) if (main_pool_arena[i]) { first_pool=i; break; }
+    cc_log("arena_scan first_phys=%08x first_pool=%08x\n",
+           unsigned(first_phys),unsigned(first_pool));
     CHECK(first_phys==0x2828u);
-    CHECK(first_pool==9u);
+    CHECK(first_pool==4u); // menu-era run writes the pool header word first
     static constexpr uint8_t glyph_probe[16] = {
       0xab,0xbb,0xee,0xee,0xde,0xee,0xbc,0xcc,0x67,0x77,0x00,0x00,0x00,0x00,0x00,0x00
     };

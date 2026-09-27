@@ -33,37 +33,19 @@ static void ppc_trap([[maybe_unused]] Context& ctx, Machine& base, uint32_t code
   static void sym([[maybe_unused]] Context& ctx, Machine& base) { \
     base.fail(Error::unsupported, addr); \
   }
-HARD_BOUNDARY(sub_820B0F18, 0x820B0F18u)
-HARD_BOUNDARY(sub_82084D18, 0x82084D18u)
-HARD_BOUNDARY(sub_82084DB8, 0x82084DB8u)
 HARD_BOUNDARY(sub_820A71E8, 0x820A71E8u)
-HARD_BOUNDARY(sub_82086010, 0x82086010u)
-HARD_BOUNDARY(sub_82084C78, 0x82084C78u)
-HARD_BOUNDARY(sub_8207B630, 0x8207B630u)
-HARD_BOUNDARY(sub_8207B8B8, 0x8207B8B8u)
-HARD_BOUNDARY(sub_8207BAE8, 0x8207BAE8u)
 HARD_BOUNDARY(sub_82084EE0, 0x82084EE0u)
 HARD_BOUNDARY(sub_82098100, 0x82098100u)
-HARD_BOUNDARY(sub_82099730, 0x82099730u)
-HARD_BOUNDARY(sub_82099C68, 0x82099C68u)
-HARD_BOUNDARY(sub_82099B48, 0x82099B48u)
 HARD_BOUNDARY(sub_82099BE8, 0x82099BE8u)
 HARD_BOUNDARY(sub_82051868, 0x82051868u)
 HARD_BOUNDARY(sub_820518E0, 0x820518E0u)
 HARD_BOUNDARY(sub_82053380, 0x82053380u)
-HARD_BOUNDARY(sub_82084AC8, 0x82084AC8u)
 HARD_BOUNDARY(sub_82127468, 0x82127468u)
 HARD_BOUNDARY(sub_82074A58, 0x82074A58u)
 HARD_BOUNDARY(sub_82074B00, 0x82074B00u)
 HARD_BOUNDARY(sub_82078668, 0x82078668u)
 HARD_BOUNDARY(sub_820516F8, 0x820516F8u)
-HARD_BOUNDARY(sub_82127588, 0x82127588u)
-HARD_BOUNDARY(sub_8209A170, 0x8209A170u)
 HARD_BOUNDARY(sub_82053648, 0x82053648u)
-HARD_BOUNDARY(sub_8208B8D0, 0x8208B8D0u)
-HARD_BOUNDARY(sub_82086D30, 0x82086D30u)
-HARD_BOUNDARY(sub_82066EA8, 0x82066EA8u)
-HARD_BOUNDARY(sub_8207A1E0, 0x8207A1E0u)
 #undef HARD_BOUNDARY
 
 #include "generated/sub_820B5EB8.inc"
@@ -226,6 +208,31 @@ static void sub_82127778(Context& ctx, Machine& base) {
     ctx.r3.u64 = written;
     return;
   }
+  // WIP 023 seventh accepted sprintf shape: the sealed sound-path format
+  // "game:\sounds\%s" at 0x82040594 with a single bounded string
+  // argument, used by the intro screen's audio loader.
+  if (ctx.r4.u32 == 0x82040594u) {
+    static const char snd_fmt[] = "game:\\sounds\\%s";
+    for (unsigned i = 0; i <= sizeof(snd_fmt) - 1; ++i)
+      if (base.load(ctx.r4.u32 + i, 1) != uint8_t(snd_fmt[i]))
+        base.fail(Error::unsupported, 0x82127778u);
+    uint32_t out = ctx.r3.u32;
+    unsigned written = 0;
+    for (const char* p = "game:\\sounds\\"; *p; ++p) {
+      base.store(out++, 1, uint8_t(*p));
+      ++written;
+    }
+    for (unsigned i = 0;; ++i) {
+      if (i >= 128u) base.fail(Error::unsupported, 0x82127778u);
+      const uint8_t chv = uint8_t(base.load(ctx.r5.u32 + i, 1));
+      if (!chv) break;
+      base.store(out++, 1, chv);
+      ++written;
+    }
+    base.store(out, 1, 0);
+    ctx.r3.u64 = written;
+    return;
+  }
   // WIP 023 sixth accepted sprintf shape: the sealed plain "%s" format at
   // 0x8203E464 with a single bounded string argument - a straight copy used
   // by the frame loop's asset loader while resolving the logo pak path.
@@ -246,6 +253,68 @@ static void sub_82127778(Context& ctx, Machine& base) {
     base.store(out, 1, 0);
     ctx.r3.u64 = written;
     return;
+  }
+  // WIP 023 ninth accepted sprintf shape: any sealed format of the exact
+  // structural form "game:\<letters>\%s" (observed so far: shaders, Fonts,
+  // game, sounds, music) is a verbatim prefix plus one bounded string.
+  {
+    char pre[32]; unsigned n = 0; bool shaped = false;
+    const char head[] = "game:\\";
+    bool okh = true;
+    for (unsigned i = 0; i < 6u; ++i) {
+      pre[i] = char(base.load(ctx.r4.u32 + i, 1));
+      if (pre[i] != head[i]) { okh = false; break; }
+    }
+    if (okh) {
+      n = 6;
+      for (;; ++n) {
+        if (n >= 30u) break;
+        const char chv = char(base.load(ctx.r4.u32 + n, 1));
+        if ((chv>='A'&&chv<='Z')||(chv>='a'&&chv<='z')) { pre[n]=chv; continue; }
+        if (chv=='\\' && n>6u &&
+            char(base.load(ctx.r4.u32+n+1,1))=='%' &&
+            char(base.load(ctx.r4.u32+n+2,1))=='s' &&
+            char(base.load(ctx.r4.u32+n+3,1))==0) {
+          pre[n]='\\'; ++n; shaped = true;
+        }
+        break;
+      }
+    }
+    if (shaped) {
+      uint32_t out = ctx.r3.u32;
+      unsigned written = 0;
+      for (unsigned i = 0; i < n; ++i) { base.store(out++,1,uint8_t(pre[i])); ++written; }
+      for (unsigned i = 0;; ++i) {
+        if (i >= 128u) base.fail(Error::unsupported, 0x82127778u);
+        const uint8_t chv = uint8_t(base.load(ctx.r5.u32 + i, 1));
+        if (!chv) break;
+        base.store(out++, 1, chv);
+        ++written;
+      }
+      base.store(out, 1, 0);
+      ctx.r3.u64 = written;
+      return;
+    }
+  }
+  // WIP 023 eighth accepted sprintf shape: a literal format containing no
+  // conversion specifier at all (first observed: ".xma" appended to a
+  // sound path at 0x820405A4) is a bounded verbatim copy.
+  {
+    char lit[64]; unsigned n = 0; bool plain = true;
+    for (;; ++n) {
+      if (n >= sizeof(lit)) { plain = false; break; }
+      const uint8_t chv = uint8_t(base.load(ctx.r4.u32 + n, 1));
+      lit[n] = char(chv);
+      if (!chv) break;
+      if (chv == uint8_t('%')) { plain = false; break; }
+    }
+    if (plain) {
+      uint32_t out = ctx.r3.u32;
+      for (unsigned i = 0; i < n; ++i) base.store(out + i, 1, uint8_t(lit[i]));
+      base.store(out + n, 1, 0);
+      ctx.r3.u64 = n;
+      return;
+    }
   }
   // The only other accepted checkpoint-016 call shape is sprintf-like "%i"
   // used by sub_8209CA70 to create its monotonically numbered startup label.
@@ -324,6 +393,17 @@ static void __imp__ExGetXConfigSetting(Context& ctx, Machine& base) {
     ctx.r3.s64 = -1; // startup region fallback path
     return;
   }
+  if (ctx.r4.u32 >= 1u && ctx.r4.u32 <= 16u && ctx.r4.u32 != 9u &&
+      ctx.r4.u32 != 10u) {
+    // WIP 023: the title screen reads the user-settings block (category 3:
+    // time-zone bias/names/dates, language, video/retail flags). The
+    // deterministic fixture console is UTC with every 4-byte setting zero;
+    // settings 9 and 10 keep their earlier observed startup semantics.
+    base.store(ctx.r5.u32,4,0);
+    if (ctx.r7.u32) base.store(ctx.r7.u32,2,4);
+    ctx.r3.s64 = 0;
+    return;
+  }
   if (ctx.r4.u32 == 10u) {
     // This value is not consumed before the checkpoint-018 graphics boundary;
     // expose a deterministic zero-valued platform setting and the observed size.
@@ -332,6 +412,8 @@ static void __imp__ExGetXConfigSetting(Context& ctx, Machine& base) {
     ctx.r3.s64 = 0;
     return;
   }
+  cc_elog("XCONFIG reject cat=%u setting=%u buf=%08x size=%u lr=%08x\n",
+          ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, uint32_t(ctx.lr));
   base.fail(Error::unsupported, 0x8214A554u);
 }
 static void __imp__XGetGameRegion(Context& ctx, [[maybe_unused]] Machine& base) {
@@ -541,9 +623,7 @@ static void __imp__RtlLeaveCriticalSection(Context& ctx, Machine& base) {
     base.fail(Error::unsupported,0x8214A444u);
   base.hsio_cs_locked=false; ctx.r3.u64=0;
 }
-HARD_BOUNDARY_017(sub_820B0D80, 0x820B0D80u)
 #include "generated/sub_820B6498.inc"
-HARD_BOUNDARY_017(sub_820B02B0, 0x820B02B0u)
 #undef HARD_BOUNDARY_017
 
 #include "generated/sub_8209A728.inc"
@@ -626,13 +706,40 @@ static void __imp__VdSetSystemCommandBufferGpuIdentifierAddress(Context& ctx, Ma
     base.fail(Error::unsupported,0x8214A7F4u);
   base.system_identifier_set=true; ctx.r3.u64=0;
 }
+// WIP 023: the music streamer creates one XMA hardware-decoder context
+// (lr=0x820DAE18). The fixture hands out a zeroed 64-byte context block
+// from the graphics cursor arena and reports success; decode progress
+// stays fail-closed until the exact code is observed polling it. The
+// original-Xbox port will replace XMA with pre-converted audio.
+static void __imp__XMACreateContext(Context& ctx, Machine& base) {
+  const uint32_t out = ctx.r3.u32;
+  if (!out) base.fail(Error::unsupported, 0x8214AC54u);
+  const uint32_t p = (g_graphics_alloc_cursor + 15u) & ~15u;
+  if (base.memory.check(p, 64u, 3) != cc::xbox::MemoryError::ok)
+    base.fail(Error::memory, p);
+  g_graphics_alloc_cursor = p + 64u;
+  for (uint32_t i = 0; i < 64u; i += 4u) base.store(p + i, 4, 0u);
+  base.store(out, 4, p);
+  ctx.r3.u64 = 0u;
+}
 static void __imp__MmGetPhysicalAddress(Context& ctx, Machine& base) {
-  if (g_graphics_alloc_index!=6u || !base.ring_virtual || ctx.r3.u32!=base.ring_virtual)
-    base.fail(Error::unsupported,0x8214A7E4u);
-  // The bounded fixture maps its graphics arena in low guest memory, so the
-  // physical token is the low 29-bit address used by this original path.
-  base.ring_physical=ctx.r3.u32 & 0x1FFFFFFFu;
-  ctx.r3.u64=base.ring_physical;
+  if (g_graphics_alloc_index==6u && base.ring_virtual && ctx.r3.u32==base.ring_virtual) {
+    // The bounded fixture maps its graphics arena in low guest memory, so the
+    // physical token is the low 29-bit address used by this original path.
+    base.ring_physical=ctx.r3.u32 & 0x1FFFFFFFu;
+    ctx.r3.u64=base.ring_physical;
+    return;
+  }
+  // WIP 023: the XMA/music driver translates its graphics-arena work
+  // buffers for DMA (lr=0x820DA350). The whole fixture arena is an
+  // identity-style low mapping, so the same 29-bit contract applies to
+  // any address inside the mapped graphics/physical arenas.
+  if ((ctx.r3.u32>=0x02000000u && ctx.r3.u32<0x02400000u+0x00400000u) ||
+      (ctx.r3.u32>=0x12000000u && ctx.r3.u32<0x18000000u)) {
+    ctx.r3.u64 = ctx.r3.u32 & 0x1FFFFFFFu;
+    return;
+  }
+  base.fail(Error::unsupported,0x8214A7E4u);
 }
 static void __imp__VdInitializeRingBuffer(Context& ctx, Machine& base) {
   if (!base.graphics_engines_initialized || !base.ring_physical ||
@@ -1114,6 +1221,68 @@ static void sub_820C6088(Context& ctx, Machine& base) {
 // Compile-time fail-closed imports used only by deeper branches of this exact
 // command-buffer family. A branch reaching one must establish its observed
 // platform/CRT contract before execution can proceed.
+static void cc_drain_workers(Machine& base, uint32_t r13) {
+  {
+    uint32_t jobs_run = 0;
+    for (;;) {
+      const uint32_t job = uint32_t(base.load(0x8228A770u, 4));
+      if (!job) break;
+      if (++jobs_run > 4096u) base.fail(Error::capacity, 0x8228A770u);
+      base.store(0x8228A770u, 4, uint32_t(base.load(job, 4)));  // pop
+      Context wctx{};
+      wctx.r1.u32 = 0x00034000u;      // scratch worker stack top
+      wctx.r13.u32 = r13;     // shared bounded thread block
+      wctx.r3.u32 = job;
+      wctx.lr = 0x820B0F08u;          // worker loop return site
+      sub_820B1478(wctx, base);
+      const uint32_t done = uint32_t(base.load(0x8228A764u, 4));
+      base.store(job, 4, done);       // push onto completed list
+      base.store(0x8228A764u, 4, job);
+    }
+  }
+  // WIP 023 bounded loader-thread model: the suspended thread routine
+  // sub_82070828 services the pak-mount request ring at [pool+0]/[pool+4]
+  // (pool published at 0x8225E600): pop a key, exact sub_82096530(pool,
+  // key) resolves/creates the record, and when its data pointer [rec+24]
+  // is still null, exact sub_820960A8(pool, rec) performs the mount.
+  // The same exact code runs here synchronously once per frame; only the
+  // ring-head advance (done under the ring CS by the original loop) is
+  // applied by the model, exactly as loc_820708B0 computes it.
+  {
+    const uint32_t pool = uint32_t(base.load(0x8225E600u, 4));
+    if (pool) {
+      uint32_t served = 0;
+      for (;;) {
+        const uint32_t tail = uint32_t(base.load(pool + 0u, 4));
+        const uint32_t head = uint32_t(base.load(pool + 4u, 4));
+        if (tail == head) break;
+        if (++served > 64u) base.fail(Error::capacity, pool);
+        const uint32_t key = uint32_t(base.load(pool + ((head + 2u) << 2), 4));
+        Context wctx{};
+        wctx.r1.u32 = 0x00034000u;
+        wctx.r13.u32 = r13;
+        wctx.r3.u32 = pool;
+        wctx.r4.u32 = key;
+        wctx.lr = 0x82070884u;        // loader loop return site
+        sub_82096530(wctx, base);
+        const uint32_t rec = wctx.r3.u32;
+        if (rec && uint32_t(base.load(rec + 24u, 4)) == 0u) {
+          Context mctx{};
+          mctx.r1.u32 = 0x00034000u;
+          mctx.r13.u32 = r13;
+          mctx.r3.u32 = pool;
+          mctx.r4.u32 = rec;
+          mctx.lr = 0x820708A4u;
+          sub_820960A8(mctx, base);
+        }
+        base.store(pool + 4u, 4, (head + 1u) % 32u);  // ring-head advance
+      }
+    }
+  }
+}
+[[maybe_unused]] static const bool g_drain_workers_registered =
+    (g_drain_workers = &cc_drain_workers, true);
+
 // WIP 023 frame boundary. The main game loop paces itself with
 // KeDelayExecutionThread(WaitMode=1, Alertable=0, Interval=&stack qword)
 // from the exact Sleep wrapper sub_820B6068 (lr=0x820B7504). Each accepted
@@ -1132,9 +1301,19 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     base.fail(Error::unsupported, 0x8214A614u);
   if (++g_frame_delay_calls >= k_frame_budget)
     base.fail(Error::capacity, 0x8214A614u);
+  // WIP 023 bounded worker-thread model: the five startup workers run the
+  // exact loop sub_820B0E80 - pop a job from the pending list at
+  // 0x8228A750, execute exact sub_820B1478(job), then push the job onto
+  // the completed list at 0x8228A74C. This diagnostic is single-threaded,
+  // so the same exact code runs synchronously at each frame boundary
+  // (jobs enqueued during the frame complete "during" the frame) on a
+  // dedicated scratch stack below the main thread's, exactly as the
+  // worker's own stack would be. Nothing here is synthesized: only the
+  // scheduling point is modeled.
+  cc_drain_workers(base, ctx.r13.u32);
   base.trace_one_frame = false;
-  base.frame_probe_log = (g_frame_delay_calls % 2000u == 0u);
-  if (g_frame_delay_calls % 2000u == 0u) {
+  base.frame_probe_log = (g_frame_delay_calls % 500u == 0u);
+  if (g_frame_delay_calls % 500u == 0u) {
     // Frame-state probe: the main loop's quit check reads the object at
     // [0x8225E620]; log its leading words so state transitions are visible.
     uint64_t obj=0; base.memory.load_be(0x8225E620u,4,obj);
@@ -1147,7 +1326,7 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     cc_log("frame %u state_obj=%08x w=[%08x %08x %08x %08x] q=[%08x %08x %08x %08x] file_open=%u pos=%u\n",
            g_frame_delay_calls,uint32_t(obj),uint32_t(w0),uint32_t(w1),uint32_t(w2),uint32_t(w3),
            uint32_t(q0),uint32_t(q1),uint32_t(q2),uint32_t(q3),
-           unsigned(base.file_open),base.file_pos);
+           base.open_files(),base.files[0].pos);
   }
   ctx.r3.u64 = 0u;  // STATUS_SUCCESS
 }
@@ -1163,6 +1342,11 @@ static uint32_t checkpoint020_mm_load_u32(Machine& base, uint32_t a) {
     // register at power-on before any audio setup; the observed hardware
     // reset value is zero. All other MMIO reads stay fail-closed.
     if (a==0x7FEA1800u) return 0u;
+    // WIP 023: the music streamer polls the APU's XMA context-control
+    // window. The fixture audio hardware is silent: every register in the
+    // window reads zero (no decode progress is faked; the exact code's
+    // "still decoding" paths remain observable).
+    if (a>=0x7FEA1800u && a<0x7FEA2000u) return 0u;
     base.fail(Error::unsupported,a);
   }
   return uint32_t(base.load(a,4));
@@ -1171,6 +1355,9 @@ static void checkpoint020_mm_store_u32(Machine& base, uint32_t a, uint32_t v) {
   if (a>=0x7F000000u && a<0x80000000u) {
     // Observed CP_RB_WPTR write: Xenos MMIO base 0x7FC80000 + register 0x714.
     // The current ring has 8192 dwords, so reject any unobserved/out-of-ring value.
+    // WIP 023: XMA context kick/lock writes into the APU window are
+    // accepted and ignored by the silent fixture hardware.
+    if (a>=0x7FEA1800u && a<0x7FEA2000u) return;
     if (a!=0x7FC80714u || v>=8192u) base.fail(Error::unsupported,a);
     base.cp_rb_wptr=v; ++base.cp_rb_wptr_writes;
     // WIP 022: the fixture Xenos consumes every submitted command
@@ -1532,6 +1719,27 @@ static void __imp__VdPersistDisplay(Context& ctx, Machine& base) {
   ctx.r3.u64 = 1u;
 }
 static void __imp__MmFreePhysicalMemory(Context& ctx, Machine& base) {
+  // WIP 023: the pak-mount path frees cursor-arena blocks through the exact
+  // wrapper sub_820B6190 (type 0). The diagnostic's cursor allocator does
+  // not recycle; the free is accepted for addresses this fixture actually
+  // handed out and the space is intentionally not reused (arena exhaustion
+  // still fails closed).
+  if (ctx.r3.u32 == 0u && ctx.r4.u32 >= 0x12000000u &&
+      ctx.r4.u32 < g_phys_cursor) {
+    for (unsigned i=0;i<512;++i)
+      if (g_phys_alloc_addr[i]==ctx.r4.u32) {
+        for (unsigned j=0;j<256;++j)
+          if (!g_phys_free_addr[j]) {
+            g_phys_free_addr[j]=ctx.r4.u32;
+            g_phys_free_size[j]=g_phys_alloc_size[i];
+            break;
+          }
+        g_phys_alloc_addr[i]=0; g_phys_alloc_size[i]=0;
+        break;
+      }
+    ctx.r3.u64 = 0u;
+    return;
+  }
   // Bind only the physical allocation created by the immediately preceding
   // observed VdPersistDisplay call. The trusted xboxkrnl contract requires a
   // 32-byte-aligned address and releases that allocation; this diagnostic
@@ -1574,14 +1782,10 @@ static void __imp__MmFreePhysicalMemory(Context& ctx, Machine& base) {
   static void sym([[maybe_unused]] Context& ctx, Machine& base) { \
     base.fail(Error::unsupported, addr); \
   }
-HARD_BOUNDARY_021B(sub_820B6190, 0x820B6190u)
 #undef HARD_BOUNDARY_021B
 
-// The bounded NtReadFile contract completes synchronously, so the exact read
-// wrapper's pending-wait branch is never reached; it stays fail-closed.
-static void __imp__NtWaitForSingleObjectEx([[maybe_unused]] Context& ctx, Machine& base) {
-  base.fail(Error::unsupported, 0x8214A514u);
-}
+// The bounded NtReadFile contract completes synchronously; the semaphore
+// wait contract for this import is defined later with the semaphore fixture.
 #include "generated/sub_820B6310.inc"
 #include "generated/sub_82138200.inc"
 #include "generated/sub_82136390.inc"
@@ -1619,16 +1823,36 @@ static void __imp__MmAllocatePhysicalMemoryEx(Context& ctx, Machine& base) {
     ctx.r3.u64=p;
     return;
   }
-  if ((ctx.r5.u32==4u || ctx.r5.u32==0x404u) && ctx.r4.u32>=0x1000u &&
-      ctx.r4.u32<=0x400000u) {
+  // WIP 023 third family: the pak-mount path allocates 1 MiB streaming
+  // blocks with protect 0x20000004 (PAGE_READWRITE plus the observed
+  // large-page hint) and default alignment (r8=0), from the same cursor
+  // arena (lr=0x820B6164).
+  // WIP 023: the sound loader also takes sub-page blocks (observed 0x800);
+  // every allocation is page-rounded into the same cursor arena.
+  if ((ctx.r5.u32==4u || ctx.r5.u32==0x404u || ctx.r5.u32==0x20000004u) &&
+      ctx.r4.u32>=0x100u && ctx.r4.u32<=0x400000u) {
     const uint32_t align = ctx.r8.u32 ? ctx.r8.u32 : 0x1000u;
     if (align & (align-1u))
       base.fail(Error::unsupported, 0x8214A4F4u);
     const uint32_t size=(ctx.r4.u32+0xFFFu)&~0xFFFu;
-    const uint32_t p=(g_phys_cursor+align-1u)&~(align-1u);
-    if (p+size<p || base.memory.check(p,size,3)!=cc::xbox::MemoryError::ok)
-      base.fail(Error::memory,p);
-    g_phys_cursor=p+size;
+    // WIP 023: reuse a previously freed block of the same rounded size, so
+    // the frame loop's steady alloc/free traffic stays inside the bounded
+    // cursor arena.
+    uint32_t p=0;
+    for (unsigned i=0;i<256;++i)
+      if (g_phys_free_size[i]==size && (g_phys_free_addr[i]&(align-1u))==0u) {
+        p=g_phys_free_addr[i];
+        g_phys_free_addr[i]=0; g_phys_free_size[i]=0;
+        break;
+      }
+    if (!p) {
+      p=(g_phys_cursor+align-1u)&~(align-1u);
+      if (p+size<p || base.memory.check(p,size,3)!=cc::xbox::MemoryError::ok)
+        base.fail(Error::memory,p);
+      g_phys_cursor=p+size;
+    }
+    for (unsigned i=0;i<512;++i)
+      if (!g_phys_alloc_addr[i]) { g_phys_alloc_addr[i]=p; g_phys_alloc_size[i]=size; break; }
     ctx.r3.u64=p;
     return;
   }
@@ -1678,6 +1902,21 @@ static void __imp__NtCreateSemaphore(Context& ctx, Machine& base) {
 // sub_820B5F50 wrapper (lr=0x820B5FF8). Release is modeled against the
 // recorded initial/limit values; exceeding a limit or an unknown handle
 // stays fail-closed. Waits remain fail-closed until observed.
+// WIP 023: the frame loop waits on the same fixture semaphores through the
+// exact wrapper sub_820B6020 (WaitMode 1, non-alertable, NULL = infinite
+// timeout). A signaled semaphore satisfies the wait immediately; a wait
+// that would block forever in this single-threaded diagnostic stays
+// fail-closed so a genuine lost-wakeup is observable, never spun through.
+static void __imp__NtWaitForSingleObjectEx(Context& ctx, Machine& base) {
+  const uint32_t ix = ctx.r3.u32 - 0x0F5E0001u;
+  if (ix < g_semaphore_count && ctx.r4.u32 == 1u && ctx.r5.u32 == 0u &&
+      ctx.r6.u32 == 0u && g_semaphore_value[ix] > 0u) {
+    --g_semaphore_value[ix];
+    ctx.r3.u64 = 0u;  // WAIT_OBJECT_0
+    return;
+  }
+  base.fail(Error::unsupported, 0x8214A514u);
+}
 static void __imp__NtReleaseSemaphore(Context& ctx, Machine& base) {
   const uint32_t ix = ctx.r3.u32 - 0x0F5E0001u;
   if (ix >= g_semaphore_count || ctx.r4.u32 == 0u ||
@@ -1804,6 +2043,511 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_820A1640.inc"
 #include "generated/sub_82053888.inc"
 #include "generated/sub_820A7470.inc"
+#include "generated/sub_82063648.inc"
+#include "generated/sub_820669E8.inc"
+#include "generated/sub_82062990.inc"
+#include "generated/sub_82065DF0.inc"
+#include "generated/sub_820657B0.inc"
+#include "generated/sub_820655E0.inc"
+#include "generated/sub_82065D08.inc"
+#include "generated/sub_820656C8.inc"
+#include "generated/sub_82065B38.inc"
+#include "generated/sub_82065898.inc"
+#include "generated/sub_820659E8.inc"
+#include "generated/sub_82065C20.inc"
+#include "generated/sub_820654F8.inc"
+#include "generated/sub_82066BA0.inc"
+#include "generated/sub_82066270.inc"
+#include "generated/sub_82066CD0.inc"
+#include "generated/sub_820667B0.inc"
+#include "generated/sub_82053EF0.inc"
+#include "generated/sub_82061E48.inc"
+#include "generated/sub_82053A90.inc"
+#include "generated/sub_82067670.inc"
+#include "generated/sub_82065ED8.inc"
+#include "generated/sub_82065380.inc"
+#include "generated/sub_82053AA8.inc"
+#include "generated/sub_82094728.inc"
+#include "generated/sub_82088C60.inc"
+#include "generated/sub_8207BF88.inc"
+#include "generated/sub_82087F30.inc"
+#include "generated/sub_8207FCA8.inc"
+#include "generated/sub_821284C0.inc"
+#include "generated/sub_82128390.inc"
+#include "generated/sub_82128680.inc"
+#include "generated/sub_8209C4D0.inc"
+#include "generated/sub_82093B00.inc"
+#include "generated/sub_82093F98.inc"
+#include "generated/sub_82083B70.inc"
+#include "generated/sub_82083E58.inc"
+#include "generated/sub_8207E308.inc"
+#include "generated/sub_82080E08.inc"
+#include "generated/sub_8207C3A8.inc"
+#include "generated/sub_8208B8D0.inc"
+#include "generated/sub_8207FB40.inc"
+#include "generated/sub_8207F260.inc"
+#include "generated/sub_8207C1F8.inc"
+#include "generated/sub_8207EEC8.inc"
+#include "generated/sub_8207DEB8.inc"
+#include "generated/sub_82086808.inc"
+#include "generated/sub_82081A08.inc"
+#include "generated/sub_82082F18.inc"
+#include "generated/sub_8207ECC0.inc"
+#include "generated/sub_82088C98.inc"
+#include "generated/sub_8207C5A8.inc"
+#include "generated/sub_8208C5E0.inc"
+#include "generated/sub_82079D50.inc"
+#include "generated/sub_820817B8.inc"
+#include "generated/sub_8207C778.inc"
+#include "generated/sub_82078910.inc"
+#include "generated/sub_820789E0.inc"
+#include "generated/sub_82078C30.inc"
+#include "generated/sub_82078978.inc"
+#include "generated/sub_82078AB0.inc"
+#include "generated/sub_82078B30.inc"
+#include "generated/sub_82078A48.inc"
+#include "generated/sub_82078BB0.inc"
+#include "generated/sub_820790E8.inc"
+#include "generated/sub_82075408.inc"
+#include "generated/sub_820939B8.inc"
+#include "generated/sub_82093A60.inc"
+#include "generated/sub_8207AE58.inc"
+#include "generated/sub_8207CF70.inc"
+#include "generated/sub_8207BFE8.inc"
+#include "generated/sub_82084D18.inc"
+#include "generated/sub_82086828.inc"
+#include "generated/sub_8207F4D8.inc"
+#include "generated/sub_82084C78.inc"
+#include "generated/sub_82127E48.inc"
+#include "generated/sub_820B8678.inc"
+#include "generated/sub_820BAD80.inc"
+#include "generated/sub_8212A098.inc"
+#include "generated/sub_820B8BF8.inc"
+#include "generated/sub_820BA518.inc"
+#include "generated/sub_82127F8C.inc"
+#include "generated/sub_8212E0D0.inc"
+#include "generated/sub_8212A090.inc"
+#include "generated/sub_8212DFE0.inc"
+#include "generated/sub_82127EA8.inc"
+#include "generated/sub_82127FB0.inc"
+#include "generated/sub_8207C048.inc"
+#include "generated/sub_82086668.inc"
+#include "generated/sub_82081598.inc"
+#include "generated/sub_82058508.inc"
+#include "generated/sub_82094B48.inc"
+#include "generated/sub_820954A0.inc"
+#include "generated/sub_82094740.inc"
+#include "generated/sub_82094748.inc"
+#include "generated/sub_82080FA0.inc"
+#include "generated/sub_820E8208.inc"
+#include "generated/sub_820DB998.inc"
+#include "generated/sub_820E3E50.inc"
+#include "generated/sub_820E99E0.inc"
+#include "generated/sub_820E8448.inc"
+#include "generated/sub_820DBB90.inc"
+#include "generated/sub_820E21B0.inc"
+#include "generated/sub_820E72E8.inc"
+#include "generated/sub_820E79B8.inc"
+#include "generated/sub_820E8078.inc"
+#include "generated/sub_820EAA88.inc"
+#include "generated/sub_820DA4B0.inc"
+#include "generated/sub_82136298.inc"
+#include "generated/sub_820DADC0.inc"
+#include "generated/sub_820DA400.inc"
+#include "generated/sub_820DA458.inc"
+#include "generated/sub_8212B374.inc"
+#include "generated/sub_820DA200.inc"
+#include "generated/sub_820E87E0.inc"
+#include "generated/sub_820EBC10.inc"
+#include "generated/sub_820EBCD0.inc"
+#include "generated/sub_820E7168.inc"
+#include "generated/sub_820E7110.inc"
+#include "generated/sub_820E1AB8.inc"
+#include "generated/sub_820E1D28.inc"
+#include "generated/sub_820EB2D0.inc"
+#include "generated/sub_820E9D98.inc"
+#include "generated/sub_820EBAF0.inc"
+#include "generated/sub_820EA9C8.inc"
+#include "generated/sub_820E1D00.inc"
+#include "generated/sub_820E39B8.inc"
+#include "generated/sub_820E38F8.inc"
+#include "generated/sub_820E3B50.inc"
+#include "generated/sub_820E0D30.inc"
+#include "generated/sub_820E0F78.inc"
+#include "generated/sub_820E0D58.inc"
+#include "generated/sub_820E19E0.inc"
+#include "generated/sub_820DB398.inc"
+#include "generated/sub_820E8E40.inc"
+#include "generated/sub_820EB2A8.inc"
+#include "generated/sub_820E1CD8.inc"
+#include "generated/sub_820E1998.inc"
+#include "generated/sub_820DB310.inc"
+#include "generated/sub_82099060.inc"
+#include "generated/sub_82098B88.inc"
+#include "generated/sub_8209F118.inc"
+#include "generated/sub_82097DF8.inc"
+#include "generated/sub_82096C80.inc"
+#include "generated/sub_8208C790.inc"
+#include "generated/sub_8208C868.inc"
+#include "generated/sub_820868A0.inc"
+#include "generated/sub_8207A4C0.inc"
+#include "generated/sub_8207A5D8.inc"
+#include "generated/sub_8207FE10.inc"
+#include "generated/sub_8207A3F0.inc"
+#include "generated/sub_82081E18.inc"
+#include "generated/sub_8207CE60.inc"
+#include "generated/sub_8207F870.inc"
+#include "generated/sub_8208CB80.inc"
+#include "generated/sub_8208CB88.inc"
+#include "generated/sub_8208FC30.inc"
+#include "generated/sub_8208FAB8.inc"
+#include "generated/sub_82082520.inc"
+#include "generated/sub_8207E5C8.inc"
+#include "generated/sub_82081CD8.inc"
+#include "generated/sub_82099C68.inc"
+#include "generated/sub_82094D28.inc"
+#include "generated/sub_820834D0.inc"
+#include "generated/sub_8208C4A8.inc"
+#include "generated/sub_8208C590.inc"
+#include "generated/sub_8208CCA8.inc"
+#include "generated/sub_82096E50.inc"
+#include "generated/sub_8208C6E0.inc"
+#include "generated/sub_82096778.inc"
+#include "generated/sub_82099730.inc"
+#include "generated/sub_8207A1E0.inc"
+#include "generated/sub_82086D30.inc"
+#include "generated/sub_82093A68.inc"
+#include "generated/sub_82093FA0.inc"
+#include "generated/sub_820861E0.inc"
+#include "generated/sub_8207A7E0.inc"
+#include "generated/sub_82086B00.inc"
+#include "generated/sub_820941B0.inc"
+#include "generated/sub_820998F0.inc"
+#include "generated/sub_82099878.inc"
+#include "generated/sub_820997D8.inc"
+#include "generated/sub_82098240.inc"
+#include "generated/sub_82097CE8.inc"
+#include "generated/sub_82084650.inc"
+#include "generated/sub_82097840.inc"
+#include "generated/sub_820842F0.inc"
+#include "generated/sub_820845C0.inc"
+#include "generated/sub_8209CBA8.inc"
+#include "generated/sub_82096A30.inc"
+#include "generated/sub_82090448.inc"
+#include "generated/sub_8209DD78.inc"
+#include "generated/sub_8209DCE8.inc"
+#include "generated/sub_8209A3A0.inc"
+#include "generated/sub_8209A170.inc"
+#include "generated/sub_82066F78.inc"
+#include "generated/sub_82066F68.inc"
+#include "generated/sub_82053A88.inc"
+#include "generated/sub_82066F60.inc"
+#include "generated/sub_82053AA0.inc"
+#include "generated/sub_820863D8.inc"
+#include "generated/sub_820865D8.inc"
+#include "generated/sub_82086728.inc"
+#include "generated/sub_820868B8.inc"
+#include "generated/sub_82066F38.inc"
+#include "generated/sub_82099B48.inc"
+#include "generated/sub_820B2608.inc"
+#include "generated/sub_82092BD0.inc"
+#include "generated/sub_8208A458.inc"
+#include "generated/sub_8208B948.inc"
+#include "generated/sub_8208BAE0.inc"
+#include "generated/sub_82087E50.inc"
+#include "generated/sub_82092238.inc"
+#include "generated/sub_82094760.inc"
+#include "generated/sub_82094EF0.inc"
+#include "generated/sub_82094E88.inc"
+#include "generated/sub_82083428.inc"
+#include "generated/sub_82094720.inc"
+#include "generated/sub_82094680.inc"
+#include "generated/sub_82094768.inc"
+#include "generated/sub_8208FD90.inc"
+#include "generated/sub_82084570.inc"
+#include "generated/sub_820953C0.inc"
+#include "generated/sub_82093250.inc"
+#include "generated/sub_8208CF98.inc"
+#include "generated/sub_8208FCE8.inc"
+#include "generated/sub_82092DC8.inc"
+#include "generated/sub_82092AA8.inc"
+#include "generated/sub_82091D78.inc"
+#include "generated/sub_82091D00.inc"
+#include "generated/sub_8207BAE8.inc"
+#include "generated/sub_820D5130.inc"
+#include "generated/sub_820D5200.inc"
+#include "generated/sub_820D52B8.inc"
+#include "generated/sub_820D4B20.inc"
+#include "generated/sub_820D56B0.inc"
+#include "generated/sub_820D40A0.inc"
+#include "generated/sub_820D5408.inc"
+#include "generated/sub_820D5568.inc"
+#include "generated/sub_820D49C8.inc"
+#include "generated/sub_820D4870.inc"
+#include "generated/sub_820D57F0.inc"
+#include "generated/sub_820D46F0.inc"
+#include "generated/sub_820C14E8.inc"
+#include "generated/__savefpr_20.inc"
+#include "generated/sub_820C1980.inc"
+#include "generated/__restfpr_20.inc"
+#include "generated/sub_820A9308.inc"
+#include "generated/sub_820A89F8.inc"
+#include "generated/sub_82086680.inc"
+#include "generated/sub_82086778.inc"
+#include "generated/sub_820866D0.inc"
+#include "generated/sub_82089F70.inc"
+#include "generated/sub_8208C2A0.inc"
+#include "generated/sub_8208B520.inc"
+#include "generated/sub_8207A290.inc"
+#include "generated/sub_8207A358.inc"
+#include "generated/sub_820820D8.inc"
+#include "generated/sub_820867C8.inc"
+#include "generated/sub_820867D0.inc"
+#include "generated/sub_82085FA8.inc"
+#include "generated/sub_82089C00.inc"
+#include "generated/sub_82085078.inc"
+#include "generated/sub_8208B438.inc"
+#include "generated/sub_8207A908.inc"
+#include "generated/sub_82081C08.inc"
+#include "generated/sub_82081920.inc"
+#include "generated/sub_8207C948.inc"
+#include "generated/sub_82082CD0.inc"
+#include "generated/sub_8207F088.inc"
+#include "generated/sub_8207CDA0.inc"
+#include "generated/sub_82138350.inc"
+#include "generated/sub_82135370.inc"
+#include "generated/sub_82136E98.inc"
+#include "generated/sub_820BB330.inc"
+#include "generated/sub_820BB290.inc"
+#include "generated/sub_820DC3C8.inc"
+#include "generated/sub_820DC010.inc"
+#include "generated/sub_82133DB8.inc"
+#include "generated/sub_82132FC8.inc"
+#include "generated/sub_82052430.inc"
+#include "generated/sub_82052318.inc"
+#include "generated/sub_820523A0.inc"
+#include "generated/sub_8206F0F8.inc"
+#include "generated/sub_8208BEC0.inc"
+#include "generated/sub_82128A78.inc"
+#include "generated/sub_820BB050.inc"
+#include "generated/sub_820BADF8.inc"
+#include "generated/sub_820DC7A8.inc"
+#include "generated/sub_8209E868.inc"
+#include "generated/sub_8212E280.inc"
+#include "generated/sub_820524D8.inc"
+#include "generated/sub_82127860.inc"
+#include "generated/sub_82067BC0.inc"
+#include "generated/sub_8206F1C8.inc"
+#include "generated/sub_8208B608.inc"
+#include "generated/sub_8208B6F8.inc"
+#include "generated/sub_8208B570.inc"
+#include "generated/sub_82128D48.inc"
+#include "generated/sub_820B7A38.inc"
+#include "generated/sub_82099D30.inc"
+#include "generated/sub_820D82C8.inc"
+#include "generated/sub_820D8328.inc"
+#include "generated/sub_820D8648.inc"
+#include "generated/sub_8209E740.inc"
+#include "generated/sub_821280F8.inc"
+#include "generated/sub_820A5730.inc"
+#include "generated/sub_821279C0.inc"
+#include "generated/sub_8209BC08.inc"
+#include "generated/sub_820631B0.inc"
+#include "generated/sub_820623C0.inc"
+#include "generated/sub_8206D728.inc"
+#include "generated/sub_82057398.inc"
+#include "generated/sub_82056718.inc"
+#include "generated/sub_82055810.inc"
+#include "generated/sub_82055C20.inc"
+#include "generated/sub_82061FC8.inc"
+#include "generated/sub_820684C0.inc"
+#include "generated/sub_820563A0.inc"
+#include "generated/sub_82068D60.inc"
+#include "generated/sub_82057028.inc"
+#include "generated/sub_82056CB8.inc"
+#include "generated/sub_8206ABD0.inc"
+#include "generated/sub_82062E80.inc"
+#include "generated/sub_8206B2B0.inc"
+#include "generated/sub_82062A50.inc"
+#include "generated/sub_8206B000.inc"
+#include "generated/sub_82057670.inc"
+#include "generated/sub_82056030.inc"
+#include "generated/sub_820B5D40.inc"
+#include "generated/sub_8206EA70.inc"
+#include "generated/sub_8206DF58.inc"
+#include "generated/sub_8206F390.inc"
+#include "generated/sub_8206F498.inc"
+#include "generated/sub_8206EDD0.inc"
+#include "generated/sub_8206F620.inc"
+#include "generated/sub_820B59F8.inc"
+#include "generated/sub_82128E90.inc"
+#include "generated/sub_82128E88.inc"
+#include "generated/sub_820B7540.inc"
+#include "generated/sub_8208C140.inc"
+#include "generated/sub_82079BE0.inc"
+#include "generated/sub_82085400.inc"
+#include "generated/sub_8209F518.inc"
+#include "generated/sub_82128290.inc"
+#include "generated/sub_820935B0.inc"
+#include "generated/sub_820838A8.inc"
+#include "generated/sub_820A58C8.inc"
+#include "generated/sub_82094A98.inc"
+#include "generated/sub_82070F20.inc"
+#include "generated/sub_82094858.inc"
+#include "generated/sub_8209BBA0.inc"
+#include "generated/sub_820A0E98.inc"
+#include "generated/sub_820B5D50.inc"
+#include "generated/sub_820A4238.inc"
+#include "generated/sub_820A32C0.inc"
+#include "generated/sub_820619F0.inc"
+#include "generated/sub_820A4038.inc"
+#include "generated/sub_820A31A0.inc"
+#include "generated/sub_8206DDC8.inc"
+#include "generated/sub_8206F988.inc"
+#include "generated/sub_820A3DF8.inc"
+#include "generated/sub_820B6070.inc"
+#include "generated/sub_8208BF38.inc"
+#include "generated/sub_8207AF80.inc"
+#include "generated/sub_8208FB88.inc"
+#include "generated/sub_820875B0.inc"
+#include "generated/sub_820975D8.inc"
+#include "generated/sub_82096FC8.inc"
+#include "generated/sub_820878E0.inc"
+#include "generated/sub_82082700.inc"
+#include "generated/sub_82087358.inc"
+#include "generated/sub_82087F70.inc"
+#include "generated/sub_82071280.inc"
+#include "generated/sub_82086FF0.inc"
+#include "generated/sub_8207B150.inc"
+#include "generated/sub_82089778.inc"
+#include "generated/sub_8206F918.inc"
+#include "generated/sub_82089AB8.inc"
+#include "generated/sub_820899D0.inc"
+#include "generated/sub_82082848.inc"
+#include "generated/sub_82087AD8.inc"
+#include "generated/sub_82097560.inc"
+#include "generated/sub_82082670.inc"
+#include "generated/sub_8209ED28.inc"
+#include "generated/sub_8208AFC8.inc"
+#include "generated/sub_820868D8.inc"
+#include "generated/sub_820879A0.inc"
+#include "generated/sub_820970D0.inc"
+#include "generated/sub_82087160.inc"
+#include "generated/sub_8208B7F8.inc"
+#include "generated/sub_820877A0.inc"
+#include "generated/sub_82089668.inc"
+#include "generated/sub_82088CF0.inc"
+#include "generated/sub_82082890.inc"
+#include "generated/sub_82082BB0.inc"
+#include "generated/sub_8207E048.inc"
+#include "generated/sub_82082488.inc"
+#include "generated/sub_8207AA50.inc"
+#include "generated/sub_820814A0.inc"
+#include "generated/sub_82083900.inc"
+#include "generated/sub_820813F8.inc"
+#include "generated/sub_8207B630.inc"
+#include "generated/sub_82079B48.inc"
+#include "generated/sub_8207B8B8.inc"
+#include "generated/sub_8208C670.inc"
+#include "generated/sub_82086818.inc"
+#include "generated/sub_820B02B0.inc"
+#include "generated/sub_8208C5E8.inc"
+#include "generated/sub_820B20F0.inc"
+#include "generated/sub_820B2180.inc"
+#include "generated/sub_820B20C8.inc"
+#include "generated/sub_820B0F18.inc"
+#include "generated/sub_820868C8.inc"
+#include "generated/sub_820867E8.inc"
+#include "generated/sub_8208BBB0.inc"
+#include "generated/sub_8208BCF8.inc"
+#include "generated/sub_8207BD00.inc"
+#include "generated/sub_82086DE8.inc"
+#include "generated/sub_82086F78.inc"
+#include "generated/sub_82084DB8.inc"
+#include "generated/sub_82083550.inc"
+#include "generated/sub_82085540.inc"
+#include "generated/sub_820867F0.inc"
+#include "generated/sub_8208F9E8.inc"
+#include "generated/sub_82085890.inc"
+#include "generated/sub_82079970.inc"
+#include "generated/sub_82083F50.inc"
+#include "generated/sub_820837C0.inc"
+#include "generated/sub_820922B8.inc"
+#include "generated/sub_8208ADE8.inc"
+#include "generated/sub_8208AFB8.inc"
+#include "generated/sub_820868A8.inc"
+#include "generated/sub_8208A688.inc"
+#include "generated/sub_8208F828.inc"
+#include "generated/sub_820920D0.inc"
+#include "generated/sub_82084AC8.inc"
+#include "generated/sub_82127588.inc"
+#include "generated/sub_82094038.inc"
+#include "generated/sub_82091DF0.inc"
+#include "generated/sub_82086270.inc"
+#include "generated/sub_8208C6D8.inc"
+#include "generated/sub_820A9AE0.inc"
+#include "generated/sub_82137048.inc"
+#include "generated/sub_82053950.inc"
+#include "generated/sub_8212B4B8.inc"
+#include "generated/sub_82052D98.inc"
+#include "generated/sub_820517E0.inc"
+#include "generated/sub_82053798.inc"
+#include "generated/sub_82127230.inc"
+#include "generated/sub_82053098.inc"
+#include "generated/sub_820534A8.inc"
+#include "generated/sub_82127368.inc"
+#include "generated/sub_821274B0.inc"
+#include "generated/sub_82053568.inc"
+#include "generated/sub_82052FA0.inc"
+#include "generated/sub_82084B38.inc"
+#include "generated/sub_82098F50.inc"
+#include "generated/sub_82084800.inc"
+#include "generated/sub_82084678.inc"
+#include "generated/sub_82084720.inc"
+#include "generated/sub_820B1008.inc"
+#include "generated/sub_82084448.inc"
+#include "generated/sub_820B1078.inc"
+#include "generated/sub_8208F930.inc"
+#include "generated/sub_82091AC0.inc"
+#include "generated/sub_82091C88.inc"
+#include "generated/sub_8208FE50.inc"
+#include "generated/sub_820921C8.inc"
+#include "generated/sub_82092B78.inc"
+#include "generated/sub_82086010.inc"
+#include "generated/sub_8206FDB8.inc"
+#include "generated/sub_82070F68.inc"
+#include "generated/sub_82075400.inc"
+#include "generated/sub_820753F8.inc"
+#include "generated/sub_82094040.inc"
+#include "generated/sub_82066EA8.inc"
+#include "generated/sub_820B6190.inc"
+#include "generated/sub_820B0D80.inc"
+#include "generated/sub_820B1CA8.inc"
+#include "generated/sub_820B1D80.inc"
+#include "generated/sub_820B1AE8.inc"
+#include "generated/sub_820B1FB0.inc"
+#include "generated/sub_820B5788.inc"
+#include "generated/sub_820B1A08.inc"
+#include "generated/sub_820B5698.inc"
+#include "generated/sub_820B1618.inc"
+#include "generated/sub_820B4370.inc"
+#include "generated/sub_820B4AC8.inc"
+#include "generated/sub_820B4B20.inc"
+#include "generated/sub_820B4580.inc"
+#include "generated/sub_820B4BA8.inc"
+#include "generated/sub_820B46A8.inc"
+#include "generated/sub_820B54E8.inc"
+#include "generated/sub_820B4DC8.inc"
+#include "generated/sub_820B42C0.inc"
+#include "generated/sub_820B3AE8.inc"
+#include "generated/sub_820B4498.inc"
+#include "generated/sub_820B3E08.inc"
+#include "generated/sub_820B4920.inc"
+#include "generated/sub_820B3710.inc"
+#include "generated/sub_820B31D0.inc"
+#include "generated/sub_820B1960.inc"
+#include "generated/sub_820B1838.inc"
+#include "generated/sub_820B1478.inc"
 #include "generated/sub_82130408.inc"
 #include "generated/sub_8212A2E0.inc"
 #include "generated/sub_8212F288.inc"
@@ -1965,6 +2709,58 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 // WIP 022: fail-closed XAM/Live kernel imports referenced by the family
 // below; each is bound to its observed shape only when the diagnostic
 // actually reaches it.
+static void __imp__XMAReleaseContext([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AC44u); }
+// WIP 023: trusted xboxkrnl RtlTimeToTimeFields contract - split a 64-bit
+// FILETIME (100 ns since 1601) into the eight big-endian u16 TIME_FIELDS
+// (year, month, day, hour, minute, second, millisecond, weekday).
+static void __imp__RtlTimeToTimeFields(Context& ctx, Machine& base) {
+  if (!ctx.r3.u32 || !ctx.r4.u32) base.fail(Error::unsupported, 0x8214A4D4u);
+  const uint64_t t = base.load(ctx.r3.u32, 8);
+  const uint64_t ms_total = t / 10000ull;
+  const uint32_t msec = uint32_t(ms_total % 1000ull);
+  uint64_t secs = ms_total / 1000ull;
+  const uint32_t sec = uint32_t(secs % 60ull); secs /= 60ull;
+  const uint32_t min = uint32_t(secs % 60ull); secs /= 60ull;
+  const uint32_t hour = uint32_t(secs % 24ull);
+  uint64_t days = secs / 24ull;
+  const uint32_t weekday = uint32_t((days + 1ull) % 7ull);  // 1601-01-01 was a Monday
+  uint32_t year = 1601;
+  for (;;) {
+    const bool leap = (year%4==0 && year%100!=0) || year%400==0;
+    const uint32_t ydays = leap ? 366u : 365u;
+    if (days < ydays) break;
+    days -= ydays; ++year;
+  }
+  static const uint32_t mdays[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+  const bool leap = (year%4==0 && year%100!=0) || year%400==0;
+  uint32_t month = 1;
+  for (; month <= 12u; ++month) {
+    uint32_t md = mdays[month-1] + ((month==2u && leap) ? 1u : 0u);
+    if (days < md) break;
+    days -= md;
+  }
+  const uint32_t out = ctx.r4.u32;
+  base.store(out+0,2,year); base.store(out+2,2,month);
+  base.store(out+4,2,uint32_t(days)+1u); base.store(out+6,2,hour);
+  base.store(out+8,2,min); base.store(out+10,2,sec);
+  base.store(out+12,2,msec); base.store(out+14,2,weekday);
+}
+// WIP 023: the title/attract screen queries wall-clock time (exact wrapper
+// sub_820B6070, lr=0x820B608C). The fixture derives a deterministic
+// FILETIME from the same virtual timebase every other clock uses: a fixed
+// epoch plus the elapsed guest ticks converted to 100 ns units, so host
+// and Xbox measurements stay identical.
+static void __imp__KeQuerySystemTime(Context& ctx, Machine& base) {
+  if (ctx.r3.u32 == 0u) base.fail(Error::unsupported, 0x8214A4E4u);
+  const uint64_t ticks = base.timebase_virtual_ticks;
+  const uint64_t filetime = 0x01C9000000000000ull + (ticks * 80ull) / 399ull;
+  base.store(ctx.r3.u32, 8, filetime);
+}
+static void __imp__RtlTimeFieldsToTime([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A734u); }
+static void __imp__RtlUnicodeToMultiByteN([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A604u); }
+static void __imp__XamShowGamerCardUIForXUID([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A2E4u); }
+static void __imp__XamShowMarketplaceUI([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A304u); }
+static void __imp__XamUserGetName([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A234u); }
 static void __imp__NtWriteFile([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AD14u); }
 // WIP 023 input fixture: exactly one standard gamepad on port 0, idle
 // (no buttons, centered sticks, released triggers). Ports 1-3 report
@@ -2027,7 +2823,40 @@ static void __imp__XMsgInProcessCall(Context& ctx, Machine& base) {
   }
   base.fail(Error::unsupported, 0x8214AA84u);
 }
-static void __imp__XNotifyGetNext([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A204u); }
+// WIP 023 PORT POLICY: the sign-in flow. Pressing START at the title makes
+// the game call XamShowSigninUI; the original Xbox has no system sign-in
+// blade, and the port treats the local player as already signed in. The
+// UI call succeeds instantly, a single XN_SYS_SIGNINCHANGED notification
+// (id 0x0000000A, area SYS) is queued for the game's listener, and the
+// notification poll drains it; afterwards the poll reports nothing
+// pending. Sign-in state reports "signed in locally" for user 0 only.
+static bool g_signin_notification_pending = false;
+static void __imp__XamShowSigninUI(Context& ctx, Machine& base) {
+  if (ctx.r3.u32 == 0u || ctx.r3.u32 > 4u || ctx.r4.u32 != 0u)
+    base.fail(Error::unsupported, 0x8214A2C4u);
+  g_signin_notification_pending = true;
+  ctx.r3.u64 = 0u;  // ERROR_SUCCESS
+}
+static void __imp__XamUserGetSigninState(Context& ctx, [[maybe_unused]] Machine& base) {
+  // 1 = eXUserSigninState_SignedInLocally for user 0; others not signed in.
+  ctx.r3.u64 = (ctx.r3.u32 == 0u) ? 1u : 0u;
+}
+static void __imp__XNotifyGetNext(Context& ctx, Machine& base) {
+  const uint32_t id_out = ctx.r5.u32, param_out = ctx.r6.u32;
+  if (ctx.r3.u32 != 0x0F110001u)  // the fixture listener token
+    base.fail(Error::unsupported, 0x8214A204u);
+  if (g_signin_notification_pending &&
+      (ctx.r4.u32 == 0u || ctx.r4.u32 == 0x0000000Au)) {
+    g_signin_notification_pending = false;
+    if (id_out) base.store(id_out, 4, 0x0000000Au);   // XN_SYS_SIGNINCHANGED
+    if (param_out) base.store(param_out, 4, 1u);      // user 0 mask
+    ctx.r3.u64 = 1u;
+    return;
+  }
+  if (id_out) base.store(id_out, 4, 0u);
+  if (param_out) base.store(param_out, 4, 0u);
+  ctx.r3.u64 = 0u;  // nothing pending
+}
 static void __imp__XamAlloc([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AAA4u); }
 static void __imp__XamContentClose([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A324u); }
 static void __imp__XamContentCreateEx([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A314u); }
@@ -2090,7 +2919,15 @@ static void __imp__NtDuplicateObject([[maybe_unused]] Context& ctx, Machine& bas
 static void __imp__XMsgCancelIORequest([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A3C4u); }
 static void __imp__XMsgStartIORequest([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A224u); }
 static void __imp__XamContentCreateEnumerator([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A344u); }
-static void __imp__XamContentGetLicenseMask([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A334u); }
+// WIP 023 PORT POLICY: no marketplace exists on the original Xbox. The
+// menu's DLC gate reads a zero license mask (base game only, synchronous
+// success); DLC stays hidden exactly as on an offline retail console.
+static void __imp__XamContentGetLicenseMask(Context& ctx, Machine& base) {
+  if (ctx.r3.u32 == 0u || ctx.r4.u32 != 0u)
+    base.fail(Error::unsupported, 0x8214A334u);
+  base.store(ctx.r3.u32, 4, 0u);
+  ctx.r3.u64 = 0u;  // ERROR_SUCCESS
+}
 static void __imp__XamEnumerate([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A364u); }
 static void __imp__XamGetExecutionId([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A414u); }
 static void __imp__XamGetSystemVersion(Context& ctx, [[maybe_unused]] Machine& base) {
@@ -2109,12 +2946,10 @@ static void __imp__XamNotifyCreateListener(Context& ctx, Machine& base) {
   ctx.r3.u64=0x0F110001u;
 }
 static void __imp__XamSessionRefObjByHandle([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AD74u); }
-static void __imp__XamShowSigninUI([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A2C4u); }
 static void __imp__XamUserAreUsersFriends([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A254u); }
 static void __imp__XamUserCheckPrivilege([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A264u); }
 static void __imp__XamUserCreateAchievementEnumerator([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A2A4u); }
 static void __imp__XamUserGetSigninInfo([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A3A4u); }
-static void __imp__XamUserGetSigninState([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A244u); }
 static void __imp__XamUserGetXUID([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A2B4u); }
 static void __imp__XamUserReadProfileSettings([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AAB4u); }
 static void __imp__XamUserWriteProfileSettings([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AAC4u); }
@@ -2724,7 +3559,18 @@ static void sub_8210C860(Context& ctx, [[maybe_unused]] Machine& base) {
 #include "generated/sub_82067828.inc"
 #include "generated/sub_82097A28.inc"
 #include "generated/sub_82097948.inc"
-#include "generated/sub_8209EA18.inc"
+// WIP 023 PORT POLICY: audio streaming is stubbed. The Xbox 360 build
+// decodes XMA in the APU; the original Xbox has no XMA hardware, and the
+// port will re-encode audio as XBADPCM/WAV/OGG behind this same boundary.
+// The stub takes exact sub_8209EA18's own shipped failure contract (the
+// same stores its id>=512 error path performs: result code 1, stream 0),
+// so the game continues silently on code paths it already ships.
+static void sub_8209EA18(Context& ctx, Machine& base) {
+  const uint32_t out = ctx.r3.u32;
+  base.store(out + 0, 4, 1u);   // shipped open-failure code
+  base.store(out + 4, 4, 0u);   // no stream object
+  ctx.r3.u64 = out;
+}
 #include "generated/sub_8212A048.inc"
 #include "generated/sub_82095840.inc"
 #include "generated/sub_8209B258.inc"

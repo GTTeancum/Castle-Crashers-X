@@ -101,4 +101,4 @@ static void sub_82129A70(Context&, Machine&);
 #include "generated/sub_82129A70.inc"
 static void sub_82085C70(Context&, Machine& base) { base.fail(Error::unsupported, 0x82085C70u); }
 static void sub_8208C5D8(Context&, Machine& base) { base.fail(Error::unsupported, 0x8208C5D8u); }
-static void sub_82127FB0(Context&, Machine& base) { base.fail(Error::unsupported, 0x82127FB0u); }
+// WIP 023: sub_82127FB0 is now the exact generated body (runtime021).
