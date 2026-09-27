@@ -1941,3 +1941,7 @@ static void sub_82065DF0(Context&, Machine&);
 static void sub_82062990(Context&, Machine&);
 static void sub_820669E8(Context&, Machine&);
 static void sub_82063648(Context&, Machine&);
+static void sub_82066820(Context&, Machine&);
+static void sub_82067AF0(Context&, Machine&);
+static void sub_82064048(Context&, Machine&);
+static void sub_82054490(Context&, Machine&);

@@ -414,3 +414,6 @@ case 0x820667B0: sub_820667B0(ctx,base); return;
 case 0x82062990: sub_82062990(ctx,base); return;
 case 0x820669E8: sub_820669E8(ctx,base); return;
 case 0x82063648: sub_82063648(ctx,base); return;
+case 0x82066820: sub_82066820(ctx,base); return;
+case 0x82064048: sub_82064048(ctx,base); return;
+case 0x82054490: sub_82054490(ctx,base); return;

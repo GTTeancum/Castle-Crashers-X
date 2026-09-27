@@ -1100,7 +1100,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // third frame's pacing sleep with Error::capacity -" a deliberate frame
   // budget, never a faked exit path.
   cc::tree::set_exact_texture_bind(true);
-  auto pi=invoke(0x82070ba4,c,m,sink(),900000000);
+  auto pi=invoke(0x82070ba4,c,m,sink(),3800000000u);
   cc_log("caller_post_init result=%s@%08x funcs=%u memops=%u r1=%08x lr=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r11=%08x\n",
               name(pi.error),pi.address,pi.functions,pi.memory_ops,c.r1.u32,uint32_t(c.lr),
               c.r3.u32,c.r4.u32,c.r5.u32,c.r6.u32,c.r7.u32,c.r11.u32);
@@ -1111,8 +1111,8 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // flow) and renders menu frames until the deliberate 900M memory-op
   // diagnostic budget expires mid-draw. All values below are the exact
   // deterministic measurements of that bounded run.
-  CHECK(pi.address==0x0003E678u);
-  CHECK(uint32_t(c.lr)==0x820A9318u); // inside the exact quad-draw body
+  CHECK(pi.address==0x8214A614u);   // the 10,000-frame diagnostic budget
+  CHECK(uint32_t(c.lr)==0x820B7504u); // exact Sleep wrapper frame boundary
   // Exact sub_8209BC98 obtains the observed 16 MiB main pool through exact
   // sub_820B6108 / bounded MmAllocatePhysicalMemoryEx (fixture arena at
   // 0x10000000) and publishes it through the startup hash object. Exact
@@ -1122,8 +1122,8 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // chain (sub_820C3568/sub_820C3930/sub_820C4488/sub_820C4498) creates the
   // font texture. The slice ends by dispatching renderer vtable slot +12 to
   // exact sub_820A7E80 (with exact sub_820BFB50), which returns normally.
-  CHECK(pi.functions==41122868u && pi.memory_ops==900000001u);
-  CHECK(c.r1.u32==0x0003e5b0u); // draw-call frame at the budget stop
+  CHECK(pi.functions==120946807u && pi.memory_ops==2039124057u);
+  CHECK(c.r1.u32==0x0003ee70u); // pacing-sleep frame at the budget stop
   CHECK(m.load_be(0x00075240u,4,v)==cc::xbox::MemoryError::ok && v==0x01000000u); // pool size
   CHECK(m.load_be(0x00075244u,4,v)==cc::xbox::MemoryError::ok && v==0x10000000u); // pool base
   // The XPR container header read into the physical block, byte-exact from

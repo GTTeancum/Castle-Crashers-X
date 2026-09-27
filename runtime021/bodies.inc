@@ -2043,6 +2043,10 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_820A1640.inc"
 #include "generated/sub_82053888.inc"
 #include "generated/sub_820A7470.inc"
+#include "generated/sub_82054490.inc"
+#include "generated/sub_82064048.inc"
+#include "generated/sub_82067AF0.inc"
+#include "generated/sub_82066820.inc"
 #include "generated/sub_82063648.inc"
 #include "generated/sub_820669E8.inc"
 #include "generated/sub_82062990.inc"
@@ -2797,8 +2801,23 @@ static void __imp__XamInputGetState(Context& ctx, Machine& base) {
   if ((g_frame_delay_calls >= 300u && g_frame_delay_calls < 312u) ||
       (g_frame_delay_calls >= 1200u && g_frame_delay_calls < 1212u))
     buttons = 0x0010u;  // XINPUT_GAMEPAD_START
-  else if (g_frame_delay_calls >= 2200u && g_frame_delay_calls < 2212u)
+  else if ((g_frame_delay_calls >= 3000u && g_frame_delay_calls < 3012u) ||
+           (g_frame_delay_calls >= 4000u && g_frame_delay_calls < 4012u) ||
+           (g_frame_delay_calls >= 5000u && g_frame_delay_calls < 5012u) ||
+           (g_frame_delay_calls >= 7000u && g_frame_delay_calls < 7012u) ||
+           (g_frame_delay_calls >= 8000u && g_frame_delay_calls < 8012u))
     buttons = 0x1000u;  // XINPUT_GAMEPAD_A
+  else if (g_frame_delay_calls >= 4500u && g_frame_delay_calls < 4512u)
+    buttons = 0x0002u;  // XINPUT_GAMEPAD_DPAD_DOWN
+  else if (g_frame_delay_calls >= 6000u && g_frame_delay_calls < 6012u)
+    buttons = 0x0010u;  // second START (some screens confirm on START)
+  {
+    static uint32_t last_buttons = 0;
+    if (buttons != last_buttons) {
+      cc_log("input frame=%u buttons=%04x\n", g_frame_delay_calls, buttons);
+      last_buttons = buttons;
+    }
+  }
   base.store(state + 0, 4, g_input_packet_number); // dwPacketNumber
   base.store(state + 4, 4, buttons << 16);         // wButtons | triggers
   base.store(state + 8, 4, 0u);                    // sThumbLX | sThumbLY
@@ -2830,11 +2849,12 @@ static void __imp__XMsgInProcessCall(Context& ctx, Machine& base) {
 // (id 0x0000000A, area SYS) is queued for the game's listener, and the
 // notification poll drains it; afterwards the poll reports nothing
 // pending. Sign-in state reports "signed in locally" for user 0 only.
-static bool g_signin_notification_pending = false;
+static uint32_t g_signin_notifications_pending = 0;
 static void __imp__XamShowSigninUI(Context& ctx, Machine& base) {
   if (ctx.r3.u32 == 0u || ctx.r3.u32 > 4u || ctx.r4.u32 != 0u)
     base.fail(Error::unsupported, 0x8214A2C4u);
-  g_signin_notification_pending = true;
+  g_signin_notifications_pending = 2u;  // SIGNINCHANGED then UI-closed
+  cc_log("signin_ui frame=%u panes=%u\n", g_frame_delay_calls, ctx.r3.u32);
   ctx.r3.u64 = 0u;  // ERROR_SUCCESS
 }
 static void __imp__XamUserGetSigninState(Context& ctx, [[maybe_unused]] Machine& base) {
@@ -2845,11 +2865,20 @@ static void __imp__XNotifyGetNext(Context& ctx, Machine& base) {
   const uint32_t id_out = ctx.r5.u32, param_out = ctx.r6.u32;
   if (ctx.r3.u32 != 0x0F110001u)  // the fixture listener token
     base.fail(Error::unsupported, 0x8214A204u);
-  if (g_signin_notification_pending &&
-      (ctx.r4.u32 == 0u || ctx.r4.u32 == 0x0000000Au)) {
-    g_signin_notification_pending = false;
-    if (id_out) base.store(id_out, 4, 0x0000000Au);   // XN_SYS_SIGNINCHANGED
+  // Real XNotify ids carry the SYS area (2) in bits 25-31:
+  // XN_SYS_UI = 0x02000009, XN_SYS_SIGNINCHANGED = 0x0200000A. The sign-in
+  // flow delivers SIGNINCHANGED (user-0 mask) first, then UI-closed.
+  if (g_signin_notifications_pending == 2u) {
+    --g_signin_notifications_pending;
+    if (id_out) base.store(id_out, 4, 0x0200000Au);   // XN_SYS_SIGNINCHANGED
     if (param_out) base.store(param_out, 4, 1u);      // user 0 mask
+    ctx.r3.u64 = 1u;
+    return;
+  }
+  if (g_signin_notifications_pending == 1u) {
+    --g_signin_notifications_pending;
+    if (id_out) base.store(id_out, 4, 0x02000009u);   // XN_SYS_UI
+    if (param_out) base.store(param_out, 4, 0u);      // UI closed
     ctx.r3.u64 = 1u;
     return;
   }

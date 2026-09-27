@@ -276,7 +276,7 @@ struct Machine {
       g_drain_workers(*this, ctx.r13.u32);
       drain_active = false;
     }
-    if (++result.functions > 50000000) {
+    if (++result.functions > 500000000) {
       prof_dump();
       uint64_t pend=0,done=0,b=0;
       memory.load_be(0x8228A770u,4,pend); memory.load_be(0x8228A764u,4,done);
@@ -1055,7 +1055,7 @@ Result invoke(uint32_t entry, Context &ctx, AddressSpace &memory, Sink sink,
     return error;
   }
   if (!sink.submit || !sink.bind || ctx.r1.u64 < 16384 ||
-      ctx.r1.u64 > 0xffffff7f || budget < 1 || budget > 1000000000) {
+      ctx.r1.u64 > 0xffffff7f || budget < 1 || budget > 4000000000u) {
     error.error = Error::context;
     return error;
   }
