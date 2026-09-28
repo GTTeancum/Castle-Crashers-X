@@ -34,12 +34,10 @@ static void ppc_trap([[maybe_unused]] Context& ctx, Machine& base, uint32_t code
     base.fail(Error::unsupported, addr); \
   }
 HARD_BOUNDARY(sub_820A71E8, 0x820A71E8u)
-HARD_BOUNDARY(sub_82084EE0, 0x82084EE0u)
 HARD_BOUNDARY(sub_82098100, 0x82098100u)
 HARD_BOUNDARY(sub_82099BE8, 0x82099BE8u)
 HARD_BOUNDARY(sub_82051868, 0x82051868u)
 HARD_BOUNDARY(sub_820518E0, 0x820518E0u)
-HARD_BOUNDARY(sub_82053380, 0x82053380u)
 HARD_BOUNDARY(sub_82127468, 0x82127468u)
 HARD_BOUNDARY(sub_82074A58, 0x82074A58u)
 HARD_BOUNDARY(sub_82074B00, 0x82074B00u)
@@ -69,10 +67,23 @@ HARD_BOUNDARY(sub_82053648, 0x82053648u)
 static void __imp__KeQueryPerformanceFrequency(Context& ctx, [[maybe_unused]] Machine& base) {
   ctx.r3.u64 = Machine::timebase_hz;
 }
+// Hardware-register (MMIO) and timebase helpers used by the generated
+// bodies, defined once for the whole file. The MMIO policy functions are
+// defined further down with the fixture hardware models.
+static uint32_t checkpoint020_mm_load_u32(Machine& base, uint32_t a);
+static void checkpoint020_mm_store_u32(Machine& base, uint32_t a, uint32_t v);
+static uint16_t cc_mm_load_u16(Machine& base, uint32_t a);
+#define REX_MM_LOAD_U32(a) checkpoint020_mm_load_u32(base,uint32_t(a))
+#define REX_MM_STORE_U32(a,v) checkpoint020_mm_store_u32(base,uint32_t(a),uint32_t(v))
+#define REX_MM_LOAD_U16(a) cc_mm_load_u16(base,uint32_t(a))
+
+// Shared first-fit allocator over the physical cursor arena (used by
+// MmAllocatePhysicalMemoryEx/MmFreePhysicalMemory and the kernel pool).
+static uint32_t cc_phys_alloc(Machine& base, uint32_t bytes, uint32_t align);
+static bool cc_phys_free(Machine& base, uint32_t addr);
 #define REX_QUERY_TIMEBASE() base.query_timebase()
 #include "generated/sub_820B6D10.inc"
 #include "generated/sub_820B6D48.inc"
-#undef REX_QUERY_TIMEBASE
 
 #include "generated/sub_82082390.inc"
 #include "generated/sub_8208BE40.inc"
@@ -316,24 +327,109 @@ static void sub_82127778(Context& ctx, Machine& base) {
       return;
     }
   }
-  // The only other accepted checkpoint-016 call shape is sprintf-like "%i"
-  // used by sub_8209CA70 to create its monotonically numbered startup label.
-  if (ctx.r4.u32 != 0x8203DF98u ||
-      base.load(ctx.r4.u32 + 0,1) != uint8_t('%') ||
-      base.load(ctx.r4.u32 + 1,1) != uint8_t('i') ||
-      base.load(ctx.r4.u32 + 2,1) != 0)
-    base.fail(Error::unsupported, 0x82127778u);
-  char rev[16]{};
-  unsigned used=0;
-  const int32_t sv=ctx.r5.s32;
-  uint32_t mag = sv < 0 ? uint32_t(-int64_t(sv)) : uint32_t(sv);
-  do { rev[used++]=char('0'+(mag%10)); mag/=10; } while(mag && used<sizeof(rev));
-  uint32_t out=ctx.r3.u32;
-  unsigned written=0;
-  if (sv < 0) { base.store(out++,1,uint8_t('-')); ++written; }
-  while (used) { base.store(out++,1,uint8_t(rev[--used])); ++written; }
-  base.store(out,1,0);
-  ctx.r3.u64=written;
+  // WIP 023: general bounded formatter for every other format string (the
+  // game has hundreds). sprintf(char* out, const char* fmt, ...): varargs
+  // follow the Xbox 360 convention - r5..r10, then 8-byte stack slots from
+  // r1+0x50 - with doubles passed as their 64-bit bit pattern in the same
+  // slots. Standard conversions %d %i %u %x %X %o %c %s %S %p %e %f %g %%
+  // with flags, width, precision (numeric or *) and h/l/ll/I64 lengths.
+  // Output and each string argument are bounded; any other conversion
+  // character fails closed.
+  {
+    unsigned argi = 0;
+    auto next_arg = [&]() -> uint64_t {
+      const unsigned i = argi++;
+      if (i < 6u) {
+        switch (i) {
+          case 0: return ctx.r5.u64; case 1: return ctx.r6.u64;
+          case 2: return ctx.r7.u64; case 3: return ctx.r8.u64;
+          case 4: return ctx.r9.u64; default: return ctx.r10.u64;
+        }
+      }
+      return base.load(ctx.r1.u32 + 0x50u + (i - 6u) * 8u, 8);
+    };
+    static char outb[4608];
+    size_t on = 0;
+    auto put = [&](const char* s) {
+      for (; *s; ++s) {
+        if (on >= 4096u) base.fail(Error::unsupported, 0x82127778u);
+        outb[on++] = *s;
+      }
+    };
+    uint32_t f = ctx.r4.u32;
+    for (unsigned guard = 0;; ++guard) {
+      if (guard > 4096u) base.fail(Error::unsupported, 0x82127778u);
+      const char c = char(base.load(f++, 1));
+      if (!c) break;
+      if (c != '%') { const char one[2] = {c, 0}; put(one); continue; }
+      char spec[48] = "%";
+      size_t sn = 1;
+      auto spec_push = [&](char d) { if (sn < 40u) { spec[sn++] = d; spec[sn] = 0; } };
+      char conv = 0;
+      bool is64 = false, is_short = false, wide = false;
+      for (unsigned k = 0; k < 16u; ++k) {
+        const char d = char(base.load(f++, 1));
+        if (d == '*') {
+          char num[16]; std::snprintf(num, sizeof(num), "%d", int32_t(uint32_t(next_arg())));
+          for (const char* q = num; *q; ++q) spec_push(*q);
+          continue;
+        }
+        if (d == 'l') { if (char(base.load(f, 1)) == 'l') { ++f; is64 = true; } else wide = true; continue; }
+        if (d == 'h') { is_short = true; continue; }
+        if (d == 'I' && char(base.load(f,1)) == '6' && char(base.load(f+1,1)) == '4') { f += 2; is64 = true; continue; }
+        if (d && std::strchr("-+ #0123456789.", d)) { spec_push(d); continue; }
+        conv = d; break;
+      }
+      char fmt[64], buf[512];
+      switch (conv) {
+        case '%': put("%"); break;
+        case 'd': case 'i': {
+          const uint64_t v = next_arg();
+          const long long sv = is64 ? (long long)(int64_t)v
+                             : is_short ? (long long)(int16_t)v : (long long)(int32_t)(uint32_t)v;
+          std::snprintf(fmt, sizeof(fmt), "%slld", spec);
+          std::snprintf(buf, sizeof(buf), fmt, sv); put(buf); break;
+        }
+        case 'u': case 'x': case 'X': case 'o': {
+          const uint64_t v = next_arg();
+          const unsigned long long uv = is64 ? v : is_short ? (v & 0xFFFFu) : (v & 0xFFFFFFFFu);
+          std::snprintf(fmt, sizeof(fmt), "%sll%c", spec, conv);
+          std::snprintf(buf, sizeof(buf), fmt, uv); put(buf); break;
+        }
+        case 'p': std::snprintf(buf, sizeof(buf), "%08X", uint32_t(next_arg())); put(buf); break;
+        case 'c': { const char one[2] = {char(uint32_t(next_arg()) & 0xFFu), 0}; put(one); break; }
+        case 'e': case 'E': case 'f': case 'g': case 'G': {
+          uint64_t bits = next_arg(); double dv; std::memcpy(&dv, &bits, 8);
+          std::snprintf(fmt, sizeof(fmt), "%s%c", spec, conv);
+          std::snprintf(buf, sizeof(buf), fmt, dv); put(buf); break;
+        }
+        case 's': case 'S': {
+          const uint32_t sp = uint32_t(next_arg());
+          const bool w = (conv == 'S') != wide;  // %S / %ls = UTF-16BE
+          static char sv[1100];
+          size_t n = 0;
+          if (!sp) { std::snprintf(sv, sizeof(sv), "(null)"); }
+          else {
+            for (uint32_t k = 0; k < 1024u; ++k) {
+              const uint32_t ch = w ? uint32_t(base.load(sp + k * 2u, 2)) : uint32_t(base.load(sp + k, 1));
+              if (!ch) break;
+              sv[n++] = ch < 0x80u ? char(ch) : '?';
+            }
+            sv[n] = 0;
+          }
+          std::snprintf(fmt, sizeof(fmt), "%ss", spec);
+          std::snprintf(buf, sizeof(buf), fmt, sv); put(buf); break;
+        }
+        default:
+          cc_elog("SPRINTF unsupported conversion '%c' fmt=%08x\n", conv ? conv : '?', ctx.r4.u32);
+          base.fail(Error::unsupported, 0x82127778u);
+      }
+    }
+    uint32_t out = ctx.r3.u32;
+    for (size_t i = 0; i < on; ++i) base.store(out++, 1, uint8_t(outb[i]));
+    base.store(out, 1, 0);
+    ctx.r3.u64 = on;
+  }
 }
 
 #include "generated/sub_8209CA70.inc"
@@ -388,9 +484,10 @@ static void __imp__ExGetXConfigSetting(Context& ctx, Machine& base) {
   if (ctx.r5.u32 > 0xfffffffbu || ctx.r7.u32 > 0xfffffffdU)
     base.fail(Error::context, 0x8214A554u);
   if (ctx.r4.u32 == 9u) {
-    base.store(ctx.r5.u32,4,0);
+    // XCONFIG_USER_LANGUAGE: the port ships English (XC_LANGUAGE_ENGLISH).
+    base.store(ctx.r5.u32,4,1);
     base.store(ctx.r7.u32,2,4);
-    ctx.r3.s64 = -1; // startup region fallback path
+    ctx.r3.s64 = 0;
     return;
   }
   if (ctx.r4.u32 >= 1u && ctx.r4.u32 <= 16u && ctx.r4.u32 != 9u &&
@@ -417,8 +514,8 @@ static void __imp__ExGetXConfigSetting(Context& ctx, Machine& base) {
   base.fail(Error::unsupported, 0x8214A554u);
 }
 static void __imp__XGetGameRegion(Context& ctx, [[maybe_unused]] Machine& base) {
-  // 0x101 is the original NTSC-U/US region code used by this deterministic fixture.
-  ctx.r3.u64 = 0x101u;
+  // XGAME_REGION_NA_ALL (0x0101 is the Japan region and selects Japanese text).
+  ctx.r3.u64 = 0x00FFu;
 }
 static void __imp__XNotifyPositionUI(Context& ctx, Machine& base) {
   if (ctx.r3.u32 != 1u) base.fail(Error::unsupported, 0x8214A1F4u);
@@ -438,6 +535,40 @@ static void __imp__XNotifyPositionUI(Context& ctx, Machine& base) {
 // suspended by the original code, assigned priority/affinity, then resumed.
 // The host proof records that lifecycle as bounded scheduler state but does not
 // execute the worker entry: sub_820B0E80 is an intentional infinite work loop.
+// WIP 023 thread model: a newly started system thread runs immediately, on
+// its own scratch stack, until it first blocks (a wait nothing can satisfy,
+// or a sleep); the harness then returns to the creator and abandons it.
+// Everything the thread does before blocking - creating timers, signalling
+// its creator's "ready" event - really happens. The standard thread thunk
+// is skipped because it would overwrite the main thread's CRT per-thread
+// data (one global TLS table in this harness). Real failures inside the
+// thread still stop the whole run.
+static std::jmp_buf g_thread_escape;
+static bool g_in_thread_run = false;
+static void cc_thread_block_point() {
+  if (g_in_thread_run) std::longjmp(g_thread_escape, 1);
+}
+static void cc_run_thread_body(Machine& base, uint32_t start, uint32_t param, uint32_t r13) {
+  Context tc{};
+  tc.r1.u32 = 0x00039000u;   // scratch stack (main thread above, workers at 0x34000)
+  tc.r13.u32 = r13;
+  tc.r3.u32 = param;
+  tc.lr = 0x820B79B8u;
+  dispatch(start, tc, base);
+}
+static void cc_run_thread_until_block(Machine& base, uint32_t start, uint32_t param, uint32_t r13) {
+  if (g_in_thread_run) base.fail(Error::unsupported, start);  // no nesting
+  const uint32_t saved_depth = base.depth;
+  g_in_thread_run = true;
+  if (setjmp(g_thread_escape) == 0) {
+    cc_run_thread_body(base, start, param, r13);
+    cc_log("thread %08x returned without blocking\n", start);
+  } else {
+    cc_log("thread %08x ran until it blocked\n", start);
+  }
+  g_in_thread_run = false;
+  base.depth = saved_depth;
+}
 static void __imp__ExCreateThread(Context& ctx, Machine& base) {
   const uint32_t out_handle=ctx.r3.u32;
   if (ctx.r7.u32 == 0x820D99B0u || ctx.r7.u32 == 0x820D9A78u) {
@@ -499,6 +630,25 @@ static void __imp__ExCreateThread(Context& ctx, Machine& base) {
     t.priority=0; t.affinity=0x3fu; ++base.thread_count;
     base.store(out_handle,4,t.handle); ctx.r3.s64=0; return;
   }
+  // WIP 023: any other thread started through the title's standard thread
+  // thunk (0x820B79B8) - the system notification poller, voice and Live
+  // workers - is recorded with its creation flags and never run: this
+  // single-threaded diagnostic services only the game threads modelled
+  // above, and these threads would never be woken (offline, nobody signs
+  // in). Creation flag bit 0 = create suspended.
+  if (ctx.r6.u32 == 0x820B79B8u && ctx.r7.u32 >= 0x82000000u && ctx.r7.u32 < 0x82150000u &&
+      base.thread_count < base.threads.size()) {
+    auto &t=base.threads[base.thread_count];
+    t.allocated=true; t.suspended=(ctx.r9.u32 & 1u)!=0u; t.runnable=!t.suspended;
+    t.handle=0xF1000001u+base.thread_count; t.object=0xF2000001u+base.thread_count;
+    t.startup_thunk=ctx.r6.u32; t.start_routine=ctx.r7.u32; t.parameter=ctx.r8.u32;
+    t.priority=0; t.affinity=0x3fu; ++base.thread_count;
+    cc_log("thread created start=%08x param=%08x flags=%08x\n",
+           ctx.r7.u32, ctx.r8.u32, ctx.r9.u32);
+    base.store(out_handle,4,t.handle);
+    if (!t.suspended) cc_run_thread_until_block(base, ctx.r7.u32, ctx.r8.u32, ctx.r13.u32);
+    ctx.r3.s64=0; return;
+  }
   base.fail(Error::unsupported,0x8214A5E4u);
 }
 static void __imp__ObReferenceObjectByHandle(Context& ctx, Machine& base) {
@@ -517,7 +667,10 @@ static void __imp__KeSetBasePriorityThread(Context& ctx, Machine& base) {
   const bool audio=t && (t->start_routine==0x820D99B0u ||
                          t->start_routine==0x820D9A78u) && ctx.r4.s32==15;
   const bool mainloop=t && t->start_routine==0x82070828u && ctx.r4.s32==1;
-  if (!startup && !graphics && !audio && !mainloop)
+  const bool generic=t && t->start_routine!=0x820B0E80u && t->start_routine!=0x820D7578u &&
+                     t->start_routine!=0x820D99B0u && t->start_routine!=0x820D9A78u &&
+                     t->start_routine!=0x82070828u && ctx.r4.s32>=-16 && ctx.r4.s32<=31;
+  if (!startup && !graphics && !audio && !mainloop && !generic)
     base.fail(Error::unsupported, 0x8214A464u);
   const int32_t old=t->priority; t->priority=ctx.r4.s32; ctx.r3.s64=old;
 }
@@ -528,8 +681,10 @@ static void __imp__ObDereferenceObject(Context& ctx, Machine& base) {
 }
 static void __imp__KeSetAffinityThread(Context& ctx, Machine& base) {
   auto *t=base.by_object(ctx.r3.u32);
+  const bool known=t && t->start_routine==0x820B0E80u;
   const uint32_t expected=t ? (1u << (t->parameter+1u)) : 0u;
-  if (!t || ctx.r4.u32 != expected || ctx.r5.u32 > 0xfffffffbu)
+  if (!t || (known && ctx.r4.u32 != expected) || ctx.r4.u32 == 0u || ctx.r4.u32 > 0x3Fu ||
+      ctx.r5.u32 > 0xfffffffbu)
     base.fail(Error::unsupported, 0x8214A484u);
   base.store(ctx.r5.u32,4,t->affinity);
   t->affinity=ctx.r4.u32;
@@ -660,12 +815,27 @@ static void __imp__XGetVideoMode(Context& ctx, Machine& base) {
 // Checkpoint 019: graphics/runtime platform boundary. Game-side device/ring setup
 // remains exact generated code; only loader/kernel/runtime contracts are modeled.
 static void sub_82136670(Context& ctx, Machine& base) {
-  ctx.r3.u64=base.graphics_allocate(ctx.r3.u32,ctx.r4.u32);
+  const uint32_t p=base.graphics_allocate(ctx.r3.u32,ctx.r4.u32);
+  if (p != 0xFFFFFFFFu) { ctx.r3.u64=p; return; }
+  // General allocation (see graphics_allocate): zero-filled, 16-byte aligned,
+  // page-aligned from 4 KiB up, bounded to 16 MiB per call.
+  const uint32_t size=ctx.r3.u32;
+  if (size == 0u || size > 0x01000000u) base.fail(Error::unsupported,0x82136670u);
+  const uint32_t q=cc_phys_alloc(base,size,size>=0x1000u?0x1000u:16u);
+  for (uint32_t i=0;i<((size+3u)&~3u);i+=4u) base.memory.store_be(q+i,4,0u);
+  ctx.r3.u64=q;
 }
 static void sub_82136708(Context& ctx, Machine& base) {
-  // Fresh-object ring setup frees four null physical allocations. Non-null free
-  // behavior is not observed before this checkpoint boundary.
-  if (ctx.r3.u32 != 0u || ctx.r4.u32 != 0xB1800000u)
+  // Graphics/audio allocator free (pair of sub_82136670). Startup frees
+  // null pointers; from the level load on, the audio code frees blocks it
+  // allocated. The fixture allocator is a bump cursor, so a free of a block
+  // it handed out is accepted without reuse; anything else fails closed.
+  if (ctx.r3.u32 == 0u) { ctx.r3.u64 = 0; return; }
+  if (ctx.r3.u32 >= 0x12000000u && ctx.r3.u32 < 0x20000000u) {
+    if (!cc_phys_free(base, ctx.r3.u32)) base.fail(Error::unsupported,0x82136708u);
+    ctx.r3.u64 = 0; return;
+  }
+  if (ctx.r3.u32 < 0x02000000u || ctx.r3.u32 >= g_graphics_alloc_cursor)
     base.fail(Error::unsupported,0x82136708u);
   ctx.r3.u64=0;
 }
@@ -711,6 +881,7 @@ static void __imp__VdSetSystemCommandBufferGpuIdentifierAddress(Context& ctx, Ma
 // from the graphics cursor arena and reports success; decode progress
 // stays fail-closed until the exact code is observed polling it. The
 // original-Xbox port will replace XMA with pre-converted audio.
+static std::vector<uint32_t> g_xma_contexts;
 static void __imp__XMACreateContext(Context& ctx, Machine& base) {
   const uint32_t out = ctx.r3.u32;
   if (!out) base.fail(Error::unsupported, 0x8214AC54u);
@@ -720,7 +891,19 @@ static void __imp__XMACreateContext(Context& ctx, Machine& base) {
   g_graphics_alloc_cursor = p + 64u;
   for (uint32_t i = 0; i < 64u; i += 4u) base.store(p + i, 4, 0u);
   base.store(out, 4, p);
+  g_xma_contexts.push_back(p);
   ctx.r3.u64 = 0u;
+}
+// Audio is stubbed by port policy: releasing a fixture decoder context only
+// forgets it. A pointer this fixture never handed out stays fail-closed.
+static void __imp__XMAReleaseContext(Context& ctx, Machine& base) {
+  for (size_t i = 0; i < g_xma_contexts.size(); ++i)
+    if (g_xma_contexts[i] == ctx.r3.u32) {
+      g_xma_contexts.erase(g_xma_contexts.begin() + i);
+      ctx.r3.u64 = 0u;
+      return;
+    }
+  base.fail(Error::unsupported, 0x8214AC44u);
 }
 static void __imp__MmGetPhysicalAddress(Context& ctx, Machine& base) {
   if (g_graphics_alloc_index==6u && base.ring_virtual && ctx.r3.u32==base.ring_virtual) {
@@ -735,7 +918,7 @@ static void __imp__MmGetPhysicalAddress(Context& ctx, Machine& base) {
   // identity-style low mapping, so the same 29-bit contract applies to
   // any address inside the mapped graphics/physical arenas.
   if ((ctx.r3.u32>=0x02000000u && ctx.r3.u32<0x02400000u+0x00400000u) ||
-      (ctx.r3.u32>=0x12000000u && ctx.r3.u32<0x18000000u)) {
+      (ctx.r3.u32>=0x12000000u && ctx.r3.u32<0x20000000u)) {
     ctx.r3.u64 = ctx.r3.u32 & 0x1FFFFFFFu;
     return;
   }
@@ -1291,15 +1474,39 @@ static void cc_drain_workers(Machine& base, uint32_t r13) {
 // frames, then stops fail-closed at this exact boundary with Error::capacity
 // so the harness measures whole frames and never fakes an exit path.
 static uint32_t g_frame_delay_calls = 0;
-static constexpr uint32_t k_frame_budget = 10000;
+static constexpr uint32_t k_frame_budget_default = 10000;
+// Host-only probe override: CC_FRAME_BUDGET=<n> stops the diagnostic after
+// n frames. The Xbox build and the sealed test always use the default.
+static uint32_t frame_budget() {
+#ifndef CC_XBOX_DRIVER
+  static uint32_t v = [] {
+    const char* e = std::getenv("CC_FRAME_BUDGET");
+    const unsigned long n = e ? std::strtoul(e, nullptr, 10) : 0ul;
+    return n ? uint32_t(n) : k_frame_budget_default;
+  }();
+  return v;
+#else
+  return k_frame_budget_default;
+#endif
+}
 static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
+  cc_thread_block_point();  // a started system thread sleeping = blocked
   if (ctx.r3.u32 != 1u || ctx.r4.u32 != 0u || ctx.r5.u32 == 0u ||
       uint32_t(ctx.lr) != 0x820B7504u)
     base.fail(Error::unsupported, 0x8214A614u);
   const uint64_t interval_hi = base.load(ctx.r5.u32, 4);
   if ((interval_hi & 0x80000000u) == 0u)  // relative (negative) time only
     base.fail(Error::unsupported, 0x8214A614u);
-  if (++g_frame_delay_calls >= k_frame_budget)
+  {
+    // Advance KeTimeStampBundle (0x02500100) from the virtual timebase:
+    // InterruptTime/SystemTime in 100 ns units, TickCount in milliseconds.
+    const uint64_t t100ns = (base.timebase_virtual_ticks * 80ull) / 399ull;
+    base.memory.store_be(0x02500100u, 8, t100ns);
+    base.memory.store_be(0x02500108u, 8, 0x01C9000000000000ull + t100ns);
+    base.memory.store_be(0x02500110u, 4, uint32_t(t100ns / 10000ull));
+  }
+  cc_capture_end_frame(base.memory, g_frame_delay_calls + 1u);
+  if (++g_frame_delay_calls >= frame_budget())
     base.fail(Error::capacity, 0x8214A614u);
   // WIP 023 bounded worker-thread model: the five startup workers run the
   // exact loop sub_820B0E80 - pop a job from the pending list at
@@ -1323,10 +1530,12 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     uint64_t q0=0,q1=0,q2=0,q3=0;
     base.memory.load_be(0x00530C28u,4,q0); base.memory.load_be(0x00530C2Cu,4,q1);
     base.memory.load_be(0x00530C40u,4,q2); base.memory.load_be(0x00530C44u,4,q3);
-    cc_log("frame %u state_obj=%08x w=[%08x %08x %08x %08x] q=[%08x %08x %08x %08x] file_open=%u pos=%u\n",
+    cc_log("frame %u state_obj=%08x w=[%08x %08x %08x %08x] q=[%08x %08x %08x %08x] file_open=%u pos=%u phys_live=%lluK phys_peak=%lluK cursor=%08x\n",
            g_frame_delay_calls,uint32_t(obj),uint32_t(w0),uint32_t(w1),uint32_t(w2),uint32_t(w3),
            uint32_t(q0),uint32_t(q1),uint32_t(q2),uint32_t(q3),
-           base.open_files(),base.files[0].pos);
+           base.open_files(),base.files[0].pos,
+           (unsigned long long)(g_phys_live_bytes/1024u),(unsigned long long)(g_phys_peak_bytes/1024u),
+           g_phys_cursor);
   }
   ctx.r3.u64 = 0u;  // STATUS_SUCCESS
 }
@@ -1346,10 +1555,19 @@ static uint32_t checkpoint020_mm_load_u32(Machine& base, uint32_t a) {
     // window. The fixture audio hardware is silent: every register in the
     // window reads zero (no decode progress is faked; the exact code's
     // "still decoding" paths remain observable).
-    if (a>=0x7FEA1800u && a<0x7FEA2000u) return 0u;
+    if (a>=0x7FEA0000u && a<0x7FEB0000u) return 0u;
     base.fail(Error::unsupported,a);
   }
   return uint32_t(base.load(a,4));
+}
+// 16-bit MMIO reads follow the same policy as 32-bit ones: the silent APU
+// window reads zero, ordinary memory reads through, anything else fails.
+static uint16_t cc_mm_load_u16(Machine& base, uint32_t a) {
+  if (a>=0x7F000000u && a<0x80000000u) {
+    if (a>=0x7FEA0000u && a<0x7FEB0000u) return 0u;
+    base.fail(Error::unsupported,a);
+  }
+  return uint16_t(base.load(a,2));
 }
 static void checkpoint020_mm_store_u32(Machine& base, uint32_t a, uint32_t v) {
   if (a>=0x7F000000u && a<0x80000000u) {
@@ -1357,7 +1575,7 @@ static void checkpoint020_mm_store_u32(Machine& base, uint32_t a, uint32_t v) {
     // The current ring has 8192 dwords, so reject any unobserved/out-of-ring value.
     // WIP 023: XMA context kick/lock writes into the APU window are
     // accepted and ignored by the silent fixture hardware.
-    if (a>=0x7FEA1800u && a<0x7FEA2000u) return;
+    if (a>=0x7FEA0000u && a<0x7FEB0000u) return;
     if (a!=0x7FC80714u || v>=8192u) base.fail(Error::unsupported,a);
     base.cp_rb_wptr=v; ++base.cp_rb_wptr_writes;
     // WIP 022: the fixture Xenos consumes every submitted command
@@ -1412,9 +1630,6 @@ static void checkpoint020_mm_store_u32(Machine& base, uint32_t a, uint32_t v) {
 #include "generated/sub_820D6470.inc"
 #include "generated/sub_82128830.inc"
 
-#undef REX_QUERY_TIMEBASE // checkpoint020-c7228
-#undef REX_MM_STORE_U32
-#undef REX_MM_LOAD_U32
 
 // Checkpoint 020 late device finalization exact bodies.
 #include "generated/sub_820CDD68.inc"
@@ -1575,7 +1790,6 @@ static void sub_820CD258([[maybe_unused]] Context& ctx, Machine& base) { base.fa
 #include "generated/sub_820CF858.inc"
 #define REX_QUERY_TIMEBASE() base.query_timebase()
 #include "generated/sub_820CF9D0.inc"
-#undef REX_QUERY_TIMEBASE
 // WIP 021: one-shot observed VdGetSystemCommandBuffer contract. The exact
 // caller supplies two stack output locations. Trusted Xbox 360 kernel-model
 // evidence used by this project reports a 0x94-byte system-command block whose
@@ -1718,25 +1932,85 @@ static void __imp__VdPersistDisplay(Context& ctx, Machine& base) {
   base.store(ctx.r4.u32, 4, token);
   ctx.r3.u64 = 1u;
 }
+static uint32_t cc_phys_alloc(Machine& base, uint32_t bytes, uint32_t align) {
+  const uint32_t size=(bytes+15u)&~15u;
+    uint32_t p=0;
+    for (size_t i=0;i<g_phys_free_ranges.size();++i) {
+      const PhysRange fr=g_phys_free_ranges[i];
+      const uint32_t a=(fr.addr+align-1u)&~(align-1u);
+      if (a<fr.addr || a-fr.addr>fr.size || fr.size-(a-fr.addr)<size) continue;
+      p=a;
+      const uint32_t lead=a-fr.addr, tail=fr.size-lead-size;
+      g_phys_free_ranges.erase(g_phys_free_ranges.begin()+i);
+      if (tail) g_phys_free_ranges.insert(g_phys_free_ranges.begin()+i, PhysRange{a+size, tail});
+      if (lead) g_phys_free_ranges.insert(g_phys_free_ranges.begin()+i, PhysRange{fr.addr, lead});
+      break;
+    }
+    if (!p) {
+      p=(g_phys_cursor+align-1u)&~(align-1u);
+      if (p+size<p || base.memory.check(p,size,3)!=cc::xbox::MemoryError::ok) {
+        cc_elog("PHYS exhausted request=%u live=%llu peak=%llu blocks=%u free_ranges=%u\n",
+                size,(unsigned long long)g_phys_live_bytes,(unsigned long long)g_phys_peak_bytes,
+                unsigned(g_phys_live_blocks.size()),unsigned(g_phys_free_ranges.size()));
+        base.fail(Error::memory,p);
+      }
+      g_phys_cursor=p+size;
+    }
+    g_phys_live_blocks.push_back(PhysRange{p,size});
+    g_phys_live_bytes+=size;
+    if (g_phys_live_bytes>g_phys_peak_bytes) g_phys_peak_bytes=g_phys_live_bytes;
+    return p;
+}
+static bool cc_phys_free([[maybe_unused]] Machine& base, uint32_t addr) {
+    size_t li = 0;
+    while (li < g_phys_live_blocks.size() && g_phys_live_blocks[li].addr != addr) ++li;
+    if (li == g_phys_live_blocks.size()) return false;
+    PhysRange r = g_phys_live_blocks[li];
+    g_phys_live_blocks[li] = g_phys_live_blocks.back();
+    g_phys_live_blocks.pop_back();
+    g_phys_live_bytes -= r.size;
+    // Insert sorted, then merge with the neighbours on either side.
+    size_t pos = 0;
+    while (pos < g_phys_free_ranges.size() && g_phys_free_ranges[pos].addr < r.addr) ++pos;
+    g_phys_free_ranges.insert(g_phys_free_ranges.begin() + pos, r);
+    if (pos + 1 < g_phys_free_ranges.size() &&
+        g_phys_free_ranges[pos].addr + g_phys_free_ranges[pos].size == g_phys_free_ranges[pos+1].addr) {
+      g_phys_free_ranges[pos].size += g_phys_free_ranges[pos+1].size;
+      g_phys_free_ranges.erase(g_phys_free_ranges.begin() + pos + 1);
+    }
+    if (pos > 0 &&
+        g_phys_free_ranges[pos-1].addr + g_phys_free_ranges[pos-1].size == g_phys_free_ranges[pos].addr) {
+      g_phys_free_ranges[pos-1].size += g_phys_free_ranges[pos].size;
+      g_phys_free_ranges.erase(g_phys_free_ranges.begin() + pos);
+    }
+    // A free range ending at the cursor returns its space to the cursor.
+    if (!g_phys_free_ranges.empty() &&
+        g_phys_free_ranges.back().addr + g_phys_free_ranges.back().size == g_phys_cursor) {
+      g_phys_cursor = g_phys_free_ranges.back().addr;
+      g_phys_free_ranges.pop_back();
+    }
+  return true;
+}
+// Kernel pool (used by the game's Live-layer allocator sub_82114E20):
+// ExAllocatePoolTypeWithTag(size, tag, type) and ExFreePool(ptr), served
+// from the same arena. Size 0 or exhaustion fails closed.
+static void __imp__ExAllocatePoolTypeWithTag(Context& ctx, Machine& base) {
+  if (ctx.r3.u32 == 0u || ctx.r3.u32 > 0x01000000u)
+    base.fail(Error::unsupported, 0x8214ACA4u);
+  ctx.r3.u64 = cc_phys_alloc(base, ctx.r3.u32, 16u);
+}
+[[maybe_unused]] static void __imp__ExFreePool(Context& ctx, Machine& base) {
+  if (!cc_phys_free(base, ctx.r3.u32))
+    base.fail(Error::unsupported, 0x8214AC64u);
+}
 static void __imp__MmFreePhysicalMemory(Context& ctx, Machine& base) {
   // WIP 023: the pak-mount path frees cursor-arena blocks through the exact
-  // wrapper sub_820B6190 (type 0). The diagnostic's cursor allocator does
-  // not recycle; the free is accepted for addresses this fixture actually
-  // handed out and the space is intentionally not reused (arena exhaustion
-  // still fails closed).
+  // wrapper sub_820B6190 (type 0); the shared allocator reuses the space.
+  // An address this fixture never handed out fails closed.
   if (ctx.r3.u32 == 0u && ctx.r4.u32 >= 0x12000000u &&
       ctx.r4.u32 < g_phys_cursor) {
-    for (unsigned i=0;i<512;++i)
-      if (g_phys_alloc_addr[i]==ctx.r4.u32) {
-        for (unsigned j=0;j<256;++j)
-          if (!g_phys_free_addr[j]) {
-            g_phys_free_addr[j]=ctx.r4.u32;
-            g_phys_free_size[j]=g_phys_alloc_size[i];
-            break;
-          }
-        g_phys_alloc_addr[i]=0; g_phys_alloc_size[i]=0;
-        break;
-      }
+    if (!cc_phys_free(base, ctx.r4.u32))
+      base.fail(Error::unsupported, 0x8214A504u);  // not a block we handed out
     ctx.r3.u64 = 0u;
     return;
   }
@@ -1835,25 +2109,7 @@ static void __imp__MmAllocatePhysicalMemoryEx(Context& ctx, Machine& base) {
     if (align & (align-1u))
       base.fail(Error::unsupported, 0x8214A4F4u);
     const uint32_t size=(ctx.r4.u32+0xFFFu)&~0xFFFu;
-    // WIP 023: reuse a previously freed block of the same rounded size, so
-    // the frame loop's steady alloc/free traffic stays inside the bounded
-    // cursor arena.
-    uint32_t p=0;
-    for (unsigned i=0;i<256;++i)
-      if (g_phys_free_size[i]==size && (g_phys_free_addr[i]&(align-1u))==0u) {
-        p=g_phys_free_addr[i];
-        g_phys_free_addr[i]=0; g_phys_free_size[i]=0;
-        break;
-      }
-    if (!p) {
-      p=(g_phys_cursor+align-1u)&~(align-1u);
-      if (p+size<p || base.memory.check(p,size,3)!=cc::xbox::MemoryError::ok)
-        base.fail(Error::memory,p);
-      g_phys_cursor=p+size;
-    }
-    for (unsigned i=0;i<512;++i)
-      if (!g_phys_alloc_addr[i]) { g_phys_alloc_addr[i]=p; g_phys_alloc_size[i]=size; break; }
-    ctx.r3.u64=p;
+    ctx.r3.u64=cc_phys_alloc(base,size,align);
     return;
   }
   cc_elog(
@@ -1907,14 +2163,59 @@ static void __imp__NtCreateSemaphore(Context& ctx, Machine& base) {
 // timeout). A signaled semaphore satisfies the wait immediately; a wait
 // that would block forever in this single-threaded diagnostic stays
 // fail-closed so a genuine lost-wakeup is observable, never spun through.
+// Kernel event objects: handles 0x0EE00001.., type 0 = notification
+// (stays signalled), 1 = synchronization (a satisfied wait clears it).
+struct CcEvent { bool sync; bool signalled; };
+static std::vector<CcEvent> g_events;
+static CcEvent* cc_event(uint32_t h) {
+  const uint32_t ix = h - 0x0EE00001u;
+  return ix < g_events.size() ? &g_events[ix] : nullptr;
+}
+static void __imp__NtCreateEvent(Context& ctx, Machine& base) {
+  if (!ctx.r3.u32 || ctx.r5.u32 > 1u || g_events.size() >= 64u)
+    base.fail(Error::unsupported, 0x8214A544u);
+  g_events.push_back(CcEvent{ctx.r5.u32 == 1u, (ctx.r6.u32 & 0xFFu) != 0u});
+  base.store(ctx.r3.u32, 4, 0x0EE00001u + uint32_t(g_events.size() - 1u));
+  ctx.r3.u64 = 0u;
+}
+[[maybe_unused]] static void __imp__NtSetEvent(Context& ctx, Machine& base) {
+  CcEvent* e = cc_event(ctx.r3.u32);
+  if (!e) base.fail(Error::unsupported, 0x8214ADE4u);
+  if (ctx.r4.u32) base.store(ctx.r4.u32, 4, e->signalled ? 1u : 0u);
+  e->signalled = true;
+  ctx.r3.u64 = 0u;
+}
+[[maybe_unused]] static void __imp__NtClearEvent(Context& ctx, Machine& base) {
+  CcEvent* e = cc_event(ctx.r3.u32);
+  if (!e) base.fail(Error::unsupported, 0x8214AD24u);
+  e->signalled = false;
+  ctx.r3.u64 = 0u;
+}
 static void __imp__NtWaitForSingleObjectEx(Context& ctx, Machine& base) {
+  // Timeout pointer r6: NULL = infinite. A zero timeout on an unsignalled
+  // object reports STATUS_TIMEOUT (0x102); any wait that would really block
+  // fails closed (single-threaded diagnostic: nothing could wake it).
+  const bool zero_timeout = ctx.r6.u32 != 0u && base.load(ctx.r6.u32, 8) == 0u;
   const uint32_t ix = ctx.r3.u32 - 0x0F5E0001u;
-  if (ix < g_semaphore_count && ctx.r4.u32 == 1u && ctx.r5.u32 == 0u &&
-      ctx.r6.u32 == 0u && g_semaphore_value[ix] > 0u) {
-    --g_semaphore_value[ix];
-    ctx.r3.u64 = 0u;  // WAIT_OBJECT_0
-    return;
+  if (ix < g_semaphore_count && ctx.r4.u32 == 1u && ctx.r5.u32 == 0u) {
+    if (g_semaphore_value[ix] > 0u) {
+      --g_semaphore_value[ix];
+      ctx.r3.u64 = 0u;  // WAIT_OBJECT_0
+      return;
+    }
+    if (zero_timeout) { ctx.r3.u64 = 0x102u; return; }
   }
+  if (CcEvent* e = cc_event(ctx.r3.u32)) {
+    if (e->signalled) {
+      if (e->sync) e->signalled = false;
+      ctx.r3.u64 = 0u;
+      return;
+    }
+    if (zero_timeout) { ctx.r3.u64 = 0x102u; return; }
+  }
+  cc_thread_block_point();
+  cc_elog("WAIT would block handle=%08x mode=%u alertable=%u timeout_ptr=%08x lr=%08x\n",
+          ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, uint32_t(ctx.lr));
   base.fail(Error::unsupported, 0x8214A514u);
 }
 static void __imp__NtReleaseSemaphore(Context& ctx, Machine& base) {
@@ -2043,6 +2344,1887 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_820A1640.inc"
 #include "generated/sub_82053888.inc"
 #include "generated/sub_820A7470.inc"
+#include "generated/xstart.inc"
+#include "generated/__savegprlr_30.inc"
+#include "generated/__savegprlr_31.inc"
+#include "generated/__restgprlr_30.inc"
+#include "generated/__restgprlr_31.inc"
+#include "generated/__savefpr_15.inc"
+#include "generated/__savefpr_16.inc"
+#include "generated/__savefpr_17.inc"
+#include "generated/__savefpr_18.inc"
+#include "generated/__savefpr_21.inc"
+#include "generated/__savefpr_23.inc"
+#include "generated/__savefpr_29.inc"
+#include "generated/__savefpr_30.inc"
+#include "generated/__savefpr_31.inc"
+#include "generated/__restfpr_15.inc"
+#include "generated/__restfpr_16.inc"
+#include "generated/__restfpr_17.inc"
+#include "generated/__restfpr_18.inc"
+#include "generated/__restfpr_21.inc"
+#include "generated/__restfpr_23.inc"
+#include "generated/__restfpr_29.inc"
+#include "generated/__restfpr_30.inc"
+#include "generated/__restfpr_31.inc"
+#include "generated/sub_82051758.inc"
+#include "generated/sub_82051848.inc"
+#include "generated/sub_82051960.inc"
+#include "generated/sub_82051A20.inc"
+#include "generated/sub_82051CE0.inc"
+#include "generated/sub_82051E68.inc"
+#include "generated/sub_82051FA8.inc"
+#include "generated/sub_820520F0.inc"
+#include "generated/sub_82052E00.inc"
+#include "generated/sub_82052E50.inc"
+#include "generated/sub_82054C38.inc"
+#include "generated/sub_82054DD8.inc"
+#include "generated/sub_82055120.inc"
+#include "generated/sub_82055130.inc"
+#include "generated/sub_82055198.inc"
+#include "generated/sub_82055218.inc"
+#include "generated/sub_820556E8.inc"
+#include "generated/sub_82055740.inc"
+#include "generated/sub_820569F0.inc"
+#include "generated/sub_82056B28.inc"
+#include "generated/sub_82057D78.inc"
+#include "generated/sub_820580F8.inc"
+#include "generated/sub_82058138.inc"
+#include "generated/sub_82058208.inc"
+#include "generated/sub_82058320.inc"
+#include "generated/sub_82058440.inc"
+#include "generated/sub_8205A248.inc"
+#include "generated/sub_8205A2B0.inc"
+#include "generated/sub_8205A318.inc"
+#include "generated/sub_8205B618.inc"
+#include "generated/sub_8205B688.inc"
+#include "generated/sub_8205B6F0.inc"
+#include "generated/sub_8205C400.inc"
+#include "generated/sub_8205C520.inc"
+#include "generated/sub_8205C750.inc"
+#include "generated/sub_8205C988.inc"
+#include "generated/sub_8205CA10.inc"
+#include "generated/sub_8205CAF0.inc"
+#include "generated/sub_8205CDF0.inc"
+#include "generated/sub_8205D2D8.inc"
+#include "generated/sub_8205D3E0.inc"
+#include "generated/sub_8205D448.inc"
+#include "generated/sub_82060508.inc"
+#include "generated/sub_820606D8.inc"
+#include "generated/sub_820607B8.inc"
+#include "generated/sub_82061460.inc"
+#include "generated/sub_82061518.inc"
+#include "generated/sub_820615D8.inc"
+#include "generated/sub_82061760.inc"
+#include "generated/sub_820618E8.inc"
+#include "generated/sub_82061DB0.inc"
+#include "generated/sub_82062388.inc"
+#include "generated/sub_82063754.inc"
+#include "generated/sub_82064100.inc"
+#include "generated/sub_820641D8.inc"
+#include "generated/sub_820643E0.inc"
+#include "generated/sub_82064B80.inc"
+#include "generated/sub_82064D08.inc"
+#include "generated/sub_82064D98.inc"
+#include "generated/sub_82065008.inc"
+#include "generated/sub_820650C8.inc"
+#include "generated/sub_82065190.inc"
+#include "generated/sub_82065388.inc"
+#include "generated/sub_82065418.inc"
+#include "generated/sub_820664F0.inc"
+#include "generated/sub_82066548.inc"
+#include "generated/sub_82066570.inc"
+#include "generated/sub_82066598.inc"
+#include "generated/sub_820665C0.inc"
+#include "generated/sub_820665E8.inc"
+#include "generated/sub_82066B78.inc"
+#include "generated/sub_82066E60.inc"
+#include "generated/sub_820670F8.inc"
+#include "generated/sub_820673B8.inc"
+#include "generated/sub_820678C8.inc"
+#include "generated/sub_82069578.inc"
+#include "generated/sub_820696A8.inc"
+#include "generated/sub_82069768.inc"
+#include "generated/sub_82069F40.inc"
+#include "generated/sub_8206A5A0.inc"
+#include "generated/sub_8206A840.inc"
+#include "generated/sub_8206AA08.inc"
+#include "generated/sub_8206AAD0.inc"
+#include "generated/sub_8206AB50.inc"
+#include "generated/sub_8206B5D0.inc"
+#include "generated/sub_8206BAB0.inc"
+#include "generated/sub_8206BB60.inc"
+#include "generated/sub_8206BBD8.inc"
+#include "generated/sub_8206BC78.inc"
+#include "generated/sub_8206BD08.inc"
+#include "generated/sub_8206BD90.inc"
+#include "generated/sub_8206BF88.inc"
+#include "generated/sub_8206D068.inc"
+#include "generated/sub_8206D0D8.inc"
+#include "generated/sub_8206D0F8.inc"
+#include "generated/sub_8206D200.inc"
+#include "generated/sub_8206D220.inc"
+#include "generated/sub_8206D278.inc"
+#include "generated/sub_8206D298.inc"
+#include "generated/sub_8206D338.inc"
+#include "generated/sub_8206D3B8.inc"
+#include "generated/sub_8206D440.inc"
+#include "generated/sub_8206D6C8.inc"
+#include "generated/sub_8206D850.inc"
+#include "generated/sub_8206D980.inc"
+#include "generated/sub_8206DBC0.inc"
+#include "generated/sub_8206DEE8.inc"
+#include "generated/sub_8206E230.inc"
+#include "generated/sub_8206E818.inc"
+#include "generated/sub_8206EDA0.inc"
+#include "generated/sub_8206EDC0.inc"
+#include "generated/sub_82070828.inc"
+#include "generated/sub_82070AC8.inc"
+#include "generated/sub_82072678.inc"
+#include "generated/sub_82072680.inc"
+#include "generated/sub_82072B68.inc"
+#include "generated/sub_82072C70.inc"
+#include "generated/sub_82073CF8.inc"
+#include "generated/sub_82074FA8.inc"
+#include "generated/sub_82075020.inc"
+#include "generated/sub_82075380.inc"
+#include "generated/sub_82078CB0.inc"
+#include "generated/sub_82078CE8.inc"
+#include "generated/sub_8207A740.inc"
+#include "generated/sub_8207A748.inc"
+#include "generated/sub_8207BDE0.inc"
+#include "generated/sub_8207BED0.inc"
+#include "generated/sub_8207C018.inc"
+#include "generated/sub_8207CA40.inc"
+#include "generated/sub_8207D498.inc"
+#include "generated/sub_8207D6D0.inc"
+#include "generated/sub_8207D808.inc"
+#include "generated/sub_8207DA68.inc"
+#include "generated/sub_8207DC08.inc"
+#include "generated/sub_8207DDB8.inc"
+#include "generated/sub_8207F350.inc"
+#include "generated/sub_82080368.inc"
+#include "generated/sub_82080840.inc"
+#include "generated/sub_82080C40.inc"
+#include "generated/sub_82081250.inc"
+#include "generated/sub_82083438.inc"
+#include "generated/sub_82083A08.inc"
+#include "generated/sub_82085858.inc"
+#include "generated/sub_82086290.inc"
+#include "generated/sub_820862A0.inc"
+#include "generated/sub_820862A8.inc"
+#include "generated/sub_82086338.inc"
+#include "generated/sub_82086468.inc"
+#include "generated/sub_82088BC0.inc"
+#include "generated/sub_82088C10.inc"
+#include "generated/sub_82088C90.inc"
+#include "generated/sub_82088CE8.inc"
+#include "generated/sub_8208B088.inc"
+#include "generated/sub_8208C110.inc"
+#include "generated/sub_8208C378.inc"
+#include "generated/sub_8208C6D0.inc"
+#include "generated/sub_8208E4F0.inc"
+#include "generated/sub_8208E580.inc"
+#include "generated/sub_8208E788.inc"
+#include "generated/sub_8208E930.inc"
+#include "generated/sub_8208EA50.inc"
+#include "generated/sub_8208EC10.inc"
+#include "generated/sub_8208ED20.inc"
+#include "generated/sub_8208EE60.inc"
+#include "generated/sub_8208EFD0.inc"
+#include "generated/sub_8208F178.inc"
+#include "generated/sub_8208F348.inc"
+#include "generated/sub_8208FF58.inc"
+#include "generated/sub_82092230.inc"
+#include "generated/sub_820929E0.inc"
+#include "generated/sub_82092CF8.inc"
+#include "generated/sub_82092EC8.inc"
+#include "generated/sub_82092FA0.inc"
+#include "generated/sub_82093918.inc"
+#include "generated/sub_82094688.inc"
+#include "generated/sub_82094730.inc"
+#include "generated/sub_820956B0.inc"
+#include "generated/sub_82095B60.inc"
+#include "generated/sub_82095B98.inc"
+#include "generated/sub_82099DB8.inc"
+#include "generated/sub_82099F18.inc"
+#include "generated/sub_8209A288.inc"
+#include "generated/sub_8209B368.inc"
+#include "generated/sub_8209B3F8.inc"
+#include "generated/sub_8209B9B0.inc"
+#include "generated/sub_8209C550.inc"
+#include "generated/sub_8209C678.inc"
+#include "generated/sub_8209C8B8.inc"
+#include "generated/sub_8209C970.inc"
+#include "generated/sub_8209CB10.inc"
+#include "generated/sub_8209CD98.inc"
+#include "generated/sub_8209CE08.inc"
+#include "generated/sub_8209CE50.inc"
+#include "generated/sub_8209CE88.inc"
+#include "generated/sub_8209DB88.inc"
+#include "generated/sub_820A2C90.inc"
+#include "generated/sub_820A2ED8.inc"
+#include "generated/sub_820A3050.inc"
+#include "generated/sub_820A3448.inc"
+#include "generated/sub_820A3AE8.inc"
+#include "generated/sub_820A3B88.inc"
+#include "generated/sub_820A3C28.inc"
+#include "generated/sub_820A3CC8.inc"
+#include "generated/sub_820A3D60.inc"
+#include "generated/sub_820A40E8.inc"
+#include "generated/sub_820A4328.inc"
+#include "generated/sub_820A4C60.inc"
+#include "generated/sub_820A4E08.inc"
+#include "generated/sub_820A4F88.inc"
+#include "generated/sub_820A5230.inc"
+#include "generated/sub_820A5540.inc"
+#include "generated/sub_820A5620.inc"
+#include "generated/sub_820A59E8.inc"
+#include "generated/sub_820A5D80.inc"
+#include "generated/sub_820A5FC0.inc"
+#include "generated/sub_820A61E8.inc"
+#include "generated/sub_820A6260.inc"
+#include "generated/sub_820A66B8.inc"
+#include "generated/sub_820A6728.inc"
+#include "generated/sub_820A6730.inc"
+#include "generated/sub_820A6758.inc"
+#include "generated/sub_820A67D0.inc"
+#include "generated/sub_820A6990.inc"
+#include "generated/sub_820A69F0.inc"
+#include "generated/sub_820A6A18.inc"
+#include "generated/sub_820A6B60.inc"
+#include "generated/sub_820A7990.inc"
+#include "generated/sub_820A86A8.inc"
+#include "generated/sub_820A8960.inc"
+#include "generated/sub_820A8CE0.inc"
+#include "generated/sub_820AAA78.inc"
+#include "generated/sub_820AABF8.inc"
+#include "generated/sub_820AACB8.inc"
+#include "generated/sub_820AAEB0.inc"
+#include "generated/sub_820AB0C0.inc"
+#include "generated/sub_820AB290.inc"
+#include "generated/sub_820AB6A8.inc"
+#include "generated/sub_820AE450.inc"
+#include "generated/sub_820AE540.inc"
+#include "generated/sub_820AE790.inc"
+#include "generated/sub_820AEA68.inc"
+#include "generated/sub_820AEB90.inc"
+#include "generated/sub_820AF120.inc"
+#include "generated/sub_820AF220.inc"
+#include "generated/sub_820AF4C0.inc"
+#include "generated/sub_820AF600.inc"
+#include "generated/sub_820AF900.inc"
+#include "generated/sub_820AFD58.inc"
+#include "generated/sub_820B0E10.inc"
+#include "generated/sub_820B0E68.inc"
+#include "generated/sub_820B0E80.inc"
+#include "generated/sub_820B17A8.inc"
+#include "generated/sub_820B27A8.inc"
+#include "generated/sub_820B5D38.inc"
+#include "generated/sub_820B5D48.inc"
+#include "generated/sub_820B5DF0.inc"
+#include "generated/sub_820B5EC0.inc"
+#include "generated/sub_820B6B40.inc"
+#include "generated/sub_820B6D68.inc"
+#include "generated/sub_820B6E20.inc"
+#include "generated/sub_820B6EA8.inc"
+#include "generated/sub_820B7254.inc"
+#include "generated/sub_820B7640.inc"
+#include "generated/sub_820B7958.inc"
+#include "generated/sub_820B79B8.inc"
+#include "generated/sub_820B7A14.inc"
+#include "generated/sub_820B9944.inc"
+#include "generated/sub_820BA1AC.inc"
+#include "generated/sub_820BA4A0.inc"
+#include "generated/sub_820BAD60.inc"
+#include "generated/sub_820BADC4.inc"
+#include "generated/sub_820BADEC.inc"
+#include "generated/sub_820BB6C8.inc"
+#include "generated/sub_820BB6F8.inc"
+#include "generated/sub_820BB730.inc"
+#include "generated/sub_820BB7C0.inc"
+#include "generated/sub_820BB850.inc"
+#include "generated/sub_820BB8E0.inc"
+#include "generated/sub_820BB970.inc"
+#include "generated/sub_820BB9E0.inc"
+#include "generated/sub_820BBA50.inc"
+#include "generated/sub_820BBAC0.inc"
+#include "generated/sub_820BBB58.inc"
+#include "generated/sub_820BBBA0.inc"
+#include "generated/sub_820BBBE8.inc"
+#include "generated/sub_820BBC88.inc"
+#include "generated/sub_820BBD20.inc"
+#include "generated/sub_820BBD70.inc"
+#include "generated/sub_820BBDC0.inc"
+#include "generated/sub_820BBE08.inc"
+#include "generated/sub_820BBE30.inc"
+#include "generated/sub_820BBE68.inc"
+#include "generated/sub_820BBEB0.inc"
+#include "generated/sub_820BBEE0.inc"
+#include "generated/sub_820BBF10.inc"
+#include "generated/sub_820BBF48.inc"
+#include "generated/sub_820BBF80.inc"
+#include "generated/sub_820BBFB0.inc"
+#include "generated/sub_820BBFE0.inc"
+#include "generated/sub_820BC018.inc"
+#include "generated/sub_820BC050.inc"
+#include "generated/sub_820BC080.inc"
+#include "generated/sub_820BC0A8.inc"
+#include "generated/sub_820BC0C8.inc"
+#include "generated/sub_820BC0E8.inc"
+#include "generated/sub_820BC108.inc"
+#include "generated/sub_820BC128.inc"
+#include "generated/sub_820BC148.inc"
+#include "generated/sub_820BC190.inc"
+#include "generated/sub_820BC1A0.inc"
+#include "generated/sub_820BC250.inc"
+#include "generated/sub_820BC308.inc"
+#include "generated/sub_820BC338.inc"
+#include "generated/sub_820BC360.inc"
+#include "generated/sub_820BC3A0.inc"
+#include "generated/sub_820BC3E0.inc"
+#include "generated/sub_820BC420.inc"
+#include "generated/sub_820BC460.inc"
+#include "generated/sub_820BC470.inc"
+#include "generated/sub_820BC4C0.inc"
+#include "generated/sub_820BC510.inc"
+#include "generated/sub_820BC560.inc"
+#include "generated/sub_820BC7D0.inc"
+#include "generated/sub_820BC7E0.inc"
+#include "generated/sub_820BC7F0.inc"
+#include "generated/sub_820BC800.inc"
+#include "generated/sub_820BC810.inc"
+#include "generated/sub_820BC820.inc"
+#include "generated/sub_820BC830.inc"
+#include "generated/sub_820BC840.inc"
+#include "generated/sub_820BC850.inc"
+#include "generated/sub_820BC860.inc"
+#include "generated/sub_820BC870.inc"
+#include "generated/sub_820BC880.inc"
+#include "generated/sub_820BC890.inc"
+#include "generated/sub_820BC8A0.inc"
+#include "generated/sub_820BC8B0.inc"
+#include "generated/sub_820BC8C0.inc"
+#include "generated/sub_820BC910.inc"
+#include "generated/sub_820BC9B0.inc"
+#include "generated/sub_820BCA48.inc"
+#include "generated/sub_820BCAE0.inc"
+#include "generated/sub_820BCB78.inc"
+#include "generated/sub_820BCBA8.inc"
+#include "generated/sub_820BCBE0.inc"
+#include "generated/sub_820BCC18.inc"
+#include "generated/sub_820BCC50.inc"
+#include "generated/sub_820BCC80.inc"
+#include "generated/sub_820BCCB0.inc"
+#include "generated/sub_820BCCD8.inc"
+#include "generated/sub_820BCD08.inc"
+#include "generated/sub_820BCD48.inc"
+#include "generated/sub_820BCD78.inc"
+#include "generated/sub_820BCDA0.inc"
+#include "generated/sub_820BCDD0.inc"
+#include "generated/sub_820BCDF8.inc"
+#include "generated/sub_820BCE60.inc"
+#include "generated/sub_820BCE90.inc"
+#include "generated/sub_820BCEC0.inc"
+#include "generated/sub_820BCEF0.inc"
+#include "generated/sub_820BCF18.inc"
+#include "generated/sub_820BCF28.inc"
+#include "generated/sub_820BCF40.inc"
+#include "generated/sub_820BD018.inc"
+#include "generated/sub_820BD0E8.inc"
+#include "generated/sub_820BD1C0.inc"
+#include "generated/sub_820BD288.inc"
+#include "generated/sub_820BD2D8.inc"
+#include "generated/sub_820BD388.inc"
+#include "generated/sub_820BD400.inc"
+#include "generated/sub_820BD470.inc"
+#include "generated/sub_820BD518.inc"
+#include "generated/sub_820BD5C8.inc"
+#include "generated/sub_820BD648.inc"
+#include "generated/sub_820BD6A8.inc"
+#include "generated/sub_820BD700.inc"
+#include "generated/sub_820BD750.inc"
+#include "generated/sub_820BD7A0.inc"
+#include "generated/sub_820BD7F8.inc"
+#include "generated/sub_820BD850.inc"
+#include "generated/sub_820BD8A8.inc"
+#include "generated/sub_820BD900.inc"
+#include "generated/sub_820BD960.inc"
+#include "generated/sub_820BDA70.inc"
+#include "generated/sub_820BDB90.inc"
+#include "generated/sub_820BDC20.inc"
+#include "generated/sub_820BDC68.inc"
+#include "generated/sub_820BEC50.inc"
+#include "generated/sub_820BEE18.inc"
+#include "generated/sub_820BFA60.inc"
+#include "generated/sub_820C05F0.inc"
+#include "generated/sub_820C0708.inc"
+#include "generated/sub_820C0DA0.inc"
+#include "generated/sub_820C3410.inc"
+#include "generated/sub_820C4970.inc"
+#include "generated/sub_820C60E0.inc"
+#include "generated/sub_820C6E08.inc"
+#include "generated/sub_820C7328.inc"
+#include "generated/sub_820C7360.inc"
+#include "generated/sub_820C7A38.inc"
+#include "generated/sub_820C7A94.inc"
+#include "generated/sub_820C7C78.inc"
+#include "generated/sub_820C7CF0.inc"
+#include "generated/sub_820C7DD8.inc"
+#include "generated/sub_820C7FE8.inc"
+#include "generated/sub_820C8040.inc"
+#include "generated/sub_820C8100.inc"
+#include "generated/sub_820C8178.inc"
+#include "generated/sub_820C81F8.inc"
+#include "generated/sub_820C8350.inc"
+#include "generated/sub_820C86D8.inc"
+#include "generated/sub_820C87E0.inc"
+#include "generated/sub_820C8A40.inc"
+#include "generated/sub_820C8E10.inc"
+#include "generated/sub_820C90DC.inc"
+#include "generated/sub_820C9148.inc"
+#include "generated/sub_820C92A8.inc"
+#include "generated/sub_820C9950.inc"
+#include "generated/sub_820CAFF0.inc"
+#include "generated/sub_820CB060.inc"
+#include "generated/sub_820CB070.inc"
+#include "generated/sub_820CB8B8.inc"
+#include "generated/sub_820CB900.inc"
+#include "generated/sub_820CB920.inc"
+#include "generated/sub_820CB960.inc"
+#include "generated/sub_820CBE40.inc"
+#include "generated/sub_820CBEF0.inc"
+#include "generated/sub_820CC368.inc"
+#include "generated/sub_820CC3E8.inc"
+#include "generated/sub_820CC6D8.inc"
+#include "generated/sub_820CC748.inc"
+#include "generated/sub_820CC7A0.inc"
+#include "generated/sub_820CC828.inc"
+#include "generated/sub_820CC888.inc"
+#include "generated/sub_820CC9B0.inc"
+#include "generated/sub_820CC9C0.inc"
+#include "generated/sub_820CCA30.inc"
+#include "generated/sub_820CCA98.inc"
+#include "generated/sub_820CCBD8.inc"
+#include "generated/sub_820CCC30.inc"
+#include "generated/sub_820CCCA8.inc"
+#include "generated/sub_820CCD80.inc"
+#include "generated/sub_820CCE48.inc"
+#include "generated/sub_820CCEB0.inc"
+#include "generated/sub_820CCF08.inc"
+#include "generated/sub_820CCF50.inc"
+#include "generated/sub_820CD0A8.inc"
+#include "generated/sub_820CD148.inc"
+#include "generated/sub_820CD6A8.inc"
+#include "generated/sub_820CDB88.inc"
+#include "generated/sub_820CDB90.inc"
+#include "generated/sub_820CDE68.inc"
+#include "generated/sub_820CE128.inc"
+#include "generated/sub_820CE890.inc"
+#include "generated/sub_820CED10.inc"
+#include "generated/sub_820CFE70.inc"
+#include "generated/sub_820CFF10.inc"
+#include "generated/sub_820D1AD0.inc"
+#include "generated/sub_820D1AE8.inc"
+#include "generated/sub_820D1B00.inc"
+#include "generated/sub_820D1B38.inc"
+#include "generated/sub_820D1B90.inc"
+#include "generated/sub_820D1BD8.inc"
+#include "generated/sub_820D1BF0.inc"
+#include "generated/sub_820D1C30.inc"
+#include "generated/sub_820D1EF0.inc"
+#include "generated/sub_820D1F70.inc"
+#include "generated/sub_820D2080.inc"
+#include "generated/sub_820D2DA0.inc"
+#include "generated/sub_820D3B58.inc"
+#include "generated/sub_820D6080.inc"
+#include "generated/sub_820D6160.inc"
+#include "generated/sub_820D6518.inc"
+#include "generated/sub_820D6590.inc"
+#include "generated/sub_820D6648.inc"
+#include "generated/sub_820D66B0.inc"
+#include "generated/sub_820D67B8.inc"
+#include "generated/sub_820D6818.inc"
+#include "generated/sub_820D69B8.inc"
+#include "generated/sub_820D6A40.inc"
+#include "generated/sub_820D6AE0.inc"
+#include "generated/sub_820D6BA8.inc"
+#include "generated/sub_820D6CE0.inc"
+#include "generated/sub_820D6DD8.inc"
+#include "generated/sub_820D7118.inc"
+#include "generated/sub_820D7260.inc"
+#include "generated/sub_820D7578.inc"
+#include "generated/sub_820D7888.inc"
+#include "generated/sub_820D80F0.inc"
+#include "generated/sub_820D83C8.inc"
+#include "generated/sub_820D8768.inc"
+#include "generated/sub_820D88D0.inc"
+#include "generated/sub_820D89D8.inc"
+#include "generated/sub_820D8AF0.inc"
+#include "generated/sub_820D8DB0.inc"
+#include "generated/sub_820D8EE8.inc"
+#include "generated/sub_820D9090.inc"
+#include "generated/sub_820D9248.inc"
+#include "generated/sub_820D9330.inc"
+#include "generated/sub_820D99B0.inc"
+#include "generated/sub_820D9A78.inc"
+#include "generated/sub_820D9B28.inc"
+#include "generated/sub_820DA538.inc"
+#include "generated/sub_820DA610.inc"
+#include "generated/sub_820DA690.inc"
+#include "generated/sub_820DA6F8.inc"
+#include "generated/sub_820DA758.inc"
+#include "generated/sub_820DA7E8.inc"
+#include "generated/sub_820DA9A0.inc"
+#include "generated/sub_820DAA48.inc"
+#include "generated/sub_820DAC00.inc"
+#include "generated/sub_820DAC78.inc"
+#include "generated/sub_820DACC0.inc"
+#include "generated/sub_820DACE0.inc"
+#include "generated/sub_820DAD68.inc"
+#include "generated/sub_820DADA0.inc"
+#include "generated/sub_820DB138.inc"
+#include "generated/sub_820DB420.inc"
+#include "generated/sub_820DB620.inc"
+#include "generated/sub_820DB810.inc"
+#include "generated/sub_820DBA80.inc"
+#include "generated/sub_820DBAA0.inc"
+#include "generated/sub_820DBF20.inc"
+#include "generated/sub_820DC868.inc"
+#include "generated/sub_820DC958.inc"
+#include "generated/sub_820DC9D0.inc"
+#include "generated/sub_820DCC80.inc"
+#include "generated/sub_820DCDC0.inc"
+#include "generated/sub_820DCDF8.inc"
+#include "generated/sub_820DCEB8.inc"
+#include "generated/sub_820DCED0.inc"
+#include "generated/sub_820DCEE0.inc"
+#include "generated/sub_820DD0F0.inc"
+#include "generated/sub_820DD4A8.inc"
+#include "generated/sub_820DDAF8.inc"
+#include "generated/sub_820DDC08.inc"
+#include "generated/sub_820DDCD0.inc"
+#include "generated/sub_820DDF78.inc"
+#include "generated/sub_820DE040.inc"
+#include "generated/sub_820DE1B8.inc"
+#include "generated/sub_820DE330.inc"
+#include "generated/sub_820DE4A8.inc"
+#include "generated/sub_820DE550.inc"
+#include "generated/sub_820DEA38.inc"
+#include "generated/sub_820DEA50.inc"
+#include "generated/sub_820E01C8.inc"
+#include "generated/sub_820E0308.inc"
+#include "generated/sub_820E0380.inc"
+#include "generated/sub_820E03D0.inc"
+#include "generated/sub_820E0538.inc"
+#include "generated/sub_820E05B0.inc"
+#include "generated/sub_820E0660.inc"
+#include "generated/sub_820E06B8.inc"
+#include "generated/sub_820E08B8.inc"
+#include "generated/sub_820E0958.inc"
+#include "generated/sub_820E0A08.inc"
+#include "generated/sub_820E0A18.inc"
+#include "generated/sub_820E0A90.inc"
+#include "generated/sub_820E0D20.inc"
+#include "generated/sub_820E0D40.inc"
+#include "generated/sub_820E0E20.inc"
+#include "generated/sub_820E11E0.inc"
+#include "generated/sub_820E1310.inc"
+#include "generated/sub_820E14F0.inc"
+#include "generated/sub_820E1618.inc"
+#include "generated/sub_820E1AE8.inc"
+#include "generated/sub_820E1BE0.inc"
+#include "generated/sub_820E1D90.inc"
+#include "generated/sub_820E1D98.inc"
+#include "generated/sub_820E1DA8.inc"
+#include "generated/sub_820E1DB0.inc"
+#include "generated/sub_820E1E00.inc"
+#include "generated/sub_820E1E50.inc"
+#include "generated/sub_820E1EA0.inc"
+#include "generated/sub_820E1F00.inc"
+#include "generated/sub_820E1F10.inc"
+#include "generated/sub_820E1F20.inc"
+#include "generated/sub_820E1F68.inc"
+#include "generated/sub_820E1FB0.inc"
+#include "generated/sub_820E1FC0.inc"
+#include "generated/sub_820E2070.inc"
+#include "generated/sub_820E2280.inc"
+#include "generated/sub_820E2378.inc"
+#include "generated/sub_820E24B0.inc"
+#include "generated/sub_820E25A0.inc"
+#include "generated/sub_820E26A8.inc"
+#include "generated/sub_820E2AD0.inc"
+#include "generated/sub_820E2B30.inc"
+#include "generated/sub_820E2DD8.inc"
+#include "generated/sub_820E32C8.inc"
+#include "generated/sub_820E3370.inc"
+#include "generated/sub_820E36D8.inc"
+#include "generated/sub_820E3A18.inc"
+#include "generated/sub_820E3C18.inc"
+#include "generated/sub_820E3DF0.inc"
+#include "generated/sub_820E40A8.inc"
+#include "generated/sub_820E437C.inc"
+#include "generated/sub_820E43BC.inc"
+#include "generated/sub_820E44B0.inc"
+#include "generated/sub_820E4580.inc"
+#include "generated/sub_820E4DC0.inc"
+#include "generated/sub_820E4E28.inc"
+#include "generated/sub_820E4EB0.inc"
+#include "generated/sub_820E5018.inc"
+#include "generated/sub_820E5078.inc"
+#include "generated/sub_820E50D8.inc"
+#include "generated/sub_820E5138.inc"
+#include "generated/sub_820E5198.inc"
+#include "generated/sub_820E51F8.inc"
+#include "generated/sub_820E5258.inc"
+#include "generated/sub_820E52B8.inc"
+#include "generated/sub_820E52C0.inc"
+#include "generated/sub_820E52D8.inc"
+#include "generated/sub_820E6070.inc"
+#include "generated/sub_820E6C50.inc"
+#include "generated/sub_820E6EE0.inc"
+#include "generated/sub_820E7038.inc"
+#include "generated/sub_820E7278.inc"
+#include "generated/sub_820E7660.inc"
+#include "generated/sub_820E7700.inc"
+#include "generated/sub_820E7DE8.inc"
+#include "generated/sub_820E7EB0.inc"
+#include "generated/sub_820E7FE8.inc"
+#include "generated/sub_820E81E8.inc"
+#include "generated/sub_820E81F8.inc"
+#include "generated/sub_820E8200.inc"
+#include "generated/sub_820E8218.inc"
+#include "generated/sub_820E8228.inc"
+#include "generated/sub_820E8270.inc"
+#include "generated/sub_820E8280.inc"
+#include "generated/sub_820E82F8.inc"
+#include "generated/sub_820E8350.inc"
+#include "generated/sub_820E8360.inc"
+#include "generated/sub_820E83C8.inc"
+#include "generated/sub_820E8400.inc"
+#include "generated/sub_820E8540.inc"
+#include "generated/sub_820E8698.inc"
+#include "generated/sub_820E8AC0.inc"
+#include "generated/sub_820E8C10.inc"
+#include "generated/sub_820E8CE8.inc"
+#include "generated/sub_820E8CF8.inc"
+#include "generated/sub_820E8D08.inc"
+#include "generated/sub_820E8D10.inc"
+#include "generated/sub_820E8D18.inc"
+#include "generated/sub_820E8D20.inc"
+#include "generated/sub_820E8D40.inc"
+#include "generated/sub_820E8D48.inc"
+#include "generated/sub_820E8D50.inc"
+#include "generated/sub_820E8E68.inc"
+#include "generated/sub_820E9750.inc"
+#include "generated/sub_820E9D78.inc"
+#include "generated/sub_820E9D80.inc"
+#include "generated/sub_820E9D88.inc"
+#include "generated/sub_820E9F00.inc"
+#include "generated/sub_820EAA78.inc"
+#include "generated/sub_820EAA80.inc"
+#include "generated/sub_820EAAB8.inc"
+#include "generated/sub_820EAAC0.inc"
+#include "generated/sub_820EAAC8.inc"
+#include "generated/sub_820EAAD0.inc"
+#include "generated/sub_820EAAF0.inc"
+#include "generated/sub_820EAB48.inc"
+#include "generated/sub_820EAB98.inc"
+#include "generated/sub_820EABA0.inc"
+#include "generated/sub_820EABF8.inc"
+#include "generated/sub_820EAC58.inc"
+#include "generated/sub_820EAD20.inc"
+#include "generated/sub_820EAE38.inc"
+#include "generated/sub_820EAF40.inc"
+#include "generated/sub_820EAF50.inc"
+#include "generated/sub_820EAF58.inc"
+#include "generated/sub_820EAF78.inc"
+#include "generated/sub_820EAF80.inc"
+#include "generated/sub_820EAF88.inc"
+#include "generated/sub_820EAFA0.inc"
+#include "generated/sub_820EAFA8.inc"
+#include "generated/sub_820EB078.inc"
+#include "generated/sub_820EB170.inc"
+#include "generated/sub_820EB2C0.inc"
+#include "generated/sub_820EB2C8.inc"
+#include "generated/sub_820EB3E0.inc"
+#include "generated/sub_820EBB60.inc"
+#include "generated/sub_820EBCF8.inc"
+#include "generated/sub_820EBF60.inc"
+#include "generated/sub_820EC230.inc"
+#include "generated/sub_820EC5D0.inc"
+#include "generated/sub_820ECA70.inc"
+#include "generated/sub_820ECC30.inc"
+#include "generated/sub_820ECE30.inc"
+#include "generated/sub_820ED060.inc"
+#include "generated/sub_820ED2F8.inc"
+#include "generated/sub_820ED608.inc"
+#include "generated/sub_820ED920.inc"
+#include "generated/sub_820EDD10.inc"
+#include "generated/sub_820EE300.inc"
+#include "generated/sub_820EEB50.inc"
+#include "generated/sub_820EEDD8.inc"
+#include "generated/sub_820EF0C0.inc"
+#include "generated/sub_820EF480.inc"
+#include "generated/sub_820EF940.inc"
+#include "generated/sub_820EFCB0.inc"
+#include "generated/sub_820EFF90.inc"
+#include "generated/sub_820F02B8.inc"
+#include "generated/sub_820F06B0.inc"
+#include "generated/sub_820F0BB0.inc"
+#include "generated/sub_820F0F58.inc"
+#include "generated/sub_820F1270.inc"
+#include "generated/sub_820F1608.inc"
+#include "generated/sub_820F1AD0.inc"
+#include "generated/sub_820F20F8.inc"
+#include "generated/sub_820F24A0.inc"
+#include "generated/sub_820F27D8.inc"
+#include "generated/sub_820F2BB0.inc"
+#include "generated/sub_820F30D0.inc"
+#include "generated/sub_820F3760.inc"
+#include "generated/sub_820F3B28.inc"
+#include "generated/sub_820F3E58.inc"
+#include "generated/sub_820F4218.inc"
+#include "generated/sub_820F4730.inc"
+#include "generated/sub_820F4DC0.inc"
+#include "generated/sub_820F4ED8.inc"
+#include "generated/sub_820F4FF8.inc"
+#include "generated/sub_820F5120.inc"
+#include "generated/sub_820F5260.inc"
+#include "generated/sub_820F53C0.inc"
+#include "generated/sub_820F54F8.inc"
+#include "generated/sub_820F5638.inc"
+#include "generated/sub_820F5798.inc"
+#include "generated/sub_820F5940.inc"
+#include "generated/sub_820F5B38.inc"
+#include "generated/sub_820F5C68.inc"
+#include "generated/sub_820F5DA0.inc"
+#include "generated/sub_820F5F00.inc"
+#include "generated/sub_820F60A0.inc"
+#include "generated/sub_820F6288.inc"
+#include "generated/sub_820F63D8.inc"
+#include "generated/sub_820F6520.inc"
+#include "generated/sub_820F6690.inc"
+#include "generated/sub_820F6858.inc"
+#include "generated/sub_820F6A80.inc"
+#include "generated/sub_820F6C10.inc"
+#include "generated/sub_820F6D58.inc"
+#include "generated/sub_820F6EF0.inc"
+#include "generated/sub_820F70D0.inc"
+#include "generated/sub_820F7300.inc"
+#include "generated/sub_820F7510.inc"
+#include "generated/sub_820F76D0.inc"
+#include "generated/sub_820F7908.inc"
+#include "generated/sub_820F7BB8.inc"
+#include "generated/sub_820F7EE8.inc"
+#include "generated/sub_820F8100.inc"
+#include "generated/sub_820F82C0.inc"
+#include "generated/sub_820F8500.inc"
+#include "generated/sub_820F87B0.inc"
+#include "generated/sub_820F8AE0.inc"
+#include "generated/sub_820F8D10.inc"
+#include "generated/sub_820F8EF8.inc"
+#include "generated/sub_820F9158.inc"
+#include "generated/sub_820F9440.inc"
+#include "generated/sub_820F97B8.inc"
+#include "generated/sub_820F9890.inc"
+#include "generated/sub_820F9968.inc"
+#include "generated/sub_820F9A40.inc"
+#include "generated/sub_820F9B18.inc"
+#include "generated/sub_820F9BF0.inc"
+#include "generated/sub_820F9CC8.inc"
+#include "generated/sub_820F9DA0.inc"
+#include "generated/sub_820F9E78.inc"
+#include "generated/sub_820F9F48.inc"
+#include "generated/sub_820FA018.inc"
+#include "generated/sub_820FA0E8.inc"
+#include "generated/sub_820FA1B8.inc"
+#include "generated/sub_820FA290.inc"
+#include "generated/sub_820FA368.inc"
+#include "generated/sub_820FA440.inc"
+#include "generated/sub_820FA518.inc"
+#include "generated/sub_820FA6D8.inc"
+#include "generated/sub_820FA8E8.inc"
+#include "generated/sub_820FAC28.inc"
+#include "generated/sub_820FAE30.inc"
+#include "generated/sub_820FB040.inc"
+#include "generated/sub_820FB390.inc"
+#include "generated/sub_820FB638.inc"
+#include "generated/sub_820FB870.inc"
+#include "generated/sub_820FBAD8.inc"
+#include "generated/sub_820FBE60.inc"
+#include "generated/sub_820FBEB8.inc"
+#include "generated/sub_820FC2B8.inc"
+#include "generated/sub_820FC750.inc"
+#include "generated/sub_820FC7C0.inc"
+#include "generated/sub_820FC800.inc"
+#include "generated/sub_820FC9C8.inc"
+#include "generated/sub_820FC9D8.inc"
+#include "generated/sub_820FC9E0.inc"
+#include "generated/sub_820FCA58.inc"
+#include "generated/sub_820FCA98.inc"
+#include "generated/sub_820FCBE8.inc"
+#include "generated/sub_820FCCE0.inc"
+#include "generated/sub_820FD330.inc"
+#include "generated/sub_820FD380.inc"
+#include "generated/sub_820FD3D0.inc"
+#include "generated/sub_820FD400.inc"
+#include "generated/sub_820FD448.inc"
+#include "generated/sub_820FD7C8.inc"
+#include "generated/sub_820FDA18.inc"
+#include "generated/sub_820FDAD8.inc"
+#include "generated/sub_820FDB18.inc"
+#include "generated/sub_820FDDC8.inc"
+#include "generated/sub_820FE340.inc"
+#include "generated/sub_820FE5F8.inc"
+#include "generated/sub_820FEBB0.inc"
+#include "generated/sub_820FF698.inc"
+#include "generated/sub_820FF7D0.inc"
+#include "generated/sub_820FF8D8.inc"
+#include "generated/sub_820FF9C8.inc"
+#include "generated/sub_820FFBD8.inc"
+#include "generated/sub_821009F8.inc"
+#include "generated/sub_82100E68.inc"
+#include "generated/sub_82101498.inc"
+#include "generated/sub_82101730.inc"
+#include "generated/sub_82101B18.inc"
+#include "generated/sub_821020F0.inc"
+#include "generated/sub_82102420.inc"
+#include "generated/sub_821026C8.inc"
+#include "generated/sub_821038F8.inc"
+#include "generated/sub_82103E58.inc"
+#include "generated/sub_82103EA0.inc"
+#include "generated/sub_82104130.inc"
+#include "generated/sub_82104228.inc"
+#include "generated/sub_82104FE0.inc"
+#include "generated/sub_82105BB0.inc"
+#include "generated/sub_82106110.inc"
+#include "generated/sub_82106C68.inc"
+#include "generated/sub_82106E60.inc"
+#include "generated/sub_82107BF8.inc"
+#include "generated/sub_82107C70.inc"
+#include "generated/sub_82107D28.inc"
+#include "generated/sub_82108138.inc"
+#include "generated/sub_82108468.inc"
+#include "generated/sub_82108D50.inc"
+#include "generated/sub_82108DB0.inc"
+#include "generated/sub_82108EF8.inc"
+#include "generated/sub_82108F20.inc"
+#include "generated/sub_82108FD8.inc"
+#include "generated/sub_821091F8.inc"
+#include "generated/sub_82109470.inc"
+#include "generated/sub_82109570.inc"
+#include "generated/sub_821095A0.inc"
+#include "generated/sub_821095C0.inc"
+#include "generated/sub_82109608.inc"
+#include "generated/sub_82109668.inc"
+#include "generated/sub_821096C8.inc"
+#include "generated/sub_82109798.inc"
+#include "generated/sub_82109820.inc"
+#include "generated/sub_82109970.inc"
+#include "generated/sub_82109AF0.inc"
+#include "generated/sub_82109F48.inc"
+#include "generated/sub_82109F58.inc"
+#include "generated/sub_8210A250.inc"
+#include "generated/sub_8210A298.inc"
+#include "generated/sub_8210A300.inc"
+#include "generated/sub_8210A320.inc"
+#include "generated/sub_8210A338.inc"
+#include "generated/sub_8210A498.inc"
+#include "generated/sub_8210A520.inc"
+#include "generated/sub_8210A5C8.inc"
+#include "generated/sub_8210A680.inc"
+#include "generated/sub_8210A6E8.inc"
+#include "generated/sub_8210A7A0.inc"
+#include "generated/sub_8210AF48.inc"
+#include "generated/sub_8210AFD8.inc"
+#include "generated/sub_8210B0E8.inc"
+#include "generated/sub_8210B140.inc"
+#include "generated/sub_8210B1A8.inc"
+#include "generated/sub_8210B1B8.inc"
+#include "generated/sub_8210B1C8.inc"
+#include "generated/sub_8210B1D0.inc"
+#include "generated/sub_8210B1D8.inc"
+#include "generated/sub_8210B1E0.inc"
+#include "generated/sub_8210B230.inc"
+#include "generated/sub_8210B248.inc"
+#include "generated/sub_8210B268.inc"
+#include "generated/sub_8210B348.inc"
+#include "generated/sub_8210B350.inc"
+#include "generated/sub_8210B358.inc"
+#include "generated/sub_8210B3B8.inc"
+#include "generated/sub_8210B418.inc"
+#include "generated/sub_8210B428.inc"
+#include "generated/sub_8210B458.inc"
+#include "generated/sub_8210B488.inc"
+#include "generated/sub_8210B4B8.inc"
+#include "generated/sub_8210B4E8.inc"
+#include "generated/sub_8210B588.inc"
+#include "generated/sub_8210B5B8.inc"
+#include "generated/sub_8210B610.inc"
+#include "generated/sub_8210B660.inc"
+#include "generated/sub_8210B690.inc"
+#include "generated/sub_8210B6C8.inc"
+#include "generated/sub_8210B6F0.inc"
+#include "generated/sub_8210B760.inc"
+#include "generated/sub_8210B7A8.inc"
+#include "generated/sub_8210B870.inc"
+#include "generated/sub_8210B8E8.inc"
+#include "generated/sub_8210B948.inc"
+#include "generated/sub_8210B958.inc"
+#include "generated/sub_8210BC40.inc"
+#include "generated/sub_8210BC5C.inc"
+#include "generated/sub_8210BD30.inc"
+#include "generated/sub_8210BD90.inc"
+#include "generated/sub_8210C660.inc"
+#include "generated/sub_8210C978.inc"
+#include "generated/sub_8210CA60.inc"
+#include "generated/sub_8210CB1C.inc"
+#include "generated/sub_8210D270.inc"
+#include "generated/sub_8210D278.inc"
+#include "generated/sub_8210D3B8.inc"
+#include "generated/sub_8210D540.inc"
+#include "generated/sub_8210D668.inc"
+#include "generated/sub_8210D758.inc"
+#include "generated/sub_8210D830.inc"
+#include "generated/sub_8210D918.inc"
+#include "generated/sub_8210D974.inc"
+#include "generated/sub_8210D978.inc"
+#include "generated/sub_8210D9B0.inc"
+#include "generated/sub_8210E290.inc"
+#include "generated/sub_8210F720.inc"
+#include "generated/sub_8210F888.inc"
+#include "generated/sub_8210FA50.inc"
+#include "generated/sub_8210FAF8.inc"
+#include "generated/sub_8210FC10.inc"
+#include "generated/sub_8210FD48.inc"
+#include "generated/sub_8210FDF0.inc"
+#include "generated/sub_8210FEB8.inc"
+#include "generated/sub_8210FF60.inc"
+#include "generated/sub_82110EA8.inc"
+#include "generated/sub_821110E8.inc"
+#include "generated/sub_821126B8.inc"
+#include "generated/sub_821127D0.inc"
+#include "generated/sub_82112B68.inc"
+#include "generated/sub_82112FA0.inc"
+#include "generated/sub_82112FF0.inc"
+#include "generated/sub_82113920.inc"
+#include "generated/sub_821139E0.inc"
+#include "generated/sub_82113B00.inc"
+#include "generated/sub_82114820.inc"
+#include "generated/sub_82114870.inc"
+#include "generated/sub_82114E38.inc"
+#include "generated/sub_82115138.inc"
+#include "generated/sub_82115148.inc"
+#include "generated/sub_82115330.inc"
+#include "generated/sub_821153F8.inc"
+#include "generated/sub_82115474.inc"
+#include "generated/sub_821156E0.inc"
+#include "generated/sub_82115E58.inc"
+#include "generated/sub_82116318.inc"
+#include "generated/sub_82117510.inc"
+#include "generated/sub_82117BF8.inc"
+#include "generated/sub_82117C50.inc"
+#include "generated/sub_821181D0.inc"
+#include "generated/sub_82118338.inc"
+#include "generated/sub_82118550.inc"
+#include "generated/sub_821185F0.inc"
+#include "generated/sub_82118638.inc"
+#include "generated/sub_821187C8.inc"
+#include "generated/sub_82118A10.inc"
+#include "generated/sub_82118CB8.inc"
+#include "generated/sub_82118D48.inc"
+#include "generated/sub_82119180.inc"
+#include "generated/sub_821191D0.inc"
+#include "generated/sub_82119840.inc"
+#include "generated/sub_821199D0.inc"
+#include "generated/sub_82119B40.inc"
+#include "generated/sub_82119BC0.inc"
+#include "generated/sub_82119C18.inc"
+#include "generated/sub_82119D08.inc"
+#include "generated/sub_82119E48.inc"
+#include "generated/sub_82119E58.inc"
+#include "generated/sub_82119E70.inc"
+#include "generated/sub_82119EC8.inc"
+#include "generated/sub_82119F20.inc"
+#include "generated/sub_8211A240.inc"
+#include "generated/sub_8211A318.inc"
+#include "generated/sub_8211A598.inc"
+#include "generated/sub_8211AFF8.inc"
+#include "generated/sub_8211B0B0.inc"
+#include "generated/sub_8211B100.inc"
+#include "generated/sub_8211B2A0.inc"
+#include "generated/sub_8211B488.inc"
+#include "generated/sub_8211B690.inc"
+#include "generated/sub_8211BCC0.inc"
+#include "generated/sub_8211C470.inc"
+#include "generated/sub_8211C9A0.inc"
+#include "generated/sub_8211CA20.inc"
+#include "generated/sub_8211CBC0.inc"
+#include "generated/sub_8211CC70.inc"
+#include "generated/sub_8211CE50.inc"
+#include "generated/sub_8211CF88.inc"
+#include "generated/sub_8211D1F8.inc"
+#include "generated/sub_8211D278.inc"
+#include "generated/sub_8211D320.inc"
+#include "generated/sub_8211E308.inc"
+#include "generated/sub_8211E990.inc"
+#include "generated/sub_8211EA80.inc"
+#include "generated/sub_8211ED58.inc"
+#include "generated/sub_8211EE88.inc"
+#include "generated/sub_8211F548.inc"
+#include "generated/sub_8211F840.inc"
+#include "generated/sub_8211FA68.inc"
+#include "generated/sub_8211FB60.inc"
+#include "generated/sub_8211FBB0.inc"
+#include "generated/sub_8211FCD8.inc"
+#include "generated/sub_821200B8.inc"
+#include "generated/sub_821207A8.inc"
+#include "generated/sub_82120830.inc"
+#include "generated/sub_821209A0.inc"
+#include "generated/sub_82120D18.inc"
+#include "generated/sub_821210D8.inc"
+#include "generated/sub_821210E0.inc"
+#include "generated/sub_821210E8.inc"
+#include "generated/sub_82121180.inc"
+#include "generated/sub_821212C0.inc"
+#include "generated/sub_82121A18.inc"
+#include "generated/sub_82121A98.inc"
+#include "generated/sub_82121C30.inc"
+#include "generated/sub_82121C48.inc"
+#include "generated/sub_82122020.inc"
+#include "generated/sub_821221B0.inc"
+#include "generated/sub_82122268.inc"
+#include "generated/sub_82122370.inc"
+#include "generated/sub_82122CE0.inc"
+#include "generated/sub_82122D00.inc"
+#include "generated/sub_82122D08.inc"
+#include "generated/sub_82122D28.inc"
+#include "generated/sub_82122F44.inc"
+#include "generated/sub_82122F48.inc"
+#include "generated/sub_82122FC0.inc"
+#include "generated/sub_82123600.inc"
+#include "generated/sub_821236CC.inc"
+#include "generated/sub_82123808.inc"
+#include "generated/sub_82123A50.inc"
+#include "generated/sub_82123AA0.inc"
+#include "generated/sub_82123CD0.inc"
+#include "generated/sub_82123D50.inc"
+#include "generated/sub_82123DB0.inc"
+#include "generated/sub_82123E18.inc"
+#include "generated/sub_82123EE8.inc"
+#include "generated/sub_82123FA0.inc"
+#include "generated/sub_821242C8.inc"
+#include "generated/sub_821245D8.inc"
+#include "generated/sub_82124CE0.inc"
+#include "generated/sub_82124E98.inc"
+#include "generated/sub_82125130.inc"
+#include "generated/sub_82125430.inc"
+#include "generated/sub_82125690.inc"
+#include "generated/sub_82125828.inc"
+#include "generated/sub_82125998.inc"
+#include "generated/sub_82125DE8.inc"
+#include "generated/sub_82125F28.inc"
+#include "generated/sub_82125FB0.inc"
+#include "generated/sub_82125FF4.inc"
+#include "generated/sub_82125FF8.inc"
+#include "generated/sub_82126034.inc"
+#include "generated/sub_82126038.inc"
+#include "generated/sub_82126074.inc"
+#include "generated/sub_821260AC.inc"
+#include "generated/sub_821270E0.inc"
+#include "generated/sub_82127100.inc"
+#include "generated/sub_82127108.inc"
+#include "generated/sub_82127120.inc"
+#include "generated/sub_82127188.inc"
+#include "generated/sub_8212727C.inc"
+#include "generated/sub_821272B0.inc"
+#include "generated/sub_821272F4.inc"
+#include "generated/sub_82127320.inc"
+#include "generated/sub_821273B4.inc"
+#include "generated/sub_821273E0.inc"
+#include "generated/sub_82127648.inc"
+#include "generated/sub_82127728.inc"
+#include "generated/sub_82127BE8.inc"
+#include "generated/sub_82127CE0.inc"
+#include "generated/sub_82127D38.inc"
+#include "generated/sub_82127E10.inc"
+#include "generated/sub_821285B8.inc"
+#include "generated/sub_82128890.inc"
+#include "generated/sub_82128948.inc"
+#include "generated/sub_82128A08.inc"
+#include "generated/sub_82128A28.inc"
+#include "generated/sub_82129078.inc"
+#include "generated/sub_82129110.inc"
+#include "generated/sub_82129190.inc"
+#include "generated/sub_821292B4.inc"
+#include "generated/sub_821292D8.inc"
+#include "generated/sub_82129304.inc"
+#include "generated/sub_82129370.inc"
+#include "generated/sub_8212940C.inc"
+#include "generated/sub_8212942C.inc"
+#include "generated/sub_82129468.inc"
+#include "generated/sub_82129618.inc"
+#include "generated/sub_82129984.inc"
+#include "generated/sub_82129990.inc"
+#include "generated/sub_8212A0A0.inc"
+#include "generated/sub_8212A100.inc"
+#include "generated/sub_8212A200.inc"
+#include "generated/sub_8212A220.inc"
+#include "generated/sub_8212A260.inc"
+#include "generated/sub_8212A270.inc"
+#include "generated/sub_8212A4E8.inc"
+#include "generated/sub_8212A598.inc"
+#include "generated/sub_8212B338.inc"
+#include "generated/sub_8212B370.inc"
+#include "generated/sub_8212B540.inc"
+#include "generated/sub_8212B598.inc"
+#include "generated/sub_8212B5C8.inc"
+#include "generated/sub_8212B5F0.inc"
+#include "generated/sub_8212B610.inc"
+#include "generated/sub_8212B618.inc"
+#include "generated/sub_8212B6B0.inc"
+#include "generated/sub_8212B778.inc"
+#include "generated/sub_8212B7B0.inc"
+#include "generated/sub_8212B830.inc"
+#include "generated/sub_8212B8A8.inc"
+#include "generated/sub_8212B8F0.inc"
+#include "generated/sub_8212BA48.inc"
+#include "generated/sub_8212BB00.inc"
+#include "generated/sub_8212BB58.inc"
+#include "generated/sub_8212BC08.inc"
+#include "generated/sub_8212BCB8.inc"
+#include "generated/sub_8212BCE0.inc"
+#include "generated/sub_8212BEB0.inc"
+#include "generated/sub_8212BED0.inc"
+#include "generated/sub_8212C038.inc"
+#include "generated/sub_8212C078.inc"
+#include "generated/sub_8212C0E8.inc"
+#include "generated/sub_8212C138.inc"
+#include "generated/sub_8212C178.inc"
+#include "generated/sub_8212C2E0.inc"
+#include "generated/sub_8212C3AC.inc"
+#include "generated/sub_8212DE60.inc"
+#include "generated/sub_8212E680.inc"
+#include "generated/sub_8212E6A8.inc"
+#include "generated/sub_8212E780.inc"
+#include "generated/sub_8212E8B0.inc"
+#include "generated/sub_8212E968.inc"
+#include "generated/sub_8212EA48.inc"
+#include "generated/sub_8212EB60.inc"
+#include "generated/sub_8212EB80.inc"
+#include "generated/sub_8212EBB8.inc"
+#include "generated/sub_8212EC20.inc"
+#include "generated/sub_8212F024.inc"
+#include "generated/sub_8212F088.inc"
+#include "generated/sub_8212F1B0.inc"
+#include "generated/sub_8212F1D0.inc"
+#include "generated/sub_8212F40C.inc"
+#include "generated/sub_8212F4B8.inc"
+#include "generated/sub_8212F558.inc"
+#include "generated/sub_8212F610.inc"
+#include "generated/sub_8212F630.inc"
+#include "generated/sub_8212F690.inc"
+#include "generated/sub_8212F698.inc"
+#include "generated/sub_8212F6A0.inc"
+#include "generated/sub_8212F6A8.inc"
+#include "generated/sub_8212F920.inc"
+#include "generated/sub_8212FA38.inc"
+#include "generated/sub_8212FE80.inc"
+#include "generated/sub_82130048.inc"
+#include "generated/sub_82130130.inc"
+#include "generated/sub_82130280.inc"
+#include "generated/sub_821302D0.inc"
+#include "generated/sub_82130330.inc"
+#include "generated/sub_8213037C.inc"
+#include "generated/sub_82130390.inc"
+#include "generated/sub_821303D4.inc"
+#include "generated/sub_821304C4.inc"
+#include "generated/sub_821304E8.inc"
+#include "generated/sub_82130588.inc"
+#include "generated/sub_82130990.inc"
+#include "generated/sub_82130BE8.inc"
+#include "generated/sub_82130C30.inc"
+#include "generated/sub_82130C78.inc"
+#include "generated/sub_82130D80.inc"
+#include "generated/sub_82130E00.inc"
+#include "generated/sub_82130EF0.inc"
+#include "generated/sub_82130F20.inc"
+#include "generated/sub_82130F30.inc"
+#include "generated/sub_82130F54.inc"
+#include "generated/sub_82130F74.inc"
+#include "generated/sub_82130F84.inc"
+#include "generated/sub_82130FA0.inc"
+#include "generated/sub_82131048.inc"
+#include "generated/sub_82131070.inc"
+#include "generated/sub_82131128.inc"
+#include "generated/sub_82131168.inc"
+#include "generated/sub_82131188.inc"
+#include "generated/sub_82131238.inc"
+#include "generated/sub_821312C0.inc"
+#include "generated/sub_82131438.inc"
+#include "generated/sub_82131478.inc"
+#include "generated/sub_821314A0.inc"
+#include "generated/sub_821314E8.inc"
+#include "generated/sub_82131570.inc"
+#include "generated/sub_82131598.inc"
+#include "generated/sub_82131668.inc"
+#include "generated/sub_821318E4.inc"
+#include "generated/sub_821318F8.inc"
+#include "generated/sub_82131A18.inc"
+#include "generated/sub_82131A28.inc"
+#include "generated/sub_82131B70.inc"
+#include "generated/sub_82131CE0.inc"
+#include "generated/sub_82131FA0.inc"
+#include "generated/sub_821321A8.inc"
+#include "generated/sub_821321B8.inc"
+#include "generated/sub_821321D0.inc"
+#include "generated/sub_82132470.inc"
+#include "generated/sub_82132490.inc"
+#include "generated/sub_821324D8.inc"
+#include "generated/sub_82132598.inc"
+#include "generated/sub_821327D8.inc"
+#include "generated/sub_821336C0.inc"
+#include "generated/sub_82134740.inc"
+#include "generated/sub_821349D0.inc"
+#include "generated/sub_82134A28.inc"
+#include "generated/sub_82134A40.inc"
+#include "generated/sub_82134AE8.inc"
+#include "generated/sub_82134B90.inc"
+#include "generated/sub_82134D18.inc"
+#include "generated/sub_82134DF8.inc"
+#include "generated/sub_82134E98.inc"
+#include "generated/sub_82134EA0.inc"
+#include "generated/sub_82134F20.inc"
+#include "generated/sub_82134F50.inc"
+#include "generated/sub_82134FAC.inc"
+#include "generated/sub_82135070.inc"
+#include "generated/sub_82135090.inc"
+#include "generated/sub_82135134.inc"
+#include "generated/sub_8213513C.inc"
+#include "generated/sub_82135160.inc"
+#include "generated/sub_82135608.inc"
+#include "generated/sub_82136280.inc"
+#include "generated/sub_82136720.inc"
+#include "generated/sub_82136738.inc"
+#include "generated/sub_821367A0.inc"
+#include "generated/sub_821368F0.inc"
+#include "generated/sub_82136A00.inc"
+#include "generated/sub_82136BD0.inc"
+#include "generated/sub_82137160.inc"
+#include "generated/sub_82137484.inc"
+#include "generated/sub_82137950.inc"
+#include "generated/sub_82137CE0.inc"
+#include "generated/sub_821382C0.inc"
+#include "generated/sub_82138308.inc"
+#include "generated/sub_82138678.inc"
+#include "generated/sub_82138E50.inc"
+#include "generated/sub_82138F38.inc"
+#include "generated/sub_82139010.inc"
+#include "generated/sub_82139310.inc"
+#include "generated/sub_82139768.inc"
+#include "generated/sub_82139790.inc"
+#include "generated/sub_82139818.inc"
+#include "generated/sub_82139888.inc"
+#include "generated/sub_821398F8.inc"
+#include "generated/sub_82139920.inc"
+#include "generated/sub_821399D8.inc"
+#include "generated/sub_82139A60.inc"
+#include "generated/sub_82139AB8.inc"
+#include "generated/sub_82139AE8.inc"
+#include "generated/sub_82139AF0.inc"
+#include "generated/sub_82139BA8.inc"
+#include "generated/sub_8213A3B0.inc"
+#include "generated/sub_8213A420.inc"
+#include "generated/sub_8213A490.inc"
+#include "generated/sub_8213A598.inc"
+#include "generated/sub_8213A5F8.inc"
+#include "generated/sub_8213A6B8.inc"
+#include "generated/sub_8213A710.inc"
+#include "generated/sub_8213A778.inc"
+#include "generated/sub_8213A800.inc"
+#include "generated/sub_8213A870.inc"
+#include "generated/sub_8213B0A8.inc"
+#include "generated/sub_8213B160.inc"
+#include "generated/sub_8213B320.inc"
+#include "generated/sub_8213B510.inc"
+#include "generated/sub_8213B528.inc"
+#include "generated/sub_8213B728.inc"
+#include "generated/sub_8213B9A0.inc"
+#include "generated/sub_8213BA40.inc"
+#include "generated/sub_8213BBA0.inc"
+#include "generated/sub_8213BBB8.inc"
+#include "generated/sub_8213BF98.inc"
+#include "generated/sub_8213C228.inc"
+#include "generated/sub_8213C348.inc"
+#include "generated/sub_8213C3C0.inc"
+#include "generated/sub_8213C748.inc"
+#include "generated/sub_8213C948.inc"
+#include "generated/sub_8213CDC8.inc"
+#include "generated/sub_8213CDF8.inc"
+#include "generated/sub_8213CE20.inc"
+#include "generated/sub_8213CE48.inc"
+#include "generated/sub_8213CF40.inc"
+#include "generated/sub_8213D1B8.inc"
+#include "generated/sub_8213D458.inc"
+#include "generated/sub_8213D658.inc"
+#include "generated/sub_8213D760.inc"
+#include "generated/sub_8213D790.inc"
+#include "generated/sub_8213DE78.inc"
+#include "generated/sub_8213DEF0.inc"
+#include "generated/sub_8213DF68.inc"
+#include "generated/sub_8213E008.inc"
+#include "generated/sub_8213E090.inc"
+#include "generated/sub_8213E108.inc"
+#include "generated/sub_8213E130.inc"
+#include "generated/sub_8213E520.inc"
+#include "generated/sub_8213E568.inc"
+#include "generated/sub_8213E590.inc"
+#include "generated/sub_8213E620.inc"
+#include "generated/sub_8213E780.inc"
+#include "generated/sub_8213E7A8.inc"
+#include "generated/sub_8213E7D0.inc"
+#include "generated/sub_8213F040.inc"
+#include "generated/sub_8213F098.inc"
+#include "generated/sub_8213F108.inc"
+#include "generated/sub_8213F230.inc"
+#include "generated/sub_8213F300.inc"
+#include "generated/sub_8213F3D0.inc"
+#include "generated/sub_8213F608.inc"
+#include "generated/sub_8213F718.inc"
+#include "generated/sub_8213F990.inc"
+#include "generated/sub_8213FB58.inc"
+#include "generated/sub_82141448.inc"
+#include "generated/sub_82141B40.inc"
+#include "generated/sub_82141CF8.inc"
+#include "generated/sub_82141E18.inc"
+#include "generated/sub_821420D0.inc"
+#include "generated/sub_82142228.inc"
+#include "generated/sub_821422C0.inc"
+#include "generated/sub_82142578.inc"
+#include "generated/sub_821426F8.inc"
+#include "generated/sub_82142768.inc"
+#include "generated/sub_821429C0.inc"
+#include "generated/sub_82142AA8.inc"
+#include "generated/sub_82142C60.inc"
+#include "generated/sub_82142EE0.inc"
+#include "generated/sub_821430F0.inc"
+#include "generated/sub_821432E0.inc"
+#include "generated/sub_82143798.inc"
+#include "generated/sub_82143AE0.inc"
+#include "generated/sub_82143BD8.inc"
+#include "generated/sub_82143BF0.inc"
+#include "generated/sub_82143C68.inc"
+#include "generated/sub_82143EF0.inc"
+#include "generated/sub_82144188.inc"
+#include "generated/sub_821441E0.inc"
+#include "generated/sub_82144280.inc"
+#include "generated/sub_821442D0.inc"
+#include "generated/sub_82144350.inc"
+#include "generated/sub_821443A8.inc"
+#include "generated/sub_82144778.inc"
+#include "generated/sub_82144800.inc"
+#include "generated/sub_821449E0.inc"
+#include "generated/sub_82144B48.inc"
+#include "generated/sub_82144CF0.inc"
+#include "generated/sub_82144F08.inc"
+#include "generated/sub_821450A8.inc"
+#include "generated/sub_821451C8.inc"
+#include "generated/sub_821452A8.inc"
+#include "generated/sub_821452E8.inc"
+#include "generated/sub_82145328.inc"
+#include "generated/sub_82145480.inc"
+#include "generated/sub_821454B0.inc"
+#include "generated/sub_821454E8.inc"
+#include "generated/sub_82145510.inc"
+#include "generated/sub_82145718.inc"
+#include "generated/sub_82145928.inc"
+#include "generated/sub_821459D0.inc"
+#include "generated/sub_82145A30.inc"
+#include "generated/sub_82145B18.inc"
+#include "generated/sub_82145BE8.inc"
+#include "generated/sub_82145ED8.inc"
+#include "generated/sub_82145F80.inc"
+#include "generated/sub_82146158.inc"
+#include "generated/sub_821461A0.inc"
+#include "generated/sub_82146340.inc"
+#include "generated/sub_82146480.inc"
+#include "generated/sub_82146608.inc"
+#include "generated/sub_821467A0.inc"
+#include "generated/sub_82146810.inc"
+#include "generated/sub_82146860.inc"
+#include "generated/sub_821469B0.inc"
+#include "generated/sub_821469E8.inc"
+#include "generated/sub_82146B70.inc"
+#include "generated/sub_82146CD0.inc"
+#include "generated/sub_82146E58.inc"
+#include "generated/sub_821470D8.inc"
+#include "generated/sub_82147180.inc"
+#include "generated/sub_821475F0.inc"
+#include "generated/sub_82147760.inc"
+#include "generated/sub_82147808.inc"
+#include "generated/sub_82147C28.inc"
+#include "generated/sub_82147E10.inc"
+#include "generated/sub_82147E50.inc"
+#include "generated/sub_82147F78.inc"
+#include "generated/sub_821480B8.inc"
+#include "generated/sub_82148488.inc"
+#include "generated/sub_821485A8.inc"
+#include "generated/sub_821486D0.inc"
+#include "generated/sub_821489C0.inc"
+#include "generated/sub_82148C18.inc"
+#include "generated/sub_82148C88.inc"
+#include "generated/sub_82148DC8.inc"
+#include "generated/sub_82148ED8.inc"
+#include "generated/sub_82148EE0.inc"
+#include "generated/sub_82148F38.inc"
+#include "generated/sub_82148FA8.inc"
+#include "generated/sub_82149030.inc"
+#include "generated/sub_821491F0.inc"
+#include "generated/sub_821492C0.inc"
+#include "generated/sub_82149300.inc"
+#include "generated/sub_821494C0.inc"
+#include "generated/sub_82149628.inc"
+#include "generated/sub_82149780.inc"
+#include "generated/sub_82149828.inc"
+#include "generated/sub_82149910.inc"
+#include "generated/sub_82149F48.inc"
+#include "generated/sub_82149FC0.inc"
+#include "generated/sub_8214A028.inc"
+#include "generated/sub_8214A040.inc"
+#include "generated/sub_8214A0A8.inc"
+#include "generated/sub_8214A110.inc"
+#include "generated/sub_8214A178.inc"
+#include "generated/sub_8214A188.inc"
+#include "generated/sub_8214A1A0.inc"
+#include "generated/sub_8214A1B8.inc"
+#include "generated/sub_8214A1D0.inc"
+#include "generated/sub_820864D0.inc"
+#include "generated/sub_8208CD68.inc"
+#include "generated/sub_8208CEA8.inc"
+#include "generated/sub_8208CD38.inc"
+#include "generated/sub_82094678.inc"
+#include "generated/sub_82084EE0.inc"
+#include "generated/sub_82086748.inc"
+#include "generated/sub_820866A0.inc"
+#include "generated/sub_820868B0.inc"
+#include "generated/sub_82077F20.inc"
+#include "generated/sub_820FC9B8.inc"
+#include "generated/sub_82080640.inc"
+#include "generated/sub_82080A40.inc"
+#include "generated/sub_8207F440.inc"
+#include "generated/sub_82135188.inc"
+#include "generated/sub_82132E10.inc"
+#include "generated/sub_82132B28.inc"
+#include "generated/sub_82132F50.inc"
+#include "generated/sub_82132F40.inc"
+#include "generated/sub_821370C8.inc"
+#include "generated/sub_8212D268.inc"
+#include "generated/sub_8212D2D0.inc"
+#include "generated/sub_82080440.inc"
+#include "generated/sub_820FC9D0.inc"
+#include "generated/sub_82139B70.inc"
+#include "generated/sub_821091C8.inc"
+#include "generated/sub_82109020.inc"
+#include "generated/sub_82104320.inc"
+#include "generated/sub_82107A68.inc"
+#include "generated/sub_82106120.inc"
+#include "generated/sub_8210C538.inc"
+#include "generated/sub_82105878.inc"
+#include "generated/sub_8210A030.inc"
+#include "generated/sub_8210A890.inc"
+#include "generated/sub_82100C60.inc"
+#include "generated/sub_82107888.inc"
+#include "generated/sub_82105F28.inc"
+#include "generated/sub_820FFB38.inc"
+#include "generated/sub_82100240.inc"
+#include "generated/sub_8210C1A8.inc"
+#include "generated/sub_8210BCD8.inc"
+#include "generated/sub_8210BC60.inc"
+#include "generated/sub_82101348.inc"
+#include "generated/sub_82138DA0.inc"
+#include "generated/sub_821052E8.inc"
+#include "generated/sub_82109C68.inc"
+#include "generated/sub_820D7F38.inc"
+#include "generated/sub_820FD808.inc"
+#include "generated/sub_820FD9A8.inc"
+#include "generated/sub_821005E8.inc"
+#include "generated/sub_82108E20.inc"
+#include "generated/sub_82108E38.inc"
+#include "generated/sub_82106FF0.inc"
+#include "generated/sub_82107290.inc"
+#include "generated/sub_821031E0.inc"
+#include "generated/sub_82105460.inc"
+#include "generated/sub_82103D80.inc"
+#include "generated/sub_82106368.inc"
+#include "generated/sub_82103C48.inc"
+#include "generated/sub_82108E30.inc"
+#include "generated/sub_82105C40.inc"
+#include "generated/sub_820FEC30.inc"
+#include "generated/sub_820FFF08.inc"
+#include "generated/sub_820FC7E0.inc"
+#include "generated/sub_8210BED0.inc"
+#include "generated/sub_820D7FA8.inc"
+#include "generated/sub_820FC7A0.inc"
+#include "generated/sub_821390B0.inc"
+#include "generated/sub_820FCDE0.inc"
+#include "generated/sub_821061D0.inc"
+#include "generated/sub_821012A0.inc"
+#include "generated/sub_821015D0.inc"
+#include "generated/sub_82105118.inc"
+#include "generated/sub_82136F70.inc"
+#include "generated/sub_82107F30.inc"
+#include "generated/sub_821089A8.inc"
+#include "generated/sub_820FFE78.inc"
+#include "generated/sub_82108E58.inc"
+#include "generated/sub_8210DF08.inc"
+#include "generated/sub_82113430.inc"
+#include "generated/sub_82138B88.inc"
+#include "generated/sub_82106C70.inc"
+#include "generated/sub_82104D68.inc"
+#include "generated/sub_82102A60.inc"
+#include "generated/sub_82102940.inc"
+#include "generated/sub_82109378.inc"
+#include "generated/sub_82108E88.inc"
+#include "generated/sub_821071F8.inc"
+#include "generated/sub_82108E60.inc"
+#include "generated/sub_82109038.inc"
+#include "generated/sub_821087B0.inc"
+#include "generated/sub_821094F0.inc"
+#include "generated/sub_82108800.inc"
+#include "generated/sub_82107E28.inc"
+#include "generated/sub_82138990.inc"
+#include "generated/sub_82107E78.inc"
+#include "generated/sub_821002A8.inc"
+#include "generated/sub_820FCEA0.inc"
+#include "generated/sub_82108F18.inc"
+#include "generated/sub_82104C20.inc"
+#include "generated/sub_82105A18.inc"
+#include "generated/sub_8210AE50.inc"
+#include "generated/sub_821037D0.inc"
+#include "generated/sub_82108E68.inc"
+#include "generated/sub_82114C78.inc"
+#include "generated/sub_820FD0F8.inc"
+#include "generated/sub_82108E98.inc"
+#include "generated/sub_820FE9E0.inc"
+#include "generated/sub_82139170.inc"
+#include "generated/sub_82108DF0.inc"
+#include "generated/sub_82101D80.inc"
+#include "generated/sub_821391B8.inc"
+#include "generated/sub_82100F28.inc"
+#include "generated/sub_820FCAA8.inc"
+#include "generated/sub_82104DD8.inc"
+#include "generated/sub_82138828.inc"
+#include "generated/sub_82138480.inc"
+#include "generated/sub_8210B2D0.inc"
+#include "generated/sub_821102C0.inc"
+#include "generated/sub_82115190.inc"
+#include "generated/sub_82109548.inc"
+#include "generated/sub_82108E78.inc"
+#include "generated/sub_820FC9E8.inc"
+#include "generated/sub_820FE6C8.inc"
+#include "generated/sub_82138A38.inc"
+#include "generated/sub_8210BB48.inc"
+#include "generated/sub_82109098.inc"
+#include "generated/sub_8210B288.inc"
+#include "generated/sub_820FCD60.inc"
+#include "generated/sub_82108E48.inc"
+#include "generated/sub_820FF170.inc"
+#include "generated/sub_8210C058.inc"
+#include "generated/sub_82110820.inc"
+#include "generated/sub_8210E078.inc"
+#include "generated/sub_82108068.inc"
+#include "generated/sub_82108EA0.inc"
+#include "generated/sub_8210E1B8.inc"
+#include "generated/sub_82138C30.inc"
+#include "generated/sub_82138D08.inc"
+#include "generated/sub_82106008.inc"
+#include "generated/sub_821104D0.inc"
+#include "generated/sub_8210CFC8.inc"
+#include "generated/sub_8210CE28.inc"
+#include "generated/sub_82115198.inc"
+#include "generated/sub_8210CF10.inc"
+#include "generated/sub_821141E8.inc"
+#include "generated/sub_82114BC0.inc"
+#include "generated/sub_8210C7E8.inc"
+#include "generated/sub_821113A8.inc"
+#include "generated/sub_821148C0.inc"
+#include "generated/sub_821108F8.inc"
+#include "generated/sub_8210DC20.inc"
+#include "generated/sub_8210C5B0.inc"
+#include "generated/sub_821392B0.inc"
+#include "generated/sub_8210E160.inc"
+#include "generated/sub_8210F620.inc"
+#include "generated/sub_8211DBA0.inc"
+#include "generated/sub_82110620.inc"
+#include "generated/sub_82108E50.inc"
+#include "generated/sub_820D7ED0.inc"
+#include "generated/sub_8210B960.inc"
+#include "generated/sub_82108ED8.inc"
+#include "generated/sub_82110070.inc"
+#include "generated/sub_821094A8.inc"
+#include "generated/sub_82107EE0.inc"
+#include "generated/sub_82108868.inc"
+#include "generated/sub_8210BF70.inc"
+#include "generated/sub_820B59F0.inc"
+#include "generated/sub_82110AE0.inc"
+#include "generated/sub_82110960.inc"
+#include "generated/sub_8211FC20.inc"
+#include "generated/sub_82115160.inc"
+#include "generated/sub_821155F0.inc"
+#include "generated/sub_82115178.inc"
+#include "generated/sub_8210CCC0.inc"
+#include "generated/sub_82115420.inc"
+#include "generated/sub_821145B0.inc"
+#include "generated/sub_821150A0.inc"
+#include "generated/sub_8210E3F8.inc"
+#include "generated/sub_8210E8B0.inc"
+#include "generated/sub_8210EC50.inc"
+#include "generated/sub_8210F1B0.inc"
+#include "generated/sub_82116EE8.inc"
+#include "generated/sub_8210F0B8.inc"
+#include "generated/sub_82116AD0.inc"
+#include "generated/sub_8210CDB0.inc"
+#include "generated/sub_8210EE60.inc"
+#include "generated/sub_82113CD8.inc"
+#include "generated/sub_82111848.inc"
+#include "generated/sub_8210C0B8.inc"
+#include "generated/sub_8210C548.inc"
+#include "generated/sub_82122D88.inc"
+#include "generated/sub_82110220.inc"
+#include "generated/sub_8210DB60.inc"
+#include "generated/sub_82110B68.inc"
+#include "generated/sub_820B5960.inc"
+#include "generated/sub_82115258.inc"
+#include "generated/sub_82119560.inc"
+#include "generated/sub_82115478.inc"
+#include "generated/sub_82119718.inc"
+#include "generated/sub_8210F2A0.inc"
+#include "generated/sub_821179C0.inc"
+#include "generated/sub_8210CC60.inc"
+#include "generated/sub_82115E60.inc"
+#include "generated/sub_82115878.inc"
+#include "generated/sub_82116E20.inc"
+#include "generated/sub_82116898.inc"
+#include "generated/sub_82115850.inc"
+#include "generated/sub_82115158.inc"
+#include "generated/sub_8210CD28.inc"
+#include "generated/sub_82115150.inc"
+#include "generated/sub_8210E490.inc"
+#include "generated/sub_820FC768.inc"
+#include "generated/sub_820FC728.inc"
+#include "generated/sub_820FC788.inc"
+#include "generated/sub_8210C440.inc"
+#include "generated/sub_82126860.inc"
+#include "generated/sub_82115230.inc"
+#include "generated/sub_8211A4A8.inc"
+#include "generated/sub_8211A410.inc"
+#include "generated/sub_82118928.inc"
+#include "generated/sub_8211CD00.inc"
+#include "generated/sub_82117FD0.inc"
+#include "generated/sub_8211F3E0.inc"
+#include "generated/sub_821153D8.inc"
+#include "generated/sub_82121538.inc"
+#include "generated/sub_821212C8.inc"
+#include "generated/sub_82120960.inc"
+#include "generated/sub_821163B0.inc"
+#include "generated/sub_82119398.inc"
+#include "generated/sub_820D7EB8.inc"
+#include "generated/sub_82118870.inc"
+#include "generated/sub_82117BC0.inc"
+#include "generated/sub_82122D30.inc"
+#include "generated/sub_821184E8.inc"
+#include "generated/sub_8211F0C0.inc"
+#include "generated/sub_821220F8.inc"
+#include "generated/sub_8211BBF0.inc"
+#include "generated/sub_8211B3B8.inc"
+#include "generated/sub_82121220.inc"
+#include "generated/sub_8211DFA0.inc"
+#include "generated/sub_82121210.inc"
+#include "generated/sub_8211E358.inc"
+#include "generated/sub_82121D28.inc"
+#include "generated/sub_82120BE0.inc"
+#include "generated/sub_82118030.inc"
+#include "generated/sub_82122068.inc"
+#include "generated/sub_82121D50.inc"
+#include "generated/sub_82123858.inc"
+#include "generated/sub_82122118.inc"
+#include "generated/sub_82124570.inc"
+#include "generated/sub_82121FF0.inc"
+#include "generated/sub_82121BF8.inc"
+#include "generated/sub_82122200.inc"
+#include "generated/sub_82124F10.inc"
+#include "generated/sub_8211C420.inc"
+#include "generated/sub_82123D30.inc"
+#include "generated/sub_8211B620.inc"
+#include "generated/sub_821241D0.inc"
+#include "generated/sub_821214A8.inc"
+#include "generated/sub_82121428.inc"
+#include "generated/sub_820D7EF8.inc"
+#include "generated/sub_82121C50.inc"
+#include "generated/sub_82126B08.inc"
+#include "generated/sub_821236D0.inc"
+#include "generated/sub_82124228.inc"
+#include "generated/sub_82122568.inc"
+#include "generated/sub_82120A28.inc"
+#include "generated/sub_821208B8.inc"
+#include "generated/sub_82125DD0.inc"
+#include "generated/sub_82109540.inc"
+#include "generated/sub_8213A8E0.inc"
+#include "generated/sub_8213A238.inc"
+#include "generated/sub_821499D8.inc"
+#include "generated/sub_82137138.inc"
+#include "generated/sub_82149958.inc"
+#include "generated/sub_82149998.inc"
+#include "generated/sub_82149A48.inc"
+#include "generated/sub_82139C00.inc"
+#include "generated/sub_8213DDC8.inc"
+#include "generated/sub_8213C438.inc"
+#include "generated/sub_820D8268.inc"
+#include "generated/sub_820B77A8.inc"
+#include "generated/sub_8213E1F0.inc"
+#include "generated/sub_821395D8.inc"
+#include "generated/sub_8213C7A0.inc"
+#include "generated/sub_8213E888.inc"
+#include "generated/sub_8213A008.inc"
+#include "generated/sub_8213FDC8.inc"
+#include "generated/sub_82141508.inc"
+#include "generated/sub_8213BC30.inc"
+#include "generated/sub_8213EC70.inc"
+#include "generated/sub_821412F8.inc"
+#include "generated/sub_82141110.inc"
+#include "generated/sub_821413C8.inc"
+#include "generated/sub_8213DA80.inc"
+#include "generated/sub_82139F10.inc"
+#include "generated/sub_8213BBB0.inc"
+#include "generated/sub_8213B858.inc"
+#include "generated/sub_820D8160.inc"
+#include "generated/sub_8213D140.inc"
+#include "generated/sub_82142390.inc"
+#include "generated/sub_821424E0.inc"
+#include "generated/sub_821422D8.inc"
+#include "generated/sub_82142398.inc"
+#include "generated/sub_821436A8.inc"
+#include "generated/sub_821434D8.inc"
+#include "generated/sub_821476E0.inc"
+#include "generated/sub_8213B5C0.inc"
+#include "generated/sub_8213FC10.inc"
+#include "generated/sub_8213B0C0.inc"
+#include "generated/sub_8213E860.inc"
+#include "generated/sub_8213ED10.inc"
+#include "generated/sub_8213CD98.inc"
+#include "generated/sub_8213CD80.inc"
+#include "generated/sub_8213CEC0.inc"
+#include "generated/sub_821420A0.inc"
+#include "generated/sub_82141F80.inc"
+#include "generated/sub_8213CE58.inc"
+#include "generated/sub_82141F88.inc"
+#include "generated/sub_82141EC0.inc"
+#include "generated/sub_82142500.inc"
+#include "generated/sub_82142560.inc"
+#include "generated/sub_82142530.inc"
+#include "generated/sub_82142518.inc"
+#include "generated/sub_821424E8.inc"
+#include "generated/sub_82142548.inc"
+#include "generated/sub_82142800.inc"
+#include "generated/sub_82142930.inc"
+#include "generated/sub_82144F20.inc"
+#include "generated/sub_82144FE8.inc"
+#include "generated/sub_821445B0.inc"
+#include "generated/sub_82144660.inc"
+#include "generated/sub_82144708.inc"
+#include "generated/sub_82145058.inc"
+#include "generated/sub_82144F98.inc"
+#include "generated/sub_8213B078.inc"
+#include "generated/sub_8213BB88.inc"
+#include "generated/sub_8213BAB0.inc"
+#include "generated/sub_8213B690.inc"
+#include "generated/sub_8213F6A0.inc"
+#include "generated/sub_820DCB00.inc"
+#include "generated/sub_8213E548.inc"
+#include "generated/sub_8213E5A8.inc"
+#include "generated/sub_8213E508.inc"
+#include "generated/sub_82114E20.inc"
+#include "generated/sub_82053380.inc"
+#include "generated/sub_82129A68.inc"
+#include "generated/sub_821299D0.inc"
+#include "generated/sub_820B7730.inc"
+#include "generated/sub_820B7650.inc"
+#include "generated/sub_8212E7E8.inc"
+#include "generated/sub_8212BF18.inc"
+#include "generated/sub_82132F98.inc"
+#include "generated/sub_82149DD8.inc"
+#include "generated/sub_82149E10.inc"
+#include "generated/sub_82149E48.inc"
+#include "generated/sub_82149E80.inc"
+#include "generated/sub_82149E98.inc"
+#include "generated/sub_82149EB0.inc"
+#include "generated/sub_82149F10.inc"
+#include "generated/sub_82149B18.inc"
+#include "generated/sub_82149B88.inc"
+#include "generated/sub_82149BF8.inc"
+#include "generated/sub_82149C08.inc"
+#include "generated/sub_82149C60.inc"
+#include "generated/sub_82149CB8.inc"
+#include "generated/sub_82149D10.inc"
+#include "generated/sub_82149D68.inc"
+#include "generated/sub_82149D78.inc"
+#include "generated/sub_82149DB0.inc"
+#include "generated/sub_82114E40.inc"
+#include "generated/sub_82075298.inc"
+#include "generated/sub_820E3308.inc"
+#include "generated/sub_820EBBD8.inc"
+#include "generated/sub_820E7150.inc"
+#include "generated/sub_820E2018.inc"
+#include "generated/sub_820E7F70.inc"
+#include "generated/sub_820E83D0.inc"
+#include "generated/sub_820E81F0.inc"
+#include "generated/sub_820E7C20.inc"
+#include "generated/sub_820E2628.inc"
+#include "generated/sub_820DAB80.inc"
+#include "generated/sub_820DABC0.inc"
+#include "generated/sub_820E8138.inc"
+#include "generated/sub_820DAFE8.inc"
+#include "generated/sub_820DAE88.inc"
+#include "generated/sub_820DAAD0.inc"
+#include "generated/sub_820E71D0.inc"
+#include "generated/sub_820DAF20.inc"
+#include "generated/sub_820DA528.inc"
+#include "generated/sub_820E89C0.inc"
+#include "generated/sub_820E3AB0.inc"
+#include "generated/sub_820DBD88.inc"
+#include "generated/sub_820DC398.inc"
+#include "generated/sub_820E3CA8.inc"
+#include "generated/sub_820E9B98.inc"
+#include "generated/sub_820DC5F8.inc"
+#include "generated/sub_82081378.inc"
+#include "generated/sub_8207EB68.inc"
+#include "generated/sub_8209C388.inc"
+#include "generated/sub_8207D918.inc"
+#include "generated/sub_8207E3C8.inc"
+#include "generated/sub_82086710.inc"
+#include "generated/sub_82078058.inc"
+#include "generated/sub_8207D0C8.inc"
+#include "generated/sub_8207B598.inc"
+#include "generated/sub_8207D2A0.inc"
+#include "generated/sub_82077BC0.inc"
+#include "generated/sub_82087CF8.inc"
+#include "generated/sub_820815C0.inc"
+#include "generated/sub_820822D8.inc"
+#include "generated/sub_8208CF90.inc"
+#include "generated/sub_8207DB80.inc"
+#include "generated/sub_820B2C28.inc"
+#include "generated/sub_82081160.inc"
+#include "generated/sub_82063730.inc"
+#include "generated/sub_8209B730.inc"
+#include "generated/sub_8209B6C0.inc"
+#include "generated/sub_820A43E8.inc"
+#include "generated/sub_820A3540.inc"
+#include "generated/sub_820A2B00.inc"
+#include "generated/sub_82063C00.inc"
+#include "generated/sub_82063F18.inc"
+#include "generated/sub_82063DC8.inc"
+#include "generated/sub_82063758.inc"
 #include "generated/sub_82054490.inc"
 #include "generated/sub_82064048.inc"
 #include "generated/sub_82067AF0.inc"
@@ -2699,8 +4881,6 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_820D9470.inc"
 #include "generated/sub_820B7448.inc"
 #include "generated/sub_820B7428.inc"
-#undef REX_MM_STORE_U32
-#undef REX_MM_LOAD_U32
 
 #include "generated/sub_8213ACB0.inc"
 #include "generated/sub_8213AEE0.inc"
@@ -2713,7 +4893,80 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 // WIP 022: fail-closed XAM/Live kernel imports referenced by the family
 // below; each is bound to its observed shape only when the diagnostic
 // actually reaches it.
-static void __imp__XMAReleaseContext([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AC44u); }
+static void __imp__XamLoaderTerminateTitle([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A404u); }
+static void __imp__HalReturnToFirmware([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A694u); }
+static void __imp__KeLockL2([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A964u); }
+static void __imp__KeReleaseSemaphore([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214ABE4u); }
+static void __imp__KeResetEvent([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A984u); }
+static void __imp__KeUnlockL2([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A974u); }
+static void __imp__KeWaitForMultipleObjects([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AC14u); }
+static void __imp__KeWaitForSingleObject([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A994u); }
+static void __imp__NetDll_WSAGetOverlappedResult([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AB54u); }
+static void __imp__NetDll_WSARecvFrom([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AB74u); }
+static void __imp__NetDll_ioctlsocket([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AB14u); }
+static void __imp__NtClose([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A584u); }
+static void __imp__NtFlushBuffersFile([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A564u); }
+static void __imp__NtOpenFile([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A524u); }
+static void __imp__NtQueryInformationFile([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A624u); }
+static void __imp__NtQueryVolumeInformationFile([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A634u); }
+static void __imp__NtSetInformationFile([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A5F4u); }
+static void __imp__RtlCaptureContext([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AD04u); }
+static void __imp__RtlTryEnterCriticalSection([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214ABB4u); }
+static void __imp__RtlUnwind([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214ACF4u); }
+static void __imp__VdShutdownEngines([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A854u); }
+static void __imp__XAudioGetVoiceCategoryVolume([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214ABF4u); }
+static void __imp__XAudioGetVoiceCategoryVolumeChangeMask([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AC04u); }
+static void __imp__XGetAVPack([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A3F4u); }
+static void __imp__XGetLanguage([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A3E4u); }
+static void __imp__XamSessionCreateHandle([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AD84u); }
+static void __imp__XamShowAchievementsUI([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A2F4u); }
+static void __imp__XamShowFriendsUI([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A2D4u); }
+static void __imp__XamShowMessageBoxUIEx([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A3D4u); }
+static void __imp__XamVoiceCreate([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214ADC4u); }
+static void __imp__XexCheckExecutablePrivilege([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A594u); }
+static void __imp__RtlFreeAnsiString([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AD44u); }
+static void __imp__RtlInitUnicodeString([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AD64u); }
+static void __imp__RtlUnicodeStringToAnsiString([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AD54u); }
+static void __imp__NetDll_XNetConnect([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AA14u); }
+static void __imp__NetDll_XNetGetTitleXnAddr([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AA64u); }
+static void __imp__NetDll_XNetInAddrToXnAddr([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A9F4u); }
+static void __imp__NetDll_XNetQosLookup([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AA44u); }
+static void __imp__NetDll_XNetXnAddrToInAddr([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A9E4u); }
+static void __imp__NetDll_bind([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AB34u); }
+static void __imp__NetDll_recvfrom([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AB64u); }
+static void __imp__NetDll_select([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AB44u); }
+static void __imp__NetDll_setsockopt([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AB24u); }
+static void __imp__NetDll_socket([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AAF4u); }
+static void __imp__RtlMultiByteToUnicodeN([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AD34u); }
+static void __imp__ExTerminateThread([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A6A4u); }
+// Kernel timers (the system notification thread's 10 ms poll timer):
+// handles 0x07100001... Waiting on a timer is a block point (a started
+// thread stops there; on the main thread it fails closed), so no timer ever
+// needs to fire in this diagnostic.
+static uint32_t g_timer_count = 0;
+static void __imp__NtCancelTimer(Context& ctx, Machine& base) {
+  if (ctx.r3.u32 < 0x07100001u || ctx.r3.u32 >= 0x07100001u + g_timer_count)
+    base.fail(Error::unsupported, 0x8214ADD4u);
+  if (ctx.r4.u32) base.store(ctx.r4.u32, 4, 0u);  // previous state: not signalled
+  ctx.r3.u64 = 0u;
+}
+static void __imp__NtCreateTimer(Context& ctx, Machine& base) {
+  if (!ctx.r3.u32 || ctx.r5.u32 > 1u || g_timer_count >= 16u)
+    base.fail(Error::unsupported, 0x8214AE04u);
+  base.store(ctx.r3.u32, 4, 0x07100001u + g_timer_count++);
+  ctx.r3.u64 = 0u;
+}
+static void __imp__NtSetTimerEx(Context& ctx, Machine& base) {
+  if (ctx.r3.u32 < 0x07100001u || ctx.r3.u32 >= 0x07100001u + g_timer_count || !ctx.r4.u32)
+    base.fail(Error::unsupported, 0x8214ADF4u);
+  ctx.r3.u64 = 0u;  // armed; see NtCancelTimer note
+}
+// PORT POLICY: voice chat belongs to the stubbed Xbox Live layer. No
+// headset is ever present, so the voice engine never captures or submits.
+static void __imp__XamVoiceHeadsetPresent(Context& ctx, [[maybe_unused]] Machine& base) {
+  ctx.r3.u64 = 0u;
+}
+static void __imp__XamVoiceSubmitPacket([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214ADB4u); }
 // WIP 023: trusted xboxkrnl RtlTimeToTimeFields contract - split a 64-bit
 // FILETIME (100 ns since 1601) into the eight big-endian u16 TIME_FIELDS
 // (year, month, day, hour, minute, second, millisecond, weekday).
@@ -2764,7 +5017,15 @@ static void __imp__RtlTimeFieldsToTime([[maybe_unused]] Context& ctx, Machine& b
 static void __imp__RtlUnicodeToMultiByteN([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A604u); }
 static void __imp__XamShowGamerCardUIForXUID([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A2E4u); }
 static void __imp__XamShowMarketplaceUI([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A304u); }
-static void __imp__XamUserGetName([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A234u); }
+// PORT POLICY (nobody signs in): every controller slot reports "not
+// signed in" (ERROR_NOT_LOGGED_ON 0x4DD) with an empty name / zero XUID,
+// exactly as a real console answers for an empty slot.
+static void __imp__XamUserGetName(Context& ctx, Machine& base) {
+  if (ctx.r3.u32 > 3u || (ctx.r4.u32 == 0u && ctx.r5.u32 != 0u))
+    base.fail(Error::unsupported, 0x8214A234u);
+  if (ctx.r4.u32 && ctx.r5.u32) base.store(ctx.r4.u32, 1, 0u);
+  ctx.r3.u64 = 0x4DDu;
+}
 static void __imp__NtWriteFile([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AD14u); }
 // WIP 023 input fixture: exactly one standard gamepad on port 0, idle
 // (no buttons, centered sticks, released triggers). Ports 1-3 report
@@ -2793,24 +5054,57 @@ static void __imp__XamInputGetState(Context& ctx, Machine& base) {
   if (user != 0u) { ctx.r3.u64 = 0x48Fu; return; }
   ++g_input_packet_number;
   // WIP 023 labeled diagnostic input script, keyed to the frame counter
-  // (g_frame_delay_calls): the fixture player presses START for 10 frames
-  // at frame 300 and presses A for 10 frames at frame 450, otherwise idle.
-  // This is injected input for the diagnostic, never faked game state; the
+  // (g_frame_delay_calls). This is injected input for the diagnostic, never faked game state; the
   // original code reads it through the same boundary a real pad would use.
+  // Script rows: first/last frame (inclusive), buttons, left stick X/Y.
+  // Boot -> title (START) -> menu (A) -> story book (A) -> Live notice (A)
+  // -> character select (A join, START confirm) -> level: walk right,
+  // four light attacks (X), jump (A), walk down-left, heavy attack (Y),
+  // walk up-right, three light attacks, walk right to the next room.
+  struct InputRow { uint32_t first, last, buttons; int16_t lx, ly; };
+  static constexpr InputRow k_script[] = {
+    {300,311,0x0010,0,0},{1200,1211,0x0010,0,0},{3000,3011,0x1000,0,0},
+    {4000,4011,0x1000,0,0},{4500,4511,0x0002,0,0},{5000,5011,0x1000,0,0},
+    {6000,6011,0x0010,0,0},{7000,7011,0x1000,0,0},{7600,7899,0,30000,0},
+    {8000,8011,0x1000,0,0},{8100,8104,0x4000,0,0},{8130,8134,0x4000,0,0},
+    {8160,8164,0x4000,0,0},{8190,8194,0x4000,0,0},{8300,8305,0x1000,0,0},
+    {8400,8699,0,-30000,-20000},{8800,8805,0x8000,0,0},
+    {8900,9199,0,30000,20000},{9300,9304,0x4000,0,0},{9330,9334,0x4000,0,0},
+    {9360,9364,0x4000,0,0},{9400,9899,0,30000,0},
+  };
   uint32_t buttons = 0u;
-  if ((g_frame_delay_calls >= 300u && g_frame_delay_calls < 312u) ||
-      (g_frame_delay_calls >= 1200u && g_frame_delay_calls < 1212u))
-    buttons = 0x0010u;  // XINPUT_GAMEPAD_START
-  else if ((g_frame_delay_calls >= 3000u && g_frame_delay_calls < 3012u) ||
-           (g_frame_delay_calls >= 4000u && g_frame_delay_calls < 4012u) ||
-           (g_frame_delay_calls >= 5000u && g_frame_delay_calls < 5012u) ||
-           (g_frame_delay_calls >= 7000u && g_frame_delay_calls < 7012u) ||
-           (g_frame_delay_calls >= 8000u && g_frame_delay_calls < 8012u))
-    buttons = 0x1000u;  // XINPUT_GAMEPAD_A
-  else if (g_frame_delay_calls >= 4500u && g_frame_delay_calls < 4512u)
-    buttons = 0x0002u;  // XINPUT_GAMEPAD_DPAD_DOWN
-  else if (g_frame_delay_calls >= 6000u && g_frame_delay_calls < 6012u)
-    buttons = 0x0010u;  // second START (some screens confirm on START)
+  uint32_t thumbs = 0u;
+  for (const InputRow &row : k_script) {
+    if (g_frame_delay_calls < row.first || g_frame_delay_calls > row.last) continue;
+    buttons |= row.buttons;
+    if (row.lx || row.ly)
+      thumbs = (uint32_t(uint16_t(row.lx)) << 16) | uint16_t(row.ly);
+  }
+#ifndef CC_XBOX_DRIVER
+  // Host diagnostic override: CC_INPUT_SCRIPT="first-last:buttons[:lx,ly];..."
+  // (hex buttons, signed decimal stick) replaces the built-in script above.
+  if (const char *script = std::getenv("CC_INPUT_SCRIPT")) {
+    buttons = 0u;
+    thumbs = 0u;
+    const char *p = script;
+    while (*p) {
+      unsigned first = 0, last = 0, b = 0;
+      int lx = 0, ly = 0, used = 0;
+      if (std::sscanf(p, "%u-%u:%x%n", &first, &last, &b, &used) < 3) break;
+      p += used;
+      if (*p == ':') {
+        int used2 = 0;
+        if (std::sscanf(p, ":%d,%d%n", &lx, &ly, &used2) >= 2) p += used2;
+      }
+      if (g_frame_delay_calls >= first && g_frame_delay_calls <= last) {
+        buttons |= b;
+        thumbs = (uint32_t(uint16_t(int16_t(lx))) << 16) | uint16_t(int16_t(ly));
+      }
+      while (*p && *p != ';') ++p;
+      if (*p == ';') ++p;
+    }
+  }
+#endif
   {
     static uint32_t last_buttons = 0;
     if (buttons != last_buttons) {
@@ -2820,7 +5114,7 @@ static void __imp__XamInputGetState(Context& ctx, Machine& base) {
   }
   base.store(state + 0, 4, g_input_packet_number); // dwPacketNumber
   base.store(state + 4, 4, buttons << 16);         // wButtons | triggers
-  base.store(state + 8, 4, 0u);                    // sThumbLX | sThumbLY
+  base.store(state + 8, 4, thumbs);                // sThumbLX | sThumbLY
   base.store(state + 12, 4, 0u);                   // sThumbRX | sThumbRY
   ctx.r3.u64 = 0u;                                 // ERROR_SUCCESS
 }
@@ -2842,46 +5136,32 @@ static void __imp__XMsgInProcessCall(Context& ctx, Machine& base) {
   }
   base.fail(Error::unsupported, 0x8214AA84u);
 }
-// WIP 023 PORT POLICY: the sign-in flow. Pressing START at the title makes
-// the game call XamShowSigninUI; the original Xbox has no system sign-in
-// blade, and the port treats the local player as already signed in. The
-// UI call succeeds instantly, a single XN_SYS_SIGNINCHANGED notification
-// (id 0x0000000A, area SYS) is queued for the game's listener, and the
-// notification poll drains it; afterwards the poll reports nothing
-// pending. Sign-in state reports "signed in locally" for user 0 only.
-static uint32_t g_signin_notifications_pending = 0;
+// PORT POLICY (user directive 2026-09-27): the original Xbox has no
+// profile / sign-in system, so no user is ever signed in. The sign-in
+// state reports eXUserSigninState_NotSignedIn for every pad and the notify
+// poll never reports a sign-in change. The Xbox 360 sign-in blade behaves
+// exactly as on a real console when the player backs out of it: the call
+// succeeds and nothing changes. Menu scripts (sub_82071280) request it
+// unconditionally; the menu's profile gate (sub_82053C70 wrapper) drops its
+// requirement separately.
 static void __imp__XamShowSigninUI(Context& ctx, Machine& base) {
-  if (ctx.r3.u32 == 0u || ctx.r3.u32 > 4u || ctx.r4.u32 != 0u)
+  if (ctx.r3.u32 == 0u || ctx.r3.u32 > 4u)
     base.fail(Error::unsupported, 0x8214A2C4u);
-  g_signin_notifications_pending = 2u;  // SIGNINCHANGED then UI-closed
-  cc_log("signin_ui frame=%u panes=%u\n", g_frame_delay_calls, ctx.r3.u32);
-  ctx.r3.u64 = 0u;  // ERROR_SUCCESS
+  static uint32_t logged = 0;
+  if (logged < 8u) {
+    ++logged;
+    cc_log("signin_ui dismissed panes=%u flags=%08x lr=%08x frame=%u\n",
+           ctx.r3.u32, ctx.r4.u32, uint32_t(ctx.lr), g_frame_delay_calls);
+  }
+  ctx.r3.u64 = 0u;  // ERROR_SUCCESS; the blade closes with nobody signed in
 }
 static void __imp__XamUserGetSigninState(Context& ctx, [[maybe_unused]] Machine& base) {
-  // 1 = eXUserSigninState_SignedInLocally for user 0; others not signed in.
-  ctx.r3.u64 = (ctx.r3.u32 == 0u) ? 1u : 0u;
+  ctx.r3.u64 = 0u;  // eXUserSigninState_NotSignedIn
 }
 static void __imp__XNotifyGetNext(Context& ctx, Machine& base) {
   const uint32_t id_out = ctx.r5.u32, param_out = ctx.r6.u32;
-  if (ctx.r3.u32 != 0x0F110001u)  // the fixture listener token
-    base.fail(Error::unsupported, 0x8214A204u);
-  // Real XNotify ids carry the SYS area (2) in bits 25-31:
-  // XN_SYS_UI = 0x02000009, XN_SYS_SIGNINCHANGED = 0x0200000A. The sign-in
-  // flow delivers SIGNINCHANGED (user-0 mask) first, then UI-closed.
-  if (g_signin_notifications_pending == 2u) {
-    --g_signin_notifications_pending;
-    if (id_out) base.store(id_out, 4, 0x0200000Au);   // XN_SYS_SIGNINCHANGED
-    if (param_out) base.store(param_out, 4, 1u);      // user 0 mask
-    ctx.r3.u64 = 1u;
-    return;
-  }
-  if (g_signin_notifications_pending == 1u) {
-    --g_signin_notifications_pending;
-    if (id_out) base.store(id_out, 4, 0x02000009u);   // XN_SYS_UI
-    if (param_out) base.store(param_out, 4, 0u);      // UI closed
-    ctx.r3.u64 = 1u;
-    return;
-  }
+  if (ctx.r3.u32 < 0x0F110001u || ctx.r3.u32 >= 0x0F110001u + g_xam_listener_count)
+    base.fail(Error::unsupported, 0x8214A204u);  // not a listener we issued
   if (id_out) base.store(id_out, 4, 0u);
   if (param_out) base.store(param_out, 4, 0u);
   ctx.r3.u64 = 0u;  // nothing pending
@@ -2942,11 +5222,24 @@ static void __imp__NetDll_XNetStartup(Context& ctx, Machine& base) {
 }
 static void __imp__NetDll_XNetUnregisterInAddr([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AA04u); }
 static void __imp__NetDll_closesocket([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AB04u); }
-static void __imp__NtClearEvent([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AD24u); }
-static void __imp__NtCreateEvent([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A544u); }
 static void __imp__NtDuplicateObject([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A674u); }
 static void __imp__XMsgCancelIORequest([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A3C4u); }
-static void __imp__XMsgStartIORequest([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A224u); }
+// PORT POLICY (Live stubbed at the network layer, nobody signs in): every
+// Xbox Live user/session/stats request - app 0xFB, message area 0x000B
+// (XUserSetContext, achievements, stats, sessions...) - fails at once with
+// HRESULT_FROM_WIN32(ERROR_NOT_LOGGED_ON), exactly as a console answers for
+// an empty controller slot. When the caller supplied an XOVERLAPPED it is
+// marked complete with the same error. Any other app/message fails closed.
+static void __imp__XMsgStartIORequest(Context& ctx, Machine& base) {
+  if (ctx.r3.u32 != 0xFBu || (ctx.r4.u32 & 0xFFFF0000u) != 0x000B0000u)
+    base.fail(Error::unsupported, 0x8214A224u);
+  if (const uint32_t ov = ctx.r5.u32) {
+    base.store(ov + 0, 4, 0x4DDu);   // InternalLow: result
+    base.store(ov + 4, 4, 0u);       // InternalHigh: bytes
+    base.store(ov + 24, 4, 0x4DDu);  // dwExtendedError
+  }
+  ctx.r3.u64 = 0x800704DDu;
+}
 static void __imp__XamContentCreateEnumerator([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A344u); }
 // WIP 023 PORT POLICY: no marketplace exists on the original Xbox. The
 // menu's DLC gate reads a zero license mask (base game only, synchronous
@@ -2954,7 +5247,9 @@ static void __imp__XamContentCreateEnumerator([[maybe_unused]] Context& ctx, Mac
 static void __imp__XamContentGetLicenseMask(Context& ctx, Machine& base) {
   if (ctx.r3.u32 == 0u || ctx.r4.u32 != 0u)
     base.fail(Error::unsupported, 0x8214A334u);
-  base.store(ctx.r3.u32, 4, 0u);
+  // The original Xbox port is the full game: every license bit is set
+  // (callers test bit 0; clear means the Arcade trial).
+  base.store(ctx.r3.u32, 4, 0xFFFFFFFFu);
   ctx.r3.u64 = 0u;  // ERROR_SUCCESS
 }
 static void __imp__XamEnumerate([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A364u); }
@@ -2966,21 +5261,63 @@ static void __imp__XamGetSystemVersion(Context& ctx, [[maybe_unused]] Machine& b
   ctx.r3.u64 = (2u<<28) | (0u<<24) | (17559u<<8);
 }
 static void __imp__XamNotifyCreateListener(Context& ctx, Machine& base) {
-  // One observed listener over notification areas mask 3. The fixture hands
-  // back an opaque handle; the listener is never signaled, and polls of it
-  // are bound where observed.
-  if (ctx.r3.u32!=3u || g_xam_listener_created)
+  // Opaque listener handles 0x0F110001.. for any non-empty area mask (the
+  // profile system, the audio driver and the Live layer each create one).
+  // No listener is ever signalled: nobody signs in and the console is
+  // offline. At most eight; more fails closed.
+  if (ctx.r3.u32==0u || ctx.r3.u32>0xFFu || g_xam_listener_count>=8u)
     base.fail(Error::unsupported, 0x8214A3B4u);
   g_xam_listener_created=true;
-  ctx.r3.u64=0x0F110001u;
+  ctx.r3.u64=0x0F110001u + g_xam_listener_count++;
 }
 static void __imp__XamSessionRefObjByHandle([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AD74u); }
 static void __imp__XamUserAreUsersFriends([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A254u); }
 static void __imp__XamUserCheckPrivilege([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A264u); }
 static void __imp__XamUserCreateAchievementEnumerator([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A2A4u); }
 static void __imp__XamUserGetSigninInfo([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A3A4u); }
-static void __imp__XamUserGetXUID([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A2B4u); }
-static void __imp__XamUserReadProfileSettings([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AAB4u); }
+static void __imp__XamUserGetXUID(Context& ctx, Machine& base) {
+  if (ctx.r3.u32 > 3u) base.fail(Error::unsupported, 0x8214A2B4u);
+  if (ctx.r5.u32) base.store(ctx.r5.u32, 8, 0u);
+  ctx.r3.u64 = 0x800704DDu;  // HRESULT_FROM_WIN32(ERROR_NOT_LOGGED_ON)
+}
+// Profile settings with no signed-in profile (port policy: nobody signs in):
+// the console answers every requested setting with its default. Standard
+// two-step protocol: without a big enough buffer, report the size needed
+// and return ERROR_INSUFFICIENT_BUFFER (122); then fill
+// XUSER_READ_PROFILE_SETTING_RESULT {count, pSettings} followed by one
+// 40-byte XUSER_PROFILE_SETTING per id (source XSOURCE_DEFAULT, data type
+// taken from bits 28-31 of the setting id, value zero). Reads naming
+// specific XUIDs, or asynchronous (overlapped) reads, fail closed until
+// observed.
+static void __imp__XamUserReadProfileSettings(Context& ctx, Machine& base) {
+  const uint32_t n = ctx.r7.u32, ids = ctx.r8.u32, pcb = ctx.r9.u32, out = ctx.r10.u32;
+  const uint32_t overlapped = uint32_t(base.load(ctx.r1.u32 + 0x54u, 4));
+  if (ctx.r5.u32 != 0u || ctx.r6.u32 != 0u || n == 0u || n > 64u || !ids || !pcb ||
+      overlapped != 0u) {
+    cc_elog("PROFILEREAD reject title=%08x user=%u numFor=%u n=%u ovl=%08x\n",
+            ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, n, overlapped);
+    base.fail(Error::unsupported, 0x8214AAB4u);
+  }
+  const uint32_t need = 8u + n * 40u;
+  if (out == 0u || uint32_t(base.load(pcb, 4)) < need) {
+    base.store(pcb, 4, need);
+    ctx.r3.u64 = 122u;  // ERROR_INSUFFICIENT_BUFFER
+    return;
+  }
+  base.store(out + 0, 4, n);
+  base.store(out + 4, 4, out + 8u);
+  for (uint32_t i = 0; i < n; ++i) {
+    const uint32_t e = out + 8u + i * 40u;
+    const uint32_t id = uint32_t(base.load(ids + i * 4u, 4));
+    for (uint32_t k = 0; k < 40u; k += 4u) base.store(e + k, 4, 0u);
+    base.store(e + 0, 4, 1u);                 // XSOURCE_DEFAULT
+    base.store(e + 8, 4, ctx.r4.u32);          // user index
+    base.store(e + 16, 4, id);                 // dwSettingId
+    base.store(e + 24, 1, (id >> 28) & 0xFu);  // XUSER_DATA.type
+  }
+  base.store(pcb, 4, need);
+  ctx.r3.u64 = 0u;
+}
 static void __imp__XamUserWriteProfileSettings([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AAC4u); }
 static void __imp__XamVoiceClose([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214ADA4u); }
 static void __imp__XamWriteGamerTile([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A294u); }
@@ -3071,17 +5408,14 @@ static void __imp__XexGetProcedureAddress(Context& ctx, Machine& base) {
 #include "generated/sub_82078FE8.inc"
 #include "generated/sub_8206DD58.inc"
 #include "generated/sub_82053BC8.inc"
-// ORIGINAL-XBOX PORT DECISION: Xbox Live does not exist on the original
-// Xbox (its online stack is entirely different), so the Live session/
-// profile singleton constructor is deliberately stubbed to report failure
-// (E_FAIL). The exact caller sub_8210C908 ships its own error path for
-// this: it resets the singleton refcount and propagates the failure, and
-// the game continues exactly as it does on retail hardware when Live is
-// unavailable. Achievements ride on the same stack and are covered by the
-// same refusal. This is a port policy stub, not fail-closed recovery.
-static void sub_8210C860(Context& ctx, [[maybe_unused]] Machine& base) {
-  ctx.r3.u64 = 0x80004005u; // E_FAIL: Live unavailable on this platform
-}
+// PORT POLICY, revised 2026-09-27: Xbox Live stays stubbed, but at the
+// network layer ("this console is offline") instead of at the Live
+// singleton. The game's local-player bookkeeping (profile manager, player
+// join) is built on this singleton; refusing it disabled the whole local
+// profile system, so nobody could join a game. The exact constructor now
+// runs, and every network-facing import below it answers as an offline
+// console. Achievements and leaderboards remain stubbed at their imports.
+#include "generated/sub_8210C860.inc"
 #include "generated/sub_820FE418.inc"
 #include "generated/sub_82108F48.inc"
 #include "generated/sub_821090C8.inc"
@@ -3097,7 +5431,28 @@ static void sub_8210C860(Context& ctx, [[maybe_unused]] Machine& base) {
 #include "generated/sub_82068470.inc"
 #include "generated/sub_82067230.inc"
 #include "generated/sub_82066610.inc"
+// PORT POLICY (user directive 2026-09-27): the original Xbox has no
+// profiles, so nobody is ever signed in. Exact sub_82053C70 is the menu
+// action gate; its fifth argument (r7) says "this action requires a
+// signed-in profile", and when set with an empty profile mask the sealed
+// code opens the Xbox 360 sign-in blade and blocks the action. The port
+// runs the sealed body unchanged with only that requirement argument
+// cleared, so every other check it performs (player index range, the
+// other capability masks, the action dispatch) is the original code.
+#define sub_82053C70 sub_82053C70_exact
 #include "generated/sub_82053C70.inc"
+#undef sub_82053C70
+static void sub_82053C70(Context& ctx, Machine& base) {
+  static uint32_t logged = 0;
+  if (logged < 4u && (ctx.r7.u32 & 0xFFu) != 0u) {
+    ++logged;
+    cc_log("profile_gate dropped player=%d flags r6=%u r8=%u r9=%u r10=%u frame=%u\n",
+           int(int16_t(ctx.r4.u16)), ctx.r6.u32 & 0xFFu, ctx.r8.u32 & 0xFFu,
+           ctx.r9.u32 & 0xFFu, ctx.r10.u32 & 0xFFu, g_frame_delay_calls);
+  }
+  ctx.r7.u64 = 0u;
+  sub_82053C70_exact(ctx, base);
+}
 #include "generated/sub_82114EA0.inc"
 #include "generated/sub_82136F58.inc"
 #include "generated/sub_8210C710.inc"

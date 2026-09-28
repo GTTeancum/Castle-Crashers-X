@@ -41,3 +41,10 @@ nxdk-*/main.map
 **/*.cpp.d
 **/*.c.d
 .claude/
+
+# raw frame captures (large; rendered PNGs are kept)
+logs/**/*.ccframe
+logs/devdump/
+logs/run_*.txt
+logs/nxdk_build.txt
+__pycache__/

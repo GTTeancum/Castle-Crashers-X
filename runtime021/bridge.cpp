@@ -5,6 +5,7 @@
 #include <cmath>
 #include <csetjmp>
 #include <cstring>
+#include <cstdlib>
 #include <cstdio>
 #include "cc_log.h"
 #include <string>
@@ -44,16 +45,17 @@ static uint32_t g_semaphore_count = 0;
 static uint32_t g_semaphore_value[8] = {};
 static uint32_t g_semaphore_limit[8] = {};
 static uint64_t g_tls_allocated = 0;  // bitmap over the 64 fixture TLS slots
-// WIP 023: recycling table for the physical cursor arena. MmFree pushes a
-// block here; a later MmAlloc of the same rounded size reuses it, keeping
-// the bounded arena sufficient for the frame loop's steady alloc/free
-// traffic without modeling a general heap.
-static uint32_t g_phys_free_addr[256] = {};
-static uint32_t g_phys_free_size[256] = {};
-static uint32_t g_phys_alloc_addr[512] = {};
-static uint32_t g_phys_alloc_size[512] = {};
+// WIP 023: first-fit allocator over the physical cursor arena. Freed
+// ranges are kept sorted by address and merged with their neighbours; a
+// range touching the cursor gives its space back to the cursor. Live and
+// peak byte counts show the game's real physical-memory footprint.
+struct PhysRange { uint32_t addr, size; };
+static std::vector<PhysRange> g_phys_free_ranges;  // sorted by addr
+static std::vector<PhysRange> g_phys_live_blocks;
+static uint64_t g_phys_live_bytes = 0, g_phys_peak_bytes = 0;
 // One-shot XAM notification listener.
 static bool g_xam_listener_created = false;
+static uint32_t g_xam_listener_count = 0;
 // The physical graphics allocator is one durable kernel-side allocator: its
 // sequence position and cursor survive between diagnostic invocations exactly
 // as physical allocations do on hardware.
@@ -69,6 +71,11 @@ static void (*g_drain_workers)(Machine&, uint32_t) = nullptr;
 // WIP 023: the frame loop executes exact sub_820A89F8 for texture binds;
 // the earlier widget checkpoints keep their modeled sink case.
 static bool g_use_exact_texture_bind = false;
+// Host-only frame capture (CC_CAPTURE_FRAMES / CC_CAPTURE_DIR), defined
+// after Machine. Read-only: uses raw address-space reads, never counted.
+static void cc_capture_on_function(const char* name, const Context& ctx,
+                                   cc::xbox::AddressSpace& mem);
+static void cc_capture_end_frame(cc::xbox::AddressSpace& mem, uint32_t frame);
 void set_exact_texture_bind(bool v) noexcept { g_use_exact_texture_bind = v; }
 struct Machine {
   struct ThreadSlot {
@@ -86,7 +93,7 @@ struct Machine {
   AddressSpace &memory;
   Sink sink;
   Result result{};
-  std::array<ThreadSlot,12> threads{};
+  std::array<ThreadSlot,32> threads{};
   uint32_t thread_count{};
   // Checkpoint 020's graphics allocator is a deliberately tiny platform/runtime
   // contract. It accepts only the fifteen allocation shapes reached by the sealed
@@ -176,13 +183,14 @@ struct Machine {
           (flags == 0x61820005u || flags == 0x61820006u ||
            flags == 0xA7820007u) &&
           size >= 16u && size <= 0x40000u;
+      // WIP 023: any other allocation-attribute shape (the game's general
+      // XMemAlloc traffic, dozens of allocator ids) is served by the
+      // sub_82136670 shim from the physical arena, which supports free and
+      // reuse. Signalled to the shim with an all-ones sentinel.
       if (!shader_shape && !resource_header_shape &&
           !resource_backing_shape && !notify_record_shape &&
-          !audio_buffer_shape) {
-        cc_elog("GFXALLOC reject size=%u flags=%08x index=%u\n",
-                size, flags, g_graphics_alloc_index);
-        fail(Error::unsupported, 0x82136670u);
-      }
+          !audio_buffer_shape)
+        return 0xFFFFFFFFu;
       const uint32_t p=(g_graphics_alloc_cursor + 15u) & ~15u;
       if (p > 0xffffffffu-size || memory.check(p,size,3) != cc::xbox::MemoryError::ok)
         fail(Error::memory,p);
@@ -276,7 +284,7 @@ struct Machine {
       g_drain_workers(*this, ctx.r13.u32);
       drain_active = false;
     }
-    if (++result.functions > 500000000) {
+    if (++result.functions > 500000000u && budget != 0xFFFFFFFFu) {
       prof_dump();
       uint64_t pend=0,done=0,b=0;
       memory.load_be(0x8228A770u,4,pend); memory.load_be(0x8228A764u,4,done);
@@ -292,16 +300,24 @@ struct Machine {
     // read-index writeback has always caught up with the device's current
     // submission phase. Refresh the same writeback word the doorbell
     // contract publishes; the exact wait code then observes a caught-up GPU.
-    if (!std::strcmp(name, "sub_82095FF0")) {
+    if (!std::strcmp(name, "sub_820A1BF8") || !std::strcmp(name, "sub_820FBF50") ||
+        !std::strcmp(name, "sub_82104FD0") || !std::strcmp(name, "sub_820FBF60") ||
+        !std::strcmp(name, "sub_820B6CA0") || !std::strcmp(name, "sub_820D7E90"))
+      cc_log("profile_init step %s r3=%08x lr=%08x\n", name, ctx.r3.u32, uint32_t(ctx.lr));
+    cc_capture_on_function(name, ctx, memory);
+    if (!std::strcmp(name, "sub_82077CE0")) {
+      // Screen probe: the game's screen system names each transition; log
+      // only changes so the session reads as a screen-by-screen map.
+      static char last_screen[48] = "";
       char nm[48]{}; uint64_t bv=0;
       for (unsigned i=0;i<47u;++i) {
-        if (memory.load_be(ctx.r5.u32+4u+i,1,bv)!=cc::xbox::MemoryError::ok || !bv) break;
+        if (memory.load_be(ctx.r4.u32+4u+i,1,bv)!=cc::xbox::MemoryError::ok || !bv) break;
         nm[i]=char(bv);
       }
-      cc_elog("RESOLVE '%s' out=%08x lr=%08x\n",nm,ctx.r3.u32,uint32_t(ctx.lr));
-    }
-    if (!std::strcmp(name, "sub_82096530")) {
-      cc_elog("REGISTER pool=%08x id=%08x lr=%08x\n",ctx.r3.u32,ctx.r4.u32,uint32_t(ctx.lr));
+      if (std::strcmp(nm, last_screen)) {
+        std::strcpy(last_screen, nm);
+        cc_log("screen '%s'\n", nm);
+      }
     }
     if (!std::strcmp(name, "sub_8209DE50") && (result.functions & 0xFFFFFu) < 6u)
       cc_elog("DE50 fn=%u widget=%08x\n", result.functions, ctx.r3.u32);
@@ -381,7 +397,7 @@ struct Machine {
     }
   }
   void tick(uint32_t a) {
-    if (++result.memory_ops > budget)
+    if (++result.memory_ops > budget && budget != 0xFFFFFFFFu)
       fail(Error::capacity, a);
   }
   [[noreturn]] void fail(Error e, uint32_t a = 0) {
@@ -637,7 +653,87 @@ static simde__m128i simde_mm_vctsxs(simde__m128 a) {
   }
   std::memcpy(r.u8,out,16); return r;
 }
+// vcuxwfp128 source conversion: per-lane unsigned 32-bit to float.
+static simde__m128 simde_mm_cvtepu32_ps_(simde__m128i a) {
+  simde__m128 r{}; uint32_t v[4]{}; std::memcpy(v,a.u8,16);
+  for(int i=0;i<4;++i) r.f32[i]=float(v[i]);
+  return r;
 }
+// vsr: the whole 128-bit register shifted right by vB's low-order byte & 7.
+// Host lanes mirror big-endian lanes, so the host little-endian 128-bit value
+// equals the big-endian register value and big-endian byte 15 is host byte 0.
+static simde__m128i simde_mm_vsr(simde__m128i a, simde__m128i b) {
+  const unsigned sh = b.u8[0] & 7u;
+  simde__m128i r{};
+  for (int i=0;i<16;++i) {
+    const unsigned hi = (i < 15) ? a.u8[i+1] : 0u;
+    r.u8[i] = uint8_t(sh ? ((a.u8[i] >> sh) | (hi << (8 - sh))) : a.u8[i]);
+  }
+  return r;
+}
+// vavgsb / vavgsh: signed rounding average, (a + b + 1) >> 1 per lane.
+static simde__m128i simde_mm_avg_epi8(simde__m128i a, simde__m128i b) {
+  simde__m128i r{};
+  for (int i=0;i<16;++i) r.u8[i]=uint8_t(int8_t((int(int8_t(a.u8[i]))+int(int8_t(b.u8[i]))+1)>>1));
+  return r;
+}
+static simde__m128i simde_mm_avg_epi16(simde__m128i a, simde__m128i b) {
+  simde__m128i r{}; int16_t av[8]{},bv[8]{},rv[8]{}; std::memcpy(av,a.u8,16); std::memcpy(bv,b.u8,16);
+  for (int i=0;i<8;++i) rv[i]=int16_t((int(av[i])+int(bv[i])+1)>>1);
+  std::memcpy(r.u8,rv,16); return r;
+}
+}
+// SSE-semantics helpers on host lanes (the generated code maps AltiVec to
+// these with the mirrored-lane layout already accounted for).
+static simde__m128 simde_mm_dp_ps(simde__m128 a, simde__m128 b, int imm) {
+  float p[4]{};
+  for (int i=0;i<4;++i) p[i]=((imm>>(4+i))&1)?a.f32[i]*b.f32[i]:0.0f;
+  const float s=(p[0]+p[1])+(p[2]+p[3]);
+  simde__m128 r{};
+  for (int i=0;i<4;++i) r.f32[i]=((imm>>i)&1)?s:0.0f;
+  return r;
+}
+static simde__m128 simde_mm_cvtepi32_ps(simde__m128i a) {
+  simde__m128 r{}; int32_t v[4]{}; std::memcpy(v,a.u8,16);
+  for (int i=0;i<4;++i) r.f32[i]=float(v[i]);
+  return r;
+}
+static simde__m128i simde_mm_add_epi8(simde__m128i a, simde__m128i b) {
+  simde__m128i r{}; for (int i=0;i<16;++i) r.u8[i]=uint8_t(a.u8[i]+b.u8[i]); return r;
+}
+static simde__m128i simde_mm_cvtepi16_epi32(simde__m128i a) {
+  simde__m128i r{}; int16_t v[8]{}; int32_t o[4]{}; std::memcpy(v,a.u8,16);
+  for (int i=0;i<4;++i) o[i]=v[i];
+  std::memcpy(r.u8,o,16); return r;
+}
+static simde__m128i simde_mm_cvtepi8_epi16(simde__m128i a) {
+  simde__m128i r{}; int16_t o[8]{};
+  for (int i=0;i<8;++i) o[i]=int8_t(a.u8[i]);
+  std::memcpy(r.u8,o,16); return r;
+}
+static simde__m128i simde_mm_packs_epi32(simde__m128i a, simde__m128i b) {
+  simde__m128i r{}; int32_t av[4]{},bv[4]{}; int16_t o[8]{};
+  std::memcpy(av,a.u8,16); std::memcpy(bv,b.u8,16);
+  auto sat=[](int32_t x){ return int16_t(x>32767?32767:(x<-32768?-32768:x)); };
+  for (int i=0;i<4;++i) { o[i]=sat(av[i]); o[4+i]=sat(bv[i]); }
+  std::memcpy(r.u8,o,16); return r;
+}
+template <int W>
+static simde__m128i cc_unpack(simde__m128i a, simde__m128i b, bool high) {
+  simde__m128i r{}; const int n=16/W/2, base=high?8:0;
+  for (int i=0;i<n;++i) {
+    std::memcpy(r.u8+(2*i)*W,a.u8+base+i*W,W);
+    std::memcpy(r.u8+(2*i+1)*W,b.u8+base+i*W,W);
+  }
+  return r;
+}
+static simde__m128i simde_mm_unpacklo_epi8(simde__m128i a, simde__m128i b) { return cc_unpack<1>(a,b,false); }
+static simde__m128i simde_mm_unpackhi_epi8(simde__m128i a, simde__m128i b) { return cc_unpack<1>(a,b,true); }
+static simde__m128i simde_mm_unpacklo_epi16(simde__m128i a, simde__m128i b) { return cc_unpack<2>(a,b,false); }
+static simde__m128i simde_mm_unpackhi_epi16(simde__m128i a, simde__m128i b) { return cc_unpack<2>(a,b,true); }
+static simde__m128i simde_mm_unpacklo_epi32(simde__m128i a, simde__m128i b) { return cc_unpack<4>(a,b,false); }
+static simde__m128i simde_mm_unpackhi_epi32(simde__m128i a, simde__m128i b) { return cc_unpack<4>(a,b,true); }
+static simde__m128i simde_mm_unpackhi_epi64(simde__m128i a, simde__m128i b) { return cc_unpack<8>(a,b,true); }
 static simde__m128i simde_mm_shuffle_epi8(simde__m128i a, simde__m128i m) { simde__m128i r{}; for(int i=0;i<16;++i) r.u8[i]=(m.u8[i]&0x80u)?0u:a.u8[m.u8[i]&15u]; return r; }
 static simde__m128i simde_mm_alignr_epi8(simde__m128i a, simde__m128i b, int n) { simde__m128i r{}; uint8_t c[32]; std::memcpy(c,b.u8,16); std::memcpy(c+16,a.u8,16); for(int i=0;i<16;++i) r.u8[i]=(n+i<32)?c[n+i]:0u; return r; }
 static constexpr uint8_t VectorMaskL[256] = {
@@ -697,6 +793,135 @@ using PPCRegister = Register;
 #define REX_STORE_U16(a, v) base.store(uint32_t(a), 2, v)
 #define REX_STORE_U32(a, v) base.store(uint32_t(a), 4, v)
 #define REX_STORE_U64(a, v) base.store(uint32_t(a), 8, v)
+// ---- Host-only frame capture -------------------------------------------
+// Records, for selected frames, every draw the game submits through its
+// final draw call (exact sub_820C1980: device, primitive, count, vertex
+// pointer, stride) together with the projection matrix, blend state and the
+// texture bound by the game's bind call (exact sub_820A89F8: the game's
+// texture record carries width +16, height +20, format code +24 and the
+// pixel pointer +36). Written as CCFRAME1 files for the host rasterizer
+// (tools/render_capture.py). Raw address-space reads only: capture never
+// changes a measured count or any guest state.
+#ifndef CC_XBOX_DRIVER
+struct CcCapTex { uint32_t data, w, h, fmt; std::vector<uint8_t> bytes; };
+struct CcCapDraw {
+  uint32_t prim, count, stride, blend, tex;
+  uint32_t matrix[16];
+  std::vector<uint8_t> verts;
+};
+static struct {
+  bool init = false, enabled = false, active = false;
+  std::vector<uint32_t> frames;
+  char dir[512] = {};
+  uint32_t cur_tex = 0, cur_w = 0, cur_h = 0, cur_fmt = 0;
+  std::vector<CcCapTex> texs;
+  std::vector<CcCapDraw> draws;
+} g_cap;
+static uint32_t cc_pow2(uint32_t v) { uint32_t p = 1; while (p < v && p) p <<= 1; return p; }
+static uint32_t cc_rd32(cc::xbox::AddressSpace& mem, uint32_t a) {
+  uint64_t v = 0; mem.load_be(a, 4, v); return uint32_t(v);
+}
+static void cc_capture_init(uint32_t first_frame) {
+  g_cap.init = true;
+  const char* f = std::getenv("CC_CAPTURE_FRAMES");
+  const char* d = std::getenv("CC_CAPTURE_DIR");
+  if (!f || !d) return;
+  std::snprintf(g_cap.dir, sizeof(g_cap.dir), "%s", d);
+  for (const char* p = f; *p;) {
+    char* end = nullptr;
+    const unsigned long n = std::strtoul(p, &end, 10);
+    if (end == p) break;
+    g_cap.frames.push_back(uint32_t(n));
+    p = (*end == ',') ? end + 1 : end;
+  }
+  g_cap.enabled = !g_cap.frames.empty();
+  for (uint32_t fr : g_cap.frames) if (fr == first_frame) g_cap.active = true;
+}
+static void cc_capture_on_function(const char* name, const Context& ctx,
+                                   cc::xbox::AddressSpace& mem) {
+  if (!g_cap.init) cc_capture_init(1u);
+  if (!g_cap.enabled) return;
+  if (name[0] != 's' || name[4] != '8' || name[5] != '2') return;
+  if (!std::strcmp(name, "sub_820A89F8")) {
+    const uint32_t d = ctx.r4.u32;
+    g_cap.cur_w = cc_rd32(mem, d + 16); g_cap.cur_h = cc_rd32(mem, d + 20);
+    g_cap.cur_fmt = cc_rd32(mem, d + 24); g_cap.cur_tex = cc_rd32(mem, d + 36);
+    return;
+  }
+  if (!g_cap.active || std::strcmp(name, "sub_820C1980")) return;
+  CcCapDraw dr{};
+  const uint32_t dev = ctx.r3.u32;
+  dr.prim = ctx.r4.u32; dr.count = ctx.r5.u32; dr.stride = ctx.r7.u32;
+  dr.blend = cc_rd32(mem, dev + 10552);
+  dr.tex = g_cap.cur_tex;
+  for (unsigned i = 0; i < 16; ++i) dr.matrix[i] = cc_rd32(mem, dev + 1920 + 4 * i);
+  const uint32_t n = dr.count * dr.stride;
+  if (n && n <= 65536u) {
+    dr.verts.resize(n);
+    if (mem.read(ctx.r6.u32, dr.verts.data(), n) != cc::xbox::MemoryError::ok) dr.verts.clear();
+  }
+  g_cap.draws.push_back(std::move(dr));
+  if (std::getenv("CC_CAPTURE_DEVDUMP")) {
+    // Diagnostic: the first 16 KiB of the device object at every draw.
+    char path[640];
+    std::snprintf(path, sizeof(path), "%s/dev_%05u.bin", g_cap.dir,
+                  unsigned(g_cap.draws.size() - 1));
+    std::vector<uint8_t> blob(16384);
+    if (mem.read(dev, blob.data(), blob.size()) == cc::xbox::MemoryError::ok)
+      if (std::FILE* f = std::fopen(path, "wb")) {
+        std::fwrite(blob.data(), 1, blob.size(), f);
+        std::fclose(f);
+      }
+  }
+  if (!g_cap.cur_tex) return;
+  for (const auto& t : g_cap.texs) if (t.data == g_cap.cur_tex) return;
+  CcCapTex t{g_cap.cur_tex, g_cap.cur_w, g_cap.cur_h, g_cap.cur_fmt, {}};
+  // Pixel bytes: power-of-two padded, 32-texel aligned; 4 bpp for code 1,
+  // 2 for code 5; DXT codes 7..11 are 4x4 blocks of 8 (7) or 16 bytes.
+  const uint32_t W = (cc_pow2(t.w) + 31u) & ~31u, H = (cc_pow2(t.h) + 31u) & ~31u;
+  uint32_t bytes = 0;
+  if (t.fmt == 1) bytes = W * H * 4u;
+  else if (t.fmt == 5) bytes = W * H * 2u;
+  else if (t.fmt >= 7 && t.fmt <= 11) bytes = (W / 4u) * (H / 4u) * (t.fmt == 7 ? 8u : 16u);
+  if (bytes && bytes <= 16u * 1024u * 1024u) {
+    t.bytes.resize(bytes);
+    if (mem.read(t.data, t.bytes.data(), bytes) != cc::xbox::MemoryError::ok) t.bytes.clear();
+  }
+  g_cap.texs.push_back(std::move(t));
+}
+static void cc_capture_end_frame(cc::xbox::AddressSpace&, uint32_t frame) {
+  if (!g_cap.init) cc_capture_init(frame);
+  if (!g_cap.enabled) return;
+  if (g_cap.active) {
+    char path[640];
+    std::snprintf(path, sizeof(path), "%s/frame_%05u.ccframe", g_cap.dir, frame);
+    if (std::FILE* f = std::fopen(path, "wb")) {
+      auto w32 = [&](uint32_t v) { std::fwrite(&v, 4, 1, f); };
+      std::fwrite("CCFRAME1", 1, 8, f);
+      w32(frame); w32(uint32_t(g_cap.texs.size())); w32(uint32_t(g_cap.draws.size()));
+      for (const auto& t : g_cap.texs) {
+        w32(t.data); w32(t.w); w32(t.h); w32(t.fmt); w32(uint32_t(t.bytes.size()));
+        if (!t.bytes.empty()) std::fwrite(t.bytes.data(), 1, t.bytes.size(), f);
+      }
+      for (const auto& d : g_cap.draws) {
+        w32(d.prim); w32(d.count); w32(d.stride); w32(d.blend); w32(d.tex);
+        for (uint32_t m : d.matrix) w32(m);
+        w32(uint32_t(d.verts.size()));
+        if (!d.verts.empty()) std::fwrite(d.verts.data(), 1, d.verts.size(), f);
+      }
+      std::fclose(f);
+      cc_log("capture frame=%u draws=%u textures=%u -> %s\n", frame,
+             unsigned(g_cap.draws.size()), unsigned(g_cap.texs.size()), path);
+    }
+  }
+  g_cap.texs.clear(); g_cap.draws.clear();
+  g_cap.active = false;
+  for (uint32_t fr : g_cap.frames) if (fr == frame + 1u) g_cap.active = true;
+}
+#else
+static void cc_capture_on_function(const char*, const Context&, cc::xbox::AddressSpace&) {}
+static void cc_capture_end_frame(cc::xbox::AddressSpace&, uint32_t) {}
+#endif
 static void dispatch(uint32_t, Context &, Machine &);
 #define REX_CALL_INDIRECT_FUNC(a) dispatch(uint32_t(a), ctx, base)
 #include "decls.inc"
@@ -714,7 +939,7 @@ static bool submit(void *ptr, const Draw &d) {
   return true;
 }
 static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
-  if (++base.result.dispatches > 50000000)
+  if (++base.result.dispatches > 2000000000u)
     base.fail(Error::capacity, address);
   if (address == 0x82091248)
     base.validate_owner(ctx.r3.u32);
@@ -759,13 +984,15 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     const uint32_t str=uint32_t(base.load(oa+4,4));
     const uint32_t len=uint32_t(base.load(str+0,2));
     const uint32_t buf=uint32_t(base.load(str+4,4));
+    {
+      char pth[96]{};
+      for (uint32_t j=0;j<len && j<95u;++j) { uint64_t cv=0; base.memory.load_be(buf+j,1,cv); pth[j]=char(cv); }
+      cc_log("file_open_request '%s' shape r8=%u r9=%u\n",pth,ctx.r8.u32,ctx.r9.u32);
+    }
     // Accepted path prefixes, each mapped to its extracted-container
     // directory and its per-family size bound.
     static constexpr char shader_prefix[]="game:\\shaders\\";
     static constexpr char font_prefix[]="game:\\Fonts\\";
-    static constexpr char pak_prefix[]="game:\\game\\";
-    static constexpr char snd_prefix[]="game:\\sounds\\";
-    static constexpr char music_prefix[]="game:\\music\\";
     // WIP 023: the pak-shaped open loads from a small set of observed
     // directories ("game", "sounds", "music"); pick the mapping by the
     // guest path's own directory segment, case-insensitively.
@@ -781,23 +1008,27 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
         dseg[dlen++]=c;
       }
     }
-    const bool sounds_dir = pak_open_shape && !std::strcmp(dseg,"sounds");
-    const bool music_dir  = pak_open_shape && !std::strcmp(dseg,"music");
+    // Pak-style opens map game:\<folder>\<file> onto the extracted data
+    // folder of the same name, for the folders the retail container has.
+    static const char* const k_pak_dirs[] = {"game","sounds","music","levels","art","bsps"};
+    bool pak_dir_known = false;
+    for (const char* d : k_pak_dirs) if (pak_open_shape && !std::strcmp(dseg,d)) pak_dir_known = true;
+    if (pak_open_shape && !pak_dir_known) {
+      cc_elog("NTCREATE reject unknown folder '%s'\n", dseg);
+      base.fail(Error::unsupported, address);
+    }
+    char dyn_prefix[32]{}, dyn_host[32]{};
+    std::snprintf(dyn_prefix, sizeof(dyn_prefix), "game:\\%s\\", dseg);
+    std::snprintf(dyn_host, sizeof(dyn_host), "/%s/", dseg);
     const char* prefix = shader_open_shape ? shader_prefix
-                       : font_open_shape   ? font_prefix
-                       : sounds_dir        ? snd_prefix
-                       : music_dir         ? music_prefix : pak_prefix;
+                       : font_open_shape   ? font_prefix : dyn_prefix;
     const uint32_t plen = shader_open_shape ? uint32_t(sizeof(shader_prefix))-1u
                         : font_open_shape   ? uint32_t(sizeof(font_prefix))-1u
-                        : sounds_dir        ? uint32_t(sizeof(snd_prefix))-1u
-                        : music_dir         ? uint32_t(sizeof(music_prefix))-1u
-                                            : uint32_t(sizeof(pak_prefix))-1u;
+                                            : uint32_t(std::strlen(dyn_prefix));
     const char* host_dir = shader_open_shape ? "/shaders/"
-                         : font_open_shape   ? "/Fonts/"
-                         : sounds_dir        ? "/sounds/"
-                         : music_dir         ? "/music/" : "/game/";
+                         : font_open_shape   ? "/Fonts/" : dyn_host;
     const long size_cap = shader_open_shape ? 65536
-                        : font_open_shape   ? 4*1024*1024 : 16*1024*1024;
+                        : font_open_shape   ? 4*1024*1024 : 64*1024*1024;
     char fname[80]{};
     if (len<=plen || len>=plen+64u) {
       cc_elog("NTCREATE reject len=%u plen=%u\n",len,plen);
@@ -823,8 +1054,10 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
       }
       fname[i-plen]=chv;
     }
-    if (!g_game_root[0])
+    if (!g_game_root[0]) {
+      cc_elog("NTCREATE reject no game root\n");
       base.fail(Error::unsupported, address);
+    }
     char host[360];
     std::snprintf(host,sizeof(host),"%s%s%s",g_game_root,host_dir,fname);
 #ifdef CC_XBOX_DRIVER
@@ -848,11 +1081,18 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     std::fseek(f,0,SEEK_END);
     const long sz=std::ftell(f);
     std::fseek(f,0,SEEK_SET);
-    if (sz<=0 || sz>size_cap) { std::fclose(f); base.fail(Error::unsupported, address); }
+    if (sz<=0 || sz>size_cap) {
+      std::fclose(f);
+      cc_elog("NTCREATE reject size name='%s' bytes=%ld cap=%ld\n",fname,sz,size_cap);
+      base.fail(Error::unsupported, address);
+    }
     slot->bytes.assign(size_t(sz),0);
     const bool ok=std::fread(slot->bytes.data(),1,size_t(sz),f)==size_t(sz);
     std::fclose(f);
-    if (!ok) base.fail(Error::unsupported, address);
+    if (!ok) {
+      cc_elog("NTCREATE short read name='%s' bytes=%ld\n",fname,sz);
+      base.fail(Error::unsupported, address);
+    }
     if (pak_open_shape) cc_log("pak_open %s bytes=%ld\n",fname,sz);
     slot->open=true;
     slot->pos=0;
@@ -1017,6 +1257,8 @@ static void execute(uint32_t entry, Context &ctx, Machine &m) {
   case 0x820b7880: sub_820B7880(ctx,m); break;
   case 0x8212a630: sub_8212A630(ctx,m); break;
   case 0x82127e48: sub_82127E48(ctx,m); break;
+  case 0x820b7730: sub_820B7730(ctx,m); break;
+  case 0x820b7650: sub_820B7650(ctx,m); break;
   case 0x82070ba4: sub_82070AC8_post_init(ctx,m); break;
   case 0x82070ac8: sub_82070AC8_renderer_prefix(ctx,m); break;
   case 0x820a7990: sub_820A7990_platform_prefix(ctx,m); break;
@@ -1050,12 +1292,12 @@ static void execute(uint32_t entry, Context &ctx, Machine &m) {
 Result invoke(uint32_t entry, Context &ctx, AddressSpace &memory, Sink sink,
               uint32_t budget) noexcept {
   Result error;
-  if (entry != 0x82127e48 && entry != 0x8212a630 && entry != 0x820c13b8 && entry != 0x820c2c98 && entry != 0x820befd0 && entry != 0x820a7b34 && entry != 0x820a7990 && entry != 0x82070ac8 && entry != 0x820701d0 && entry != 0x820b7880 && entry != 0x82070ba4 && entry != 0x82070434 && entry != 0x8208a7a0 && entry != 0x820a8ff8 && entry != 0x82091248 && entry != 0x8209cd08 && entry != 0x8209cc98 && entry != 0x8209de50 && entry != 0x82097720 && entry != 0x820915f0 && entry != 0x8209df48 && entry != 0x820a1ac0 && entry != 0x8209ce40 && entry != 0x8209ce48) {
+  if (entry != 0x820b7730 && entry != 0x820b7650 && entry != 0x82127e48 && entry != 0x8212a630 && entry != 0x820c13b8 && entry != 0x820c2c98 && entry != 0x820befd0 && entry != 0x820a7b34 && entry != 0x820a7990 && entry != 0x82070ac8 && entry != 0x820701d0 && entry != 0x820b7880 && entry != 0x82070ba4 && entry != 0x82070434 && entry != 0x8208a7a0 && entry != 0x820a8ff8 && entry != 0x82091248 && entry != 0x8209cd08 && entry != 0x8209cc98 && entry != 0x8209de50 && entry != 0x82097720 && entry != 0x820915f0 && entry != 0x8209df48 && entry != 0x820a1ac0 && entry != 0x8209ce40 && entry != 0x8209ce48) {
     error.error = Error::entry;
     return error;
   }
   if (!sink.submit || !sink.bind || ctx.r1.u64 < 16384 ||
-      ctx.r1.u64 > 0xffffff7f || budget < 1 || budget > 4000000000u) {
+      ctx.r1.u64 > 0xffffff7f || budget < 1) {
     error.error = Error::context;
     return error;
   }

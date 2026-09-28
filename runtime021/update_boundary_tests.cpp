@@ -399,7 +399,7 @@ static void startup_full_controls(const char* image_path) {
   }
   CHECK(m.load_be(lookup_state+0,4,v)==cc::xbox::MemoryError::ok && v==613);
   CHECK(m.load_be(lookup_state+4,4,v)==cc::xbox::MemoryError::ok && v==9);
-  CHECK(m.load_be(lookup_state+8,4,v)==cc::xbox::MemoryError::ok && v==5);
+  CHECK(m.load_be(lookup_state+8,4,v)==cc::xbox::MemoryError::ok && v==0); // English
   CHECK(m.load_be(lookup_state+12,4,v)==cc::xbox::MemoryError::ok && v!=0);
   const uint32_t lookup_table=uint32_t(v);
   CHECK(lookup_table>=0x71000 && lookup_table<0x1071000);
@@ -422,8 +422,10 @@ static void startup_full_controls(const char* image_path) {
   CHECK(state_block>=0x71000 && state_block<0x1071000);
   CHECK(m.load_be(state_pool+28,4,v)==cc::xbox::MemoryError::ok && v==state_block);
   CHECK(m.load_be(state_block+0,4,v)==cc::xbox::MemoryError::ok && v!=0);
-  CHECK(m.load_be(system_state+0,4,v)==cc::xbox::MemoryError::ok && v==5);
-  CHECK(m.load_be(system_state+4,4,v)==cc::xbox::MemoryError::ok && v==2);
+  // English language (0) and North America region (0) since the port's
+  // console reports XGAME_REGION_NA_ALL / XC_LANGUAGE_ENGLISH.
+  CHECK(m.load_be(system_state+0,4,v)==cc::xbox::MemoryError::ok && v==0);
+  CHECK(m.load_be(system_state+4,4,v)==cc::xbox::MemoryError::ok && v==0);
   CHECK(m.load_be(system_state+8,1,v)==cc::xbox::MemoryError::ok && v==1);
   CHECK(m.load_be(system_state+12,4,v)==cc::xbox::MemoryError::ok && v==640);
   CHECK(m.load_be(system_state+16,4,v)==cc::xbox::MemoryError::ok && v==480);
@@ -531,6 +533,13 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // querying the XEX header.
   store(m,0x82000600,4,0x0250002Cu);
   store(m,0x0250002Cu,4,0u);
+  // Xbox kernel ordinal 173 is KeTimeStampBundle, a loader-resolved variable
+  // (InterruptTime u64, SystemTime u64, TickCount u32). The game's Live layer
+  // reads TickCount through exact sub_82136F58. The bundle lives in the
+  // platform-globals page and is advanced every frame from the virtual
+  // timebase by the KeDelayExecutionThread frame contract.
+  store(m,0x82000704,4,0x02500100u);
+  for (uint32_t i=0;i<24u;i+=4u) store(m,0x02500100u+i,4,0u);
   // Guest arena backing the bounded NtAllocateVirtualMemory contract used by
   // the exact CRT heap (reservations start at 0x04000000).
   // WIP 023: the frame loop's pak loader parses whole asset files through
@@ -545,7 +554,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   CHECK(m.map(0x10000000u,uint32_t(main_pool_arena.size()),main_pool_arena.data(),3)==cc::xbox::MemoryError::ok);
   // Cursor arena backing the smaller observed physical blocks (font/texture
   // memory allocated write-combined by the exact font loader).
-  static std::vector<uint8_t> phys_arena(0x06000000); // font/texture blocks + pak/sound streaming buffers
+  static std::vector<uint8_t> phys_arena(0x0E000000); // 224 MiB: gameplay measured >100 MiB live // font/texture blocks + pak/sound streaming buffers
   CHECK(m.map(0x12000000u,uint32_t(phys_arena.size()),phys_arena.data(),3)==cc::xbox::MemoryError::ok);
 
   // Execute the exact CRT heap initialization (sub_820B7880 -> exact
@@ -591,22 +600,38 @@ static void renderer_caller_prefix_controls(const char* image_path) {
     CHECK(pok && ptd!=0u);          // main-thread ptd published
   }
 
-  // WIP 023: third CRT startup step, exact sub_82127E48 (_init_onexit_table):
-  // calloc's the 32-entry onexit table and publishes it at 0x82290CAC/CB0,
-  // exactly as the sealed XEX entry's _cinit does before any atexit call.
+  // WIP 023: the remaining CRT startup steps, run exactly as the sealed XEX
+  // entry (xstart) does after _mtinit: exact sub_820B7730 walks the
+  // pre-initializer table 0x82150000..0x8215000C (the onexit-table setup
+  // sub_82127E48 and sub_8212E7E8), then exact sub_820B7650 (_cinit, r3=1)
+  // walks the C initializers 0x8215005C..0x82150068 and the sixteen C++
+  // static constructors 0x82150010..0x82150058. Without these, every global
+  // object the game builds at startup (including the Live layer's
+  // allocator) was left unconstructed.
   {
-    Context oc{};
-    oc.r1.u32=0x3f000;
-    oc.r13.u32=0x68000;
-    oc.lr=0x0c0160c0;
-    auto orr=invoke(0x82127e48,oc,m,sink(),200000);
+    Context pc{};
+    pc.r1.u32=0x3f000;
+    pc.r13.u32=0x68000;
+    pc.lr=0x0c0160c0;
+    auto pr=invoke(0x820b7730,pc,m,sink(),400000);
     uint64_t tb=0;
     const bool tok=m.load_be(0x82290CACu,4,tb)==cc::xbox::MemoryError::ok;
-    cc_log("crt_onexit_init result=%s@%08x r3=%08x table=%08x\n",
-                name(orr.error),orr.address,oc.r3.u32,tok?uint32_t(tb):0u);
-    CHECK(orr.error==Error::ok);
-    CHECK(oc.r3.u32==0u);
+    cc_log("crt_preinit result=%s@%08x r3=%08x onexit_table=%08x\n",
+                name(pr.error),pr.address,pc.r3.u32,tok?uint32_t(tb):0u);
+    CHECK(pr.error==Error::ok);
+    CHECK(pc.r3.u32==0u);
     CHECK(tok && tb!=0u);
+
+    Context cc{};
+    cc.r1.u32=0x3f000;
+    cc.r13.u32=0x68000;
+    cc.lr=0x0c0160c0;
+    cc.r3.u64=1u;
+    auto cr=invoke(0x820b7650,cc,m,sink(),4000000);
+    cc_log("crt_cinit result=%s@%08x funcs=%u memops=%u r3=%08x\n",
+                name(cr.error),cr.address,cr.functions,cr.memory_ops,cc.r3.u32);
+    CHECK(cr.error==Error::ok);
+    CHECK(cc.r3.u32==0u);
   }
 
   Context c{};
@@ -1100,7 +1125,9 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // third frame's pacing sleep with Error::capacity -" a deliberate frame
   // budget, never a faked exit path.
   cc::tree::set_exact_texture_bind(true);
-  auto pi=invoke(0x82070ba4,c,m,sink(),3800000000u);
+  // Unlimited op budget (0xFFFFFFFF): the 10,000-frame limit ends the run;
+  // op/function counters wrap deterministically at 32 bits.
+  auto pi=invoke(0x82070ba4,c,m,sink(),0xFFFFFFFFu);
   cc_log("caller_post_init result=%s@%08x funcs=%u memops=%u r1=%08x lr=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r11=%08x\n",
               name(pi.error),pi.address,pi.functions,pi.memory_ops,c.r1.u32,uint32_t(c.lr),
               c.r3.u32,c.r4.u32,c.r5.u32,c.r6.u32,c.r7.u32,c.r11.u32);
@@ -1122,10 +1149,12 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // chain (sub_820C3568/sub_820C3930/sub_820C4488/sub_820C4498) creates the
   // font texture. The slice ends by dispatching renderer vtable slot +12 to
   // exact sub_820A7E80 (with exact sub_820BFB50), which returns normally.
-  CHECK(pi.functions==120946807u && pi.memory_ops==2039124057u);
+  CHECK(pi.functions==361075719u && pi.memory_ops==1050751650u);
   CHECK(c.r1.u32==0x0003ee70u); // pacing-sleep frame at the budget stop
-  CHECK(m.load_be(0x00075240u,4,v)==cc::xbox::MemoryError::ok && v==0x01000000u); // pool size
-  CHECK(m.load_be(0x00075244u,4,v)==cc::xbox::MemoryError::ok && v==0x10000000u); // pool base
+  // The boot-era pool record at 0x75240 (size 16 MiB, base 0x10000000) has
+  // been released and cleared by the time the session reaches gameplay.
+  CHECK(m.load_be(0x00075240u,4,v)==cc::xbox::MemoryError::ok && v==0u);
+  CHECK(m.load_be(0x00075244u,4,v)==cc::xbox::MemoryError::ok && v==0u);
   // The XPR container header read into the physical block, byte-exact from
   // the extracted retail container ("XPR2", data size, header size).
   // Font texture content evidence: the write-combined block at 0x12000000
@@ -1139,7 +1168,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
     cc_log("arena_scan first_phys=%08x first_pool=%08x\n",
            unsigned(first_phys),unsigned(first_pool));
     CHECK(first_phys==0x2828u);
-    CHECK(first_pool==4u); // menu-era run writes the pool header word first
+    CHECK(first_pool==4u);
     static constexpr uint8_t glyph_probe[16] = {
       0xab,0xbb,0xee,0xee,0xde,0xee,0xbc,0xcc,0x67,0x77,0x00,0x00,0x00,0x00,0x00,0x00
     };

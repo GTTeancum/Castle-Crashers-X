@@ -1,0 +1,5 @@
+DEFINE_REX_FUNC(sub_82135134) {
+	REX_FUNC_PROLOGUE();
+	// lwz r16,20832(r19)
+	ctx.r16.u64 = REX_LOAD_U32(ctx.r19.u32 + 20832);
+}
