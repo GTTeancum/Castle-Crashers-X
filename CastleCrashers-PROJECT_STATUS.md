@@ -553,9 +553,17 @@ New in this increment (~500 exact bodies since 023b, all byte-exact from the sea
 - Verification: each replay is hashed against the first compression. 2 MB stress cache: 45,614 replays, 0 mismatches over 10,000 frames. Default 16 MB: no evictions (peak ~7 MB), level graphics 10.2 MB live / 12.1 MB peak; frames verified by eye (`logs/frames_stream/`).
 - Default sealed session rebound: **funcs 321,116,952 / memops 4,121,608,529, 4,046 assertions PASS, provenance 3,613 PASS**; nxdk build OK.
 
+### 2026-09-28 — WIP 023i: audio. Xbox ADPCM, the port's own PlatformAudio layer, sound-bank strip.
+
+- User decision: Xbox ADPCM for effects (preloaded as registered) and music (streamed). nxdk has no MCPX voice-processor driver, so the port decodes ADPCM and mixes in software (cheap: ~10 integer ops/sample).
+- Findings (agent survey, verified): effects play from game:\sounds\<name>.xma (420 files) registered by linkage name (`sub_8209EA18`), music from game:\music\<name>.xma (`sub_8209ED28`), both loaded whole and played on XAudio voices. The SOUNDS.PAK SWF MP3 bank (342 DefineSounds, 9.8 MB) and RSND WAVs are never played but the bank was loaded whole into the main pool.
+- `tools/xadpcm.cpp` (MCPX block layout per xemu's decoder), `tools/convert_audio.py` (sfx.xab 8.6 MB, music 172 MB), `tools/strip_sound_bank.py` (SOUNDS.PAK 16.5 -> 6.7 MB; main pool 13.5 -> 3.9 MB; identical instruction count and pixel-identical frames). Host port-data overlay: game-data/converted/data/ files take precedence.
+- `runtime021/audio.inc` replaces RegisterSound/RegisterMusic/ClearSound/PlaySound/PlayMusic/Update/SetVolumePan and wraps the library's SetVolume (`sub_820D8430`) and Stop (`sub_820D8370`) for port voice handles. Newly reached exact bodies `sub_82074A58`/`sub_82074B00` (former hard boundaries) wired.
+- Host recording of the 10,000-frame session: music and effects throughout; music bit-aligned with the original (correlation 1.000). Default session rebound (320,961,210 / 4,101,260,149), 4,046 assertions PASS, provenance 3,609 PASS, nxdk build OK.
+
 ## 6. NEXT_ACTION
 
-**WIP 023h: level graphics memory 12 MB peak with streamed DXT5 art. Next: size the Xbox build for retail 64 MB and run it natively; then (1) rebuild nxdk ISO with all functions and run the gameplay script natively in XEMU; (2) the Xbox render path (pbkit/NV2A) and the 64 MB memory budget (TODO.md) — the two big blockers to playing on hardware.**
+**WIP 023i: audio plays (host mixer) from Xbox ADPCM. Next: AC97 output on the Xbox; size the Xbox build for retail 64 MB and run it natively; then (1) rebuild nxdk ISO with all functions and run the gameplay script natively in XEMU; (2) the Xbox render path (pbkit/NV2A) and the 64 MB memory budget (TODO.md) — the two big blockers to playing on hardware.**
 
 **Earlier (WIP 023): the main game loop runs — three full frames (update `sub_82075C88` + render `sub_820759A8` + `VdSwap` + EDRAM retrain) execute deterministically against the idle-pad/no-music fixtures, stopping at the bounded `KeDelayExecutionThread` frame budget (`capacity@8214a614`, 1,331 / 2,276,618, 4,030 assertions). Reproduce first with `renderer011\startup.cct`. Frontiers, in preference order: (1) rebuild `nxdk-checkpoint022` with the current sources and run the frame loop natively in XEMU (`C:\Games\Emulators`) — native original-Xbox proof of live frames; (2) raise the frame budget and inject fixture input transitions (e.g. START press on port 0) at the XamInputGetState boundary as labeled diagnostic input to drive the menu state machine toward gameplay; (3) real pbkit rendering of the frame's draw output on the Xbox target.**
 

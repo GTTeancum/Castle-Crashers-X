@@ -3881,3 +3881,4 @@ static void __imp__XamLoaderTerminateTitle(Context&, Machine&);
 static void sub_820701D0_manager_slice(Context&, Machine&);
 static void sub_820B93B0(Context&, Machine&);
 static void sub_820B7880(Context&, Machine&);
+

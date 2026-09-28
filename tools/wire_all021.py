@@ -36,8 +36,9 @@ funcs = [(int(a, 16), n) for a, n in
 
 defined = set()
 hard = set()
-for rt in RUNTIMES:
-    t = rd(rt + '/bodies.inc')
+sources = [rt + '/bodies.inc' for rt in RUNTIMES] + ['runtime021/audio.inc']
+for src in sources:
+    t = rd(src)
     defined |= set(re.findall(r'#include "generated/([^"]+)\.inc"', t))
     defined |= set(re.findall(r'static void (\w+)\(\s*(?:\[\[maybe_unused\]\]\s*)?Context\s*&', t))
     hard |= set(re.findall(r'HARD_\w+\((sub_[0-9A-Fa-f]+)\b', t))

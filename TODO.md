@@ -109,8 +109,18 @@ sound effects where possible; stream art wherever it can be streamed.
       the SWF sound bank the game loads whole kept 9.8 MB of MP3 the 360
       never plays (effects play from game:\sounds\*.xma). Main pool
       13.5 -> 3.9 MB; identical instruction count and frames.
-- [ ] Audio: the port's own PlatformAudio layer (sfx.xab / music .xad,
-      software mixer to AC97 on the Xbox), music streamed from disc.
+- [x] Audio: the port's own PlatformAudio layer (`runtime021/audio.inc`):
+      effects from sfx.xab loaded when the game registers them, music
+      streamed block by block from music/<name>.xad, software mixer to
+      48 kHz stereo. Host recording (`CC_AUDIO_WAV=`) of the 10,000-frame
+      session: music and effects throughout, music at exact speed/pitch
+      (correlation 1.000 against ffmpeg's decode of the original XMA),
+      0.004% clipped samples.
+- [ ] Xbox audio output: feed the mixer to AC97 (nxdk `XAudioInit`) and
+      verify in XEMU; put sfx.xab and music/*.xad on the disc.
+- [ ] The game asks for `sound_gemsplin_loop` (the file is
+      `sound_gemspin_loop`); the 360 build fails the same lookup. Decide
+      whether to fix the name.
 
 ## Xbox 360 leftovers in the menus
 

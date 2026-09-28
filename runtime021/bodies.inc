@@ -39,8 +39,6 @@ HARD_BOUNDARY(sub_82099BE8, 0x82099BE8u)
 HARD_BOUNDARY(sub_82051868, 0x82051868u)
 HARD_BOUNDARY(sub_820518E0, 0x820518E0u)
 HARD_BOUNDARY(sub_82127468, 0x82127468u)
-HARD_BOUNDARY(sub_82074A58, 0x82074A58u)
-HARD_BOUNDARY(sub_82074B00, 0x82074B00u)
 HARD_BOUNDARY(sub_82078668, 0x82078668u)
 HARD_BOUNDARY(sub_820516F8, 0x820516F8u)
 HARD_BOUNDARY(sub_82053648, 0x82053648u)
@@ -84,6 +82,9 @@ static bool cc_phys_free(Machine& base, uint32_t addr);
 static void cc_phys_shrink(Machine& base, uint32_t addr, uint32_t new_size);
 static uint64_t g_tex_cache_bytes = 0;
 static uint32_t g_tex_replays = 0, g_tex_replay_mismatches = 0, g_tex_evictions = 0;
+static bool cc_audio_set_volume(uint32_t voice, float vol);
+static bool cc_audio_stop(uint32_t voice);
+static void cc_audio_frame();
 #ifndef CC_XBOX_DRIVER
 static void cc_mem_report(uint32_t frame);
 static cc::xbox::AddressSpace* g_mem_report_space = nullptr;
@@ -1514,6 +1515,7 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     base.memory.store_be(0x02500108u, 8, 0x01C9000000000000ull + t100ns);
     base.memory.store_be(0x02500110u, 4, uint32_t(t100ns / 10000ull));
   }
+  cc_audio_frame();
   cc_capture_end_frame(base.memory, g_frame_delay_calls + 1u);
 #ifndef CC_XBOX_DRIVER
   if (std::getenv("CC_WORKSET") && (g_frame_delay_calls + 1u) % 250u == 0u)
@@ -2499,6 +2501,8 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_820A1640.inc"
 #include "generated/sub_82053888.inc"
 #include "generated/sub_820A7470.inc"
+#include "generated/sub_82074A58.inc"
+#include "generated/sub_82074B00.inc"
 #include "generated/xstart.inc"
 #include "generated/__savegprlr_30.inc"
 #include "generated/__savegprlr_31.inc"
@@ -4525,7 +4529,6 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_820DB310.inc"
 #include "generated/sub_82099060.inc"
 #include "generated/sub_82098B88.inc"
-#include "generated/sub_8209F118.inc"
 #include "generated/sub_82097DF8.inc"
 #include "generated/sub_82096C80.inc"
 #include "generated/sub_8208C790.inc"
@@ -4736,7 +4739,6 @@ static void sub_820A89F8(Context& ctx, Machine& base) {
 #include "generated/sub_8208C140.inc"
 #include "generated/sub_82079BE0.inc"
 #include "generated/sub_82085400.inc"
-#include "generated/sub_8209F518.inc"
 #include "generated/sub_82128290.inc"
 #include "generated/sub_820935B0.inc"
 #include "generated/sub_820838A8.inc"
@@ -4777,7 +4779,6 @@ static void sub_820A89F8(Context& ctx, Machine& base) {
 #include "generated/sub_82087AD8.inc"
 #include "generated/sub_82097560.inc"
 #include "generated/sub_82082670.inc"
-#include "generated/sub_8209ED28.inc"
 #include "generated/sub_8208AFC8.inc"
 #include "generated/sub_820868D8.inc"
 #include "generated/sub_820879A0.inc"
@@ -5308,6 +5309,7 @@ static void sub_820B1478(Context& ctx, Machine& base) {
 // WIP 022: fail-closed XAM/Live kernel imports referenced by the family
 // below; each is bound to its observed shape only when the diagnostic
 // actually reaches it.
+
 static void __imp__XamLoaderTerminateTitle([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A404u); }
 static void __imp__HalReturnToFirmware([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A694u); }
 static void __imp__KeLockL2([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A964u); }
@@ -5808,14 +5810,28 @@ static void __imp__XexGetProcedureAddress(Context& ctx, Machine& base) {
 #include "generated/sub_820B6820.inc"
 #include "generated/sub_820B6AC0.inc"
 #include "generated/sub_820B72E8.inc"
+#define sub_820D8430 sub_820D8430_exact
 #include "generated/sub_820D8430.inc"
+#undef sub_820D8430
+static void sub_820D8430(Context& ctx, Machine& base) {
+  // Port voices (music/effect volume set directly by the audio manager).
+  if (cc_audio_set_volume(ctx.r3.u32, float(ctx.f1.f64))) { ctx.r3.u64 = 0; return; }
+  sub_820D8430_exact(ctx, base);
+}
 #include "generated/sub_8209D488.inc"
 #include "generated/sub_82058478.inc"
 #include "generated/sub_820FC240.inc"
 #include "generated/sub_820A0FF0.inc"
 #include "generated/sub_8209D5F8.inc"
 #include "generated/sub_8209DAB0.inc"
+#define sub_820D8370 sub_820D8370_exact
 #include "generated/sub_820D8370.inc"
+#undef sub_820D8370
+static void sub_820D8370(Context& ctx, Machine& base) {
+  // Port voices (stop issued directly by the audio manager).
+  if (cc_audio_stop(ctx.r3.u32)) { ctx.r3.u64 = 0; return; }
+  sub_820D8370_exact(ctx, base);
+}
 #include "generated/sub_820A1138.inc"
 #include "generated/sub_82097198.inc"
 #include "generated/sub_82097420.inc"
@@ -5841,7 +5857,6 @@ static void __imp__XexGetProcedureAddress(Context& ctx, Machine& base) {
 #include "generated/sub_820B5C58.inc"
 #include "generated/sub_82050468.inc"
 #include "generated/sub_82050900.inc"
-#include "generated/sub_8209F400.inc"
 #include "generated/sub_820A0F88.inc"
 #include "generated/sub_82068470.inc"
 #include "generated/sub_82067230.inc"
@@ -6239,7 +6254,6 @@ static void sub_82053C70(Context& ctx, Machine& base) {
 #include "generated/sub_820B6A28.inc"
 #include "generated/sub_820A1560.inc"
 #include "generated/sub_82067518.inc"
-#include "generated/sub_8209E928.inc"
 #include "generated/sub_820A5390.inc"
 #include "generated/sub_82051B60.inc"
 #include "generated/sub_820A49E0.inc"
@@ -6358,18 +6372,7 @@ static void sub_82053C70(Context& ctx, Machine& base) {
 #include "generated/sub_82067828.inc"
 #include "generated/sub_82097A28.inc"
 #include "generated/sub_82097948.inc"
-// WIP 023 PORT POLICY: audio streaming is stubbed. The Xbox 360 build
-// decodes XMA in the APU; the original Xbox has no XMA hardware, and the
-// port will re-encode audio as XBADPCM/WAV/OGG behind this same boundary.
-// The stub takes exact sub_8209EA18's own shipped failure contract (the
-// same stores its id>=512 error path performs: result code 1, stream 0),
-// so the game continues silently on code paths it already ships.
-static void sub_8209EA18(Context& ctx, Machine& base) {
-  const uint32_t out = ctx.r3.u32;
-  base.store(out + 0, 4, 1u);   // shipped open-failure code
-  base.store(out + 4, 4, 0u);   // no stream object
-  ctx.r3.u64 = out;
-}
+#include "audio.inc"
 #include "generated/sub_8212A048.inc"
 #include "generated/sub_82095840.inc"
 #include "generated/sub_8209B258.inc"
@@ -6386,7 +6389,6 @@ static void sub_8209EA18(Context& ctx, Machine& base) {
 #include "generated/sub_82097EE0.inc"
 #include "generated/sub_8209E448.inc"
 #include "generated/sub_8209ECB0.inc"
-#include "generated/sub_8209EFF0.inc"
 #include "generated/sub_8209E270.inc"
 #include "generated/sub_8209E6C8.inc"
 #include "generated/sub_820958F8.inc"
