@@ -27,7 +27,13 @@ constexpr uint32_t kTagMask = 0xFFF00000u;
 constexpr int kOutRate = 48000;
 constexpr int kSpb = 64, kBlock = 36;
 
-struct Sound { bool used = false; char name[32] = {}; uint32_t rate = 0, samples = 0; std::vector<uint8_t> data; };
+// Effects are registered from the bank index only; their ADPCM data is read
+// from the hard drive on first play and kept in a small LRU cache.
+struct Sound {
+  bool used = false; char name[32] = {};
+  uint32_t rate = 0, samples = 0, offset = 0, bytes = 0, last_use = 0;
+  std::vector<uint8_t> data;  // empty while not resident
+};
 struct Song { bool used = false; char file[64] = {}; };
 struct Voice {
   bool active = false, loop = false, music = false;
@@ -106,7 +112,19 @@ static void lower_stem(char* s) {
   }
 }
 
-// Load one effect from the bank; returns its sound index or -1.
+static uint64_t g_sfx_bytes = 0;
+static uint32_t g_sfx_clock = 0, g_sfx_loads = 0;
+static uint64_t sfx_cache_limit() {
+#ifndef CC_XBOX_DRIVER
+  static uint64_t lim = 0;
+  if (!lim) { const char* e = std::getenv("CC_SFX_CACHE_KB"); lim = uint64_t(e ? std::strtoul(e, nullptr, 10) : 2048u) << 10; }
+  return lim;
+#else
+  return uint64_t(2048u) << 10;
+#endif
+}
+
+// Register one effect from the bank index; returns its sound index or -1.
 static int load_sound(const char* stem) {
   if (!load_index()) return -1;
   const uint32_t count = rd32(g.index.data() + 4);
@@ -117,26 +135,60 @@ static int load_sound(const char* stem) {
     for (size_t k = 0; k < g.sounds.size(); ++k) if (!g.sounds[k].used) { slot = int(k); break; }
     if (slot < 0) return -1;
     Sound& s = g.sounds[size_t(slot)];
+    s = Sound();
+    s.used = true;
+    std::snprintf(s.name, sizeof(s.name), "%s", stem);
+    s.rate = rd32(e + 32);
+    s.samples = rd32(e + 40);
+    s.offset = rd32(e + 44);
+    s.bytes = rd32(e + 48);
+    return slot;
+  }
+  return -1;
+}
+
+static bool sound_playing(int k) {
+  for (const Voice& v : g.voices) if (v.active && !v.music && v.sound == k) return true;
+  return false;
+}
+
+// Make an effect's data resident, evicting least recently played effects
+// that are not playing until the cache fits.
+static bool make_resident(int k) {
+  Sound& s = g.sounds[size_t(k)];
+  s.last_use = ++g_sfx_clock;
+  if (!s.data.empty()) return true;
+  static std::FILE* bank = nullptr;
+  if (!bank) {
     char root[300], path[340];
     audio_root(root, sizeof(root));
     std::snprintf(path, sizeof(path), "%s/sfx.xab", root);
 #ifdef CC_XBOX_DRIVER
     for (char* p = path; *p; ++p) if (*p == '/') *p = '\\';
 #endif
-    std::FILE* f = std::fopen(path, "rb");
-    if (!f) return -1;
-    s.data.resize(rd32(e + 48));
-    const bool ok = std::fseek(f, long(rd32(e + 44)), SEEK_SET) == 0 &&
-                    std::fread(s.data.data(), 1, s.data.size(), f) == s.data.size();
-    std::fclose(f);
-    if (!ok) { s.data.clear(); return -1; }
-    s.used = true;
-    std::snprintf(s.name, sizeof(s.name), "%s", stem);
-    s.rate = rd32(e + 32);
-    s.samples = rd32(e + 40);
-    return slot;
+    bank = std::fopen(path, "rb");
+    if (!bank) return false;
   }
-  return -1;
+  s.data.resize(s.bytes);
+  if (std::fseek(bank, long(s.offset), SEEK_SET) != 0 ||
+      std::fread(s.data.data(), 1, s.data.size(), bank) != s.data.size()) {
+    s.data.clear();
+    return false;
+  }
+  g_sfx_bytes += s.bytes;
+  ++g_sfx_loads;
+  while (g_sfx_bytes > sfx_cache_limit()) {
+    int victim = -1;
+    for (size_t j = 0; j < g.sounds.size(); ++j) {
+      const Sound& c = g.sounds[j];
+      if (!c.used || c.data.empty() || int(j) == k || sound_playing(int(j))) continue;
+      if (victim < 0 || c.last_use < g.sounds[size_t(victim)].last_use) victim = int(j);
+    }
+    if (victim < 0) break;
+    g_sfx_bytes -= g.sounds[size_t(victim)].data.size();
+    std::vector<uint8_t>().swap(g.sounds[size_t(victim)].data);
+  }
+  return true;
 }
 
 static void decode_block(const uint8_t* blk, int16_t* out) {
@@ -329,6 +381,7 @@ static void sub_8209EFF0(Context& ctx, Machine& base) {
   }
   if ((obj & ccaudio::kTagMask) == ccaudio::kObjTag) {
     ccaudio::Sound& s = ccaudio::g.sounds[obj & 0xFFFFFu];
+    ccaudio::g_sfx_bytes -= s.data.size();
     s = ccaudio::Sound();
   }
   base.store(table + slot * 4u, 4, 0u);
@@ -341,6 +394,7 @@ static void sub_8209F118(Context& ctx, Machine& base) {
   const uint32_t obj = slot < 512u ? uint32_t(base.load(table + slot * 4u, 4)) : 0u;
   const int entry = ccaudio::free_entry(base, table);
   if ((obj & ccaudio::kTagMask) != ccaudio::kObjTag || entry < 0) { ctx.r3.s64 = -1; return; }
+  if (!ccaudio::make_resident(int(obj & 0xFFFFFu))) { ctx.r3.s64 = -1; return; }
   const ccaudio::Sound& s = ccaudio::g.sounds[obj & 0xFFFFFu];
   ccaudio::Voice& v = ccaudio::g.voices[entry];
   ccaudio::stop_voice(v);
