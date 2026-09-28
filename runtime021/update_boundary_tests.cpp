@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <iterator>
 #include <vector>
+#include <string>
 namespace cc { namespace tree { void set_exact_texture_bind(bool) noexcept; } }
 
 using namespace cc::tree;
@@ -474,7 +475,6 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   std::array<uint8_t,0x1000> tls{};
   std::array<uint8_t,0x1000> allocator{};
   std::vector<uint8_t> heap(0x1000000);
-  std::vector<uint8_t> graphics_heap(0x500000);
   std::array<uint8_t,0x1000> platform_globals{};
   std::array<uint8_t,0x1000> thread_state{};
   AddressSpace m;
@@ -483,7 +483,53 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   CHECK(m.map(0x68000,tls.size(),tls.data(),3)==cc::xbox::MemoryError::ok);
   CHECK(m.map(0x70000,allocator.size(),allocator.data(),3)==cc::xbox::MemoryError::ok);
   CHECK(m.map(0x71000,uint32_t(heap.size()),heap.data(),3)==cc::xbox::MemoryError::ok);
-  CHECK(m.map(0x02000000,uint32_t(graphics_heap.size()),graphics_heap.data(),3)==cc::xbox::MemoryError::ok);
+  // Graphics arena 0x02000000..0x02500000. The device init places the 2 MiB
+  // command ring at 0x0200F140 and two 640x480x32 surfaces (0x12C000 each)
+  // at 0x02211770 and 0x02344FA0. Only the 360 GPU consumes them; the port
+  // draws from the game's draw calls. Options (host) / port policy (Xbox):
+  // alias both surfaces onto one block, and back the ring with one 256 KiB
+  // block repeated over its 2 MiB.
+  // Default on (identical instruction and memory-op counts with and without
+  // aliasing: the game never reads these back). CC_GFX_ALIAS=none disables.
+  const char* gfx_alias_env = std::getenv("CC_GFX_ALIAS");
+  const std::string gfx_alias = gfx_alias_env ? gfx_alias_env : "surfaces,ring";
+  const bool alias_surfaces = gfx_alias.find("surfaces") != std::string::npos;
+  const bool alias_ring = gfx_alias.find("ring") != std::string::npos;
+  static std::vector<uint8_t> graphics_heap;
+  {
+    // Pieces are packed into one compact backing block; aliased ranges share
+    // storage, so only the distinct bytes are allocated (5 MiB -> ~2.1 MiB).
+    struct Piece { uint32_t lo, len; int share; };  // share: -1 own storage, else index
+    constexpr uint32_t ring_lo = 0x0200F140u, ring_len = 0x200000u;
+    constexpr uint32_t surf_a = 0x02211770u, surf_b = 0x02344FA0u, surf_len = 0x12C000u;
+    std::vector<Piece> pieces = {
+      {0x02000000u, ring_lo - 0x02000000u, -1},
+      {ring_lo + ring_len, surf_a - (ring_lo + ring_len), -1},
+      {surf_a, surf_len, -1},
+      {surf_a + surf_len, surf_b - (surf_a + surf_len), -1},
+      {surf_b, surf_len, alias_surfaces ? 2 : -1},
+      {surf_b + surf_len, 0x02500000u - (surf_b + surf_len), -1},
+    };
+    const size_t ring_piece = pieces.size();
+    if (alias_ring) {
+      pieces.push_back({ring_lo, 0x40000u, -1});
+      for (uint32_t a = ring_lo + 0x40000u; a < ring_lo + ring_len; a += 0x40000u)
+        pieces.push_back({a, 0x40000u, int(ring_piece)});
+    } else {
+      pieces.push_back({ring_lo, ring_len, -1});
+    }
+    std::vector<size_t> offset(pieces.size());
+    size_t total = 0;
+    for (size_t i = 0; i < pieces.size(); ++i)
+      if (pieces[i].share < 0) { offset[i] = total; total += pieces[i].len; }
+    graphics_heap.assign(total, 0);
+    for (size_t i = 0; i < pieces.size(); ++i) {
+      const size_t off = pieces[i].share < 0 ? offset[i] : offset[size_t(pieces[i].share)];
+      CHECK(m.map(pieces[i].lo, pieces[i].len, graphics_heap.data() + off, 3) == cc::xbox::MemoryError::ok);
+    }
+    cc_log("graphics_arena backing=%uK surfaces_aliased=%d ring_aliased=%d\n",
+           unsigned(total >> 10), int(alias_surfaces), int(alias_ring));
+  }
   CHECK(m.map(0x02500000,uint32_t(platform_globals.size()),platform_globals.data(),3)==cc::xbox::MemoryError::ok);
   CHECK(m.map(0x02501000,uint32_t(thread_state.size()),thread_state.data(),3)==cc::xbox::MemoryError::ok);
 

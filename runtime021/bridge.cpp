@@ -222,6 +222,9 @@ struct Machine {
       const uint32_t p=(g_graphics_alloc_cursor + 15u) & ~15u;
       if (p > 0xffffffffu-size || memory.check(p,size,3) != cc::xbox::MemoryError::ok)
         fail(Error::memory,p);
+#ifndef CC_XBOX_DRIVER
+      if (std::getenv("CC_GFX_LAYOUT")) cc_log("GFXALLOC late addr=%08x size=%u flags=%08x%c", p, size, flags, 10);
+#endif
       g_graphics_alloc_cursor=p+size;
       ++g_graphics_alloc_index;
       return p;
@@ -232,6 +235,9 @@ struct Machine {
     uint32_t p=(g_graphics_alloc_cursor + 15u) & ~15u;
     if (p > 0xffffffffu-size || memory.check(p,size,3) != cc::xbox::MemoryError::ok)
       fail(Error::memory,p);
+#ifndef CC_XBOX_DRIVER
+    if (std::getenv("CC_GFX_LAYOUT")) cc_log("GFXALLOC %u addr=%08x size=%u flags=%08x%c", g_graphics_alloc_index, p, size, flags, 10);
+#endif
     if (g_graphics_alloc_index == 2u) ring_virtual=p;
     if (g_graphics_alloc_index == 4u) ring_descriptor=p;
     if (g_graphics_alloc_index == 13u) tile_allocator=p;
