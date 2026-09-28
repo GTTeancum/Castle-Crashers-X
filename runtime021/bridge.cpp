@@ -854,7 +854,10 @@ static void cc_capture_on_function(const char* name, const Context& ctx,
   dr.prim = ctx.r4.u32; dr.count = ctx.r5.u32; dr.stride = ctx.r7.u32;
   dr.blend = cc_rd32(mem, dev + 10552);
   dr.tex = g_cap.cur_tex;
-  for (unsigned i = 0; i < 16; ++i) dr.matrix[i] = cc_rd32(mem, dev + 1920 + 4 * i);
+  // Diagnostic words: [0] command-ring write cursor (device+13444) at the
+  // draw, [1] device+13448; the rest are zero. Constants live in the ring.
+  dr.matrix[0] = cc_rd32(mem, dev + 13444);
+  dr.matrix[1] = cc_rd32(mem, dev + 13448);
   const uint32_t n = dr.count * dr.stride;
   if (n && n <= 65536u) {
     dr.verts.resize(n);
@@ -889,7 +892,7 @@ static void cc_capture_on_function(const char* name, const Context& ctx,
   }
   g_cap.texs.push_back(std::move(t));
 }
-static void cc_capture_end_frame(cc::xbox::AddressSpace&, uint32_t frame) {
+static void cc_capture_end_frame(cc::xbox::AddressSpace& mem, uint32_t frame) {
   if (!g_cap.init) cc_capture_init(frame);
   if (!g_cap.enabled) return;
   if (g_cap.active) {
@@ -910,6 +913,16 @@ static void cc_capture_end_frame(cc::xbox::AddressSpace&, uint32_t frame) {
         if (!d.verts.empty()) std::fwrite(d.verts.data(), 1, d.verts.size(), f);
       }
       std::fclose(f);
+      if (std::getenv("CC_CAPTURE_RING")) {
+        // Command arena [0x0200F140, 0x0220F000) as raw guest bytes.
+        std::snprintf(path, sizeof(path), "%s/ring_%05u.bin", g_cap.dir, frame);
+        std::vector<uint8_t> ring(0x0220F000u - 0x02000000u);
+        if (mem.read(0x02000000u, ring.data(), ring.size()) == cc::xbox::MemoryError::ok)
+          if (std::FILE* rf = std::fopen(path, "wb")) {
+            std::fwrite(ring.data(), 1, ring.size(), rf);
+            std::fclose(rf);
+          }
+      }
       cc_log("capture frame=%u draws=%u textures=%u -> %s\n", frame,
              unsigned(g_cap.draws.size()), unsigned(g_cap.texs.size()), path);
     }

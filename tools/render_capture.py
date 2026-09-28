@@ -188,7 +188,10 @@ def main():
     dst = args[1] if len(args) > 1 else src.rsplit('.', 1)[0] + '.png'
     frame, texs, draws = load(src)
     if size is None:
-        size = (1280, 720)
+        # The game's vertex constants are an orthographic 640x480 projection
+        # (c0 = 2/640, c1 = -2/480; found in the command ring), matching the
+        # 640x480 video mode the console reports: vertices are screen pixels.
+        size = (640, 480)
     W, H = size
     canvas = np.zeros((H, W, 3))
     cache = {}
