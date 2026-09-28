@@ -5019,10 +5019,12 @@ static void sub_820B1478_exact(Context& ctx, Machine& base);
 static uint64_t cc_tex_cache_limit() {
 #ifndef CC_XBOX_DRIVER
   static uint64_t lim = 0;
-  if (!lim) { const char* e = std::getenv("CC_TEX_CACHE_KB"); lim = uint64_t(e ? std::strtoul(e, nullptr, 10) : 16384u) << 10; }
+  if (!lim) { const char* e = std::getenv("CC_TEX_CACHE_KB"); lim = uint64_t(e ? std::strtoul(e, nullptr, 10) : 6144u) << 10; }
   return lim;
 #else
-  return uint64_t(16384u) << 10;
+  // Retail 64 MB budget: level 1 draws <3 MB per 10 s; 6 MB costs 137
+  // replays over the 10,000-frame session.
+  return uint64_t(6144u) << 10;
 #endif
 }
 // Host verification mode CC_TEX_EAGER=1 rasterizes every texture at load,

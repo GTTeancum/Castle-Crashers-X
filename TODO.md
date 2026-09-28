@@ -57,9 +57,8 @@ lever; unloading art the level no longer needs is the second.
 | **Total** | | **~73 MB (~9 MB over)** |
 
 Candidate cuts, largest and safest first:
-- Texture cache limit 16 -> 6 MB (the level peaks at ~7 MB with no
-  eviction; the 2 MB stress test proved replays are exact). ~6 MB off the
-  graphics arena.
+- [x] Texture cache limit 16 -> 6 MB (done): 137 replays over the whole
+  session, zero mismatches; graphics peak 12.1 -> 10.0 MB.
 - Sound effects at 16 kHz instead of 22 kHz (~2 MB), or load an effect on
   first play with a small LRU cache (costs a disc read on first play).
 - Game object pools: measure peak use of the three `sub_8208CFA0` pools;
