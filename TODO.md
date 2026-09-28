@@ -97,6 +97,14 @@ sound effects where possible; stream art wherever it can be streamed.
       and decide whether to pre-rasterize textures near the camera.
 - [ ] Measure the whole session against 64 MB on the Xbox build itself
       (arenas sized for retail, not the harness's 224 MB).
+- [ ] Shrink the game's two heaps. End of the 10,000-frame session
+      (`CC_MEM_REPORT=9990`): game heap at 0x71000 high-water 13.3 MB,
+      main pool 13.5 of 16 MB, GPU command arena high-water 4.9 MB,
+      graphics blocks 14 MB live. With code (10 MB), image (3 MB), kernel,
+      framebuffers and job snapshots that is ~68 MB: about 4 MB over before
+      audio. Next: find what fills the two heaps (loaded paks: SOUNDS.PAK
+      alone is 16.5 MB; MAIN 2.7 MB, SKY 0.5-2.4 MB, LEVEL2) and which of it
+      can be streamed or dropped after use.
 - [ ] Audio: re-encode (XMA is not playable on the original Xbox), stream
       music, preload sound effects.
 

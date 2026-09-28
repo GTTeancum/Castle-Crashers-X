@@ -2051,6 +2051,19 @@ static void cc_mem_report(uint32_t frame) {
         uint64_t w=0; g_mem_report_space->load_be(pg+o,4,w);
         if (w) { ++heap_touched; break; }
       }
+    auto touched = [](uint32_t lo, uint32_t hi) {
+      uint32_t n = 0, last = lo;
+      for (uint32_t pg = lo; pg < hi; pg += 0x1000u)
+        for (uint32_t o = 0; o < 0x1000u; o += 64u) {
+          uint64_t w = 0;
+          if (g_mem_report_space->load_be(pg + o, 4, w) != cc::xbox::MemoryError::ok) break;
+          if (w) { ++n; last = pg + 0x1000u; break; }
+        }
+      return std::pair<uint32_t, uint32_t>(n * 4u, (last - lo) >> 10);
+    };
+    const auto gh = touched(0x00071000u, 0x01071000u), gx = touched(0x02000000u, 0x02500000u);
+    cc_log("MEMREPORT game_heap_touched=%uK highwater=%uK gpu_arena_touched=%uK highwater=%uK%c",
+           gh.first, gh.second, gx.first, gx.second, 10);
     cc_log("MEMREPORT crt_heap_committed=%uK crt_heap_touched=%uK reserved=%uK main_pool_touched=%uK (of 16384K)%c",
            unsigned(g_committed_pages.size()*4u), heap_touched*4u,
            unsigned((g_valloc_cursor-0x04000000u)>>10), pool_touched*4u, 10);
