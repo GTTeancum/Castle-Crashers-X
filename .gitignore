@@ -48,3 +48,6 @@ logs/devdump/
 logs/run_*.txt
 logs/nxdk_build.txt
 __pycache__/
+
+# Audio converted from the retail game (never commit game content)
+game-data/converted/
