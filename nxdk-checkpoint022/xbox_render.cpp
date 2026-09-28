@@ -13,12 +13,14 @@
 #include <hal/debug.h>
 #include <hal/video.h>
 #include <pbkit/pbkit.h>
-#include <pbkit/pbkit_print.h>
 #include <windows.h>
 #include <xboxkrnl/xboxkrnl.h>
 #include <cstdint>
 #include <cstring>
 #include <vector>
+
+void cc_xbox_audio_stats(unsigned* started, unsigned* submitted, unsigned* callbacks,
+                         unsigned* underruns, unsigned* dropped);
 
 namespace {
 constexpr uint32_t kMaxGpuAddress = 0x03FFAFFFu;
@@ -88,6 +90,10 @@ void set_attributes() {
   }
 }
 
+// 4x4 opaque white texture bound for untextured draws: the pixel program
+// always samples stage 0, so it must never be left disabled.
+uint32_t* g_white = nullptr;
+
 bool init() {
   if (g_init) return !g_failed;
   g_init = true;
@@ -95,7 +101,22 @@ bool init() {
   g_vb = static_cast<GpuVertex*>(MmAllocateContiguousMemoryEx(
       kMaxVertices * sizeof(GpuVertex), 0, kMaxGpuAddress, 0, PAGE_READWRITE | PAGE_WRITECOMBINE));
   if (!g_vb) { g_failed = true; debugPrint("RENDER no vertex memory\n"); return false; }
+  g_white = static_cast<uint32_t*>(MmAllocateContiguousMemoryEx(
+      64, 0, kMaxGpuAddress, 0, PAGE_READWRITE | PAGE_WRITECOMBINE));
+  if (!g_white) { g_failed = true; return false; }
+  for (int i = 0; i < 16; ++i) g_white[i] = 0xFFFFFFFFu;
   return true;
+}
+uint32_t* push_white(uint32_t* p) {
+  p = pb_push1(p, NV097_SET_TEXTURE_OFFSET, physical(g_white));
+  p = pb_push1(p, NV097_SET_TEXTURE_FORMAT,
+               0x0000002Au | (NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A8R8G8B8 << 8) | (1u << 16));
+  p = pb_push1(p, NV097_SET_TEXTURE_CONTROL1, 16u << 16);
+  p = pb_push1(p, NV097_SET_TEXTURE_IMAGE_RECT, (4u << 16) | 4u);
+  p = pb_push1(p, NV097_SET_TEXTURE_ADDRESS, 0x00050505);
+  p = pb_push1(p, NV097_SET_TEXTURE_CONTROL0, 0x40000000);
+  p = pb_push1(p, NV097_SET_TEXTURE_FILTER, 0x02022000);
+  return p;
 }
 
 void begin_frame() {
@@ -166,6 +187,62 @@ const Texture* converted(uint32_t key, const uint8_t* src, uint32_t w, uint32_t 
   g_converted.push_back(t);
   return &g_converted.back();
 }
+
+// Overlay rectangles are queued as untextured quads and drawn in one batch
+// (pbkit clears are very slow under XEMU).
+struct OverlayRect { float x, y, w, h; DWORD color; };
+OverlayRect g_rects[128];
+unsigned g_rect_count = 0;
+void pb_fill_quad(int x, int y, int w, int h, DWORD color) {
+  if (g_rect_count < 128) g_rects[g_rect_count++] = OverlayRect{float(x), float(y), float(w), float(h), color};
+}
+void flush_overlay() {
+  if (!g_rect_count || g_vb_used + g_rect_count * 4 > kMaxVertices) { g_rect_count = 0; return; }
+  GpuVertex* out = g_vb + g_vb_used;
+  for (unsigned i = 0; i < g_rect_count; ++i) {
+    const OverlayRect& r = g_rects[i];
+    const float xs[4] = {r.x, r.x + r.w, r.x + r.w, r.x}, ys[4] = {r.y, r.y, r.y + r.h, r.y + r.h};
+    for (int k = 0; k < 4; ++k) {
+      GpuVertex& o = out[i * 4 + k];
+      o.pos[0] = xs[k]; o.pos[1] = ys[k]; o.pos[2] = 0.0f; o.pos[3] = 1.0f;
+      o.col[0] = float((r.color >> 16) & 255) / 255.0f; o.col[1] = float((r.color >> 8) & 255) / 255.0f;
+      o.col[2] = float(r.color & 255) / 255.0f; o.col[3] = 1.0f;
+      o.uv[0] = o.uv[1] = 0.0f;
+    }
+  }
+  auto* p = pb_begin();
+  p = push_white(p);
+  p = pb_push1(p, NV097_SET_BLEND_FUNC_SFACTOR, NV097_SET_BLEND_FUNC_SFACTOR_V_ONE);
+  p = pb_push1(p, NV097_SET_BLEND_FUNC_DFACTOR, NV097_SET_BLEND_FUNC_SFACTOR_V_ZERO);
+  p = pb_push1(p, NV097_SET_BEGIN_END, NV097_SET_BEGIN_END_OP_QUADS);
+  const uint32_t count = g_rect_count * 4;
+  for (uint32_t first = 0; first < count; first += 256) {
+    const uint32_t n = count - first < 256 ? count - first : 256;
+    p = pb_push1(p, 0x40000000 | NV097_DRAW_ARRAYS, ((n - 1) << 24) | (g_vb_used + first));
+  }
+  p = pb_push1(p, NV097_SET_BEGIN_END, NV097_SET_BEGIN_END_OP_END);
+  pb_end(p);
+  g_vb_used += count;
+  g_rect_count = 0;
+}
+// Seven-segment digit at (x, y), 12x20 pixels, one rectangle per lit segment.
+void draw_digit(int x, int y, unsigned d, DWORD color) {
+  static const uint8_t seg[10] = {0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F};
+  const uint8_t m = seg[d % 10];
+  if (m & 0x01) pb_fill_quad(x + 2, y, 8, 2, color);        // a
+  if (m & 0x02) pb_fill_quad(x + 10, y + 2, 2, 7, color);   // b
+  if (m & 0x04) pb_fill_quad(x + 10, y + 11, 2, 7, color);  // c
+  if (m & 0x08) pb_fill_quad(x + 2, y + 18, 8, 2, color);   // d
+  if (m & 0x10) pb_fill_quad(x, y + 11, 2, 7, color);       // e
+  if (m & 0x20) pb_fill_quad(x, y + 2, 2, 7, color);        // f
+  if (m & 0x40) pb_fill_quad(x + 2, y + 9, 8, 2, color);    // g
+}
+void draw_number(int x, int y, unsigned v, DWORD color) {
+  char buf[8];
+  int n = 0;
+  do { buf[n++] = char(v % 10); v /= 10; } while (v && n < 4);
+  for (int i = 0; i < n; ++i) draw_digit(x + (n - 1 - i) * 15, y, unsigned(buf[i]), color);
+}
 }  // namespace
 
 // GPU-readable (physically contiguous) memory for guest regions the NV2A
@@ -228,7 +305,7 @@ void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t st
     p = pb_push1(p, NV097_SET_TEXTURE_CONTROL0, 0x40000000);  // enabled, LOD 0
     p = pb_push1(p, NV097_SET_TEXTURE_FILTER, 0x02022000);    // linear min/mag
   } else {
-    p = pb_push1(p, NV097_SET_TEXTURE_CONTROL0, 0);
+    p = push_white(p);
   }
   p = pb_push1(p, NV097_SET_BLEND_FUNC_SFACTOR, blend_factor(blend & 0x1F));
   p = pb_push1(p, NV097_SET_BLEND_FUNC_DFACTOR, blend_factor((blend >> 8) & 0x1F));
@@ -259,9 +336,23 @@ void cc_xr_frame_end() {
     window_start = now;
     window_frames = 0;
   }
-  pb_erase_text_screen();
-  pb_printat(0, 1, "%u fps  %u ms", shown_fps, shown_ms);
-  pb_draw_text_screen();
+  // Numbers drawn as seven-segment digits with a few fills each (pbkit's
+  // text overlay issues ~1,000 fills a frame and slows the game down).
+  {
+    unsigned st = 0, fed = 0, cb = 0, ur = 0, dr = 0;
+    cc_xbox_audio_stats(&st, &fed, &cb, &ur, &dr);
+    static unsigned last_fed = 0, last_ur = 0, shown_mixed = 0, shown_silent = 0;
+    if (window_frames == 0) {  // refreshed once per second with the fps
+      shown_mixed = fed - last_fed; shown_silent = ur - last_ur;
+      last_fed = fed; last_ur = ur;
+    }
+    pb_fill_quad(8, 8, 300, 52, 0xFF202020);
+    draw_number(16, 14, shown_fps, 0xFF40FF40);       // frames per second
+    draw_number(80, 14, shown_ms, 0xFFFFFF40);        // ms per frame
+    draw_number(160, 14, shown_mixed, 0xFF40C0FF);    // audio frames mixed/s
+    draw_number(232, 14, shown_silent, 0xFFFF4040);   // silent buffers/s
+    flush_overlay();
+  }
   while (pb_busy()) {}
   while (pb_finished()) {}
   if (!g_shown) { pb_show_front_screen(); g_shown = true; }
