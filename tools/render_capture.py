@@ -5,6 +5,7 @@ Reconstructs one frame from the textures and quad draws the recovered game
 code submitted, so the harness state can be checked by eye.
 
 usage: render_capture.py <frame.ccframe> [out.png] [--size WxH] [--origin X,Y]
+                        [--dxt5 | --argb4444]  (simulate a smaller texture format)
 """
 import struct
 import sys
@@ -107,6 +108,20 @@ def decode_texture(w, h, fmt, raw):
     return np.full((h, w, 4), (255, 0, 255, 255), np.uint8)
 
 
+def simulate(tex, mode):
+    """Round-trip a decoded RGBA texture through a candidate Xbox format."""
+    if mode == 'dxt5':
+        import io
+        h, w = tex.shape[:2]
+        buf = io.BytesIO()
+        Image.fromarray(np.ascontiguousarray(tex)).save(buf, 'DDS', pixel_format='DXT5')
+        buf.seek(0)
+        return np.asarray(Image.open(buf).convert('RGBA'))[:h, :w]
+    if mode == 'argb4444':
+        return ((tex >> 4) * 17).astype(np.uint8)
+    return tex
+
+
 def load(path):
     d = open(path, 'rb').read()
     assert d[:8] == b'CCFRAME1'
@@ -180,6 +195,11 @@ def main():
         i = args.index('--size')
         size = tuple(int(x) for x in args[i + 1].split('x'))
         del args[i:i + 2]
+    recompress = None
+    for flag in ('--dxt5', '--argb4444'):
+        if flag in args:
+            recompress = flag[2:]
+            args.remove(flag)
     if '--origin' in args:
         i = args.index('--origin')
         origin = tuple(float(x) for x in args[i + 1].split(','))
@@ -197,7 +217,7 @@ def main():
     cache = {}
     for prim, count, blend, taddr, verts in draws:
         if taddr in texs and taddr not in cache:
-            cache[taddr] = decode_texture(*texs[taddr])
+            cache[taddr] = simulate(decode_texture(*texs[taddr]), recompress)
         tex = cache.get(taddr)
         if prim == 13:
             groups = [verts[i:i + 4] for i in range(0, len(verts) - 3, 4)]

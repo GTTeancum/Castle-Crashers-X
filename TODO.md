@@ -38,8 +38,16 @@ lever; unloading art the level no longer needs is the second.
 - [x] Measure the true gameplay peak once a level is running.
 - [x] Break it down by what it is (textures, audio, vertex data, render
       targets) to see where the space goes.
-- [ ] Check what the textures look like after DXT5 compression (sprite
-      edges, gradients) before committing to it.
+- [x] Check what the textures look like after DXT5 compression.
+      `render_capture.py --dxt5` / `--argb4444` re-renders a captured frame
+      with every texture round-tripped through the format. Level frame 9362:
+      DXT5 mean colour error 1.6/255, visible only as faint blocking where
+      two flat colours meet; 16-bit colour 3.5/255, a slight tone shift.
+      Side-by-side: `logs/frames_full/texture_format_compare.png`
+      (original | DXT5 | 16-bit, 3x zoom). DXT5 is the better and smaller
+      choice.
+- [ ] Compress textures to DXT5 when the loader creates them on the Xbox
+      (hook at the texture records built in `sub_82091AC0`).
 - [ ] Plan the cuts: smaller or recompressed textures (360 formats are
       larger than needed at 640x480), audio re-encoded (see the audio item),
       streaming instead of loading everything up front.
