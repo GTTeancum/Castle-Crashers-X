@@ -266,10 +266,12 @@ static void result(Machine& base, uint32_t out, uint32_t code) {
 
 // Mix one frame's worth of output (48 kHz / 60) and hand it to the backend.
 static uint32_t g_mixed_frames = 0;
-static void mix_frame() {
-  constexpr int n = kOutRate / 60;
+// Mix n stereo samples (n <= one 60 Hz frame) of every active voice.
+static void render(int16_t* out, int n) {
+  constexpr int kMax = kOutRate / 60;
+  if (n > kMax) n = kMax;
   ++g_mixed_frames;
-  static int32_t acc[n * 2];
+  static int32_t acc[kMax * 2];
   std::memset(acc, 0, sizeof(acc));
   for (Voice& v : g.voices) {
     if (!v.active) continue;
@@ -290,11 +292,20 @@ static void mix_frame() {
       v.pos += step;
     }
   }
-  static int16_t out[n * 2];
   for (int i = 0; i < n * 2; ++i) out[i] = int16_t(acc[i] < -32768 ? -32768 : (acc[i] > 32767 ? 32767 : acc[i]));
+}
+
+// Once per game frame. On the Xbox the AC97 is topped up with as many
+// freshly mixed buffers as it needs (audio runs at real-time speed whatever
+// the game's frame rate); the host mixes exactly one 60 Hz frame per game
+// frame so recordings and measurements stay deterministic.
+static void mix_frame() {
+  constexpr int n = kOutRate / 60;
 #ifdef CC_XBOX_DRIVER
-  ::cc_xbox_audio_submit(out, n);
+  ::cc_xbox_audio_pump(&render);
 #else
+  static int16_t out[n * 2];
+  render(out, n);
   static bool tried = false;
   if (!tried) {
     tried = true;
