@@ -107,6 +107,11 @@ static uint32_t cc_texzone_alloc(Machine& base, uint32_t bytes, uint32_t keep);
 static uint32_t g_tex_alloc_keep = 0;
 static std::vector<std::pair<int64_t, uint32_t>> g_tex_swap_free_early;
 static uint32_t g_tex_replays = 0, g_tex_replay_mismatches = 0, g_tex_evictions = 0;
+#ifndef CC_XBOX_DRIVER
+static double g_raster_seconds = 0.0;
+static uint32_t g_raster_count = 0;
+static double g_update_seconds, g_render_seconds;
+#endif
 static uint32_t g_tex_swap_ins = 0, g_tex_swap_outs = 0;
 static bool cc_audio_set_volume(uint32_t voice, float vol);
 static bool cc_audio_stop(uint32_t voice);
@@ -1550,6 +1555,17 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
 #endif
   cc_capture_end_frame(base.memory, g_frame_delay_calls + 1u);
 #ifndef CC_XBOX_DRIVER
+  {
+    static long from = -1, to = -1;
+    if (from < 0) {
+      const char* a = std::getenv("CC_SAMPLE_FROM"); const char* b = std::getenv("CC_SAMPLE_TO");
+      from = a ? std::strtol(a, nullptr, 10) : 0; to = b ? std::strtol(b, nullptr, 10) : 0x7FFFFFFF;
+    }
+    const long f = long(g_frame_delay_calls + 1u);
+    g_sample_on.store(f >= from && f < to, std::memory_order_relaxed);
+  }
+  if (std::getenv("CC_WORKSET") && (g_frame_delay_calls + 1u) % 1000u == 0u)
+    cc_log("RASTER frame=%u count=%u seconds=%.3f update=%.3f render=%.3f%c", g_frame_delay_calls + 1u, g_raster_count, g_raster_seconds, g_update_seconds, g_render_seconds, 10);
   if (std::getenv("CC_WORKSET") && (g_frame_delay_calls + 1u) % 250u == 0u)
     cc_log("TEXSTREAM frame=%u cache=%lluK replays=%u mismatches=%u evictions=%u swap_out=%u swap_in=%u%c",
            g_frame_delay_calls + 1u, (unsigned long long)(g_tex_cache_bytes >> 10),
@@ -5290,8 +5306,22 @@ static uint32_t cc_texzone_alloc(Machine& base, uint32_t bytes, uint32_t keep) {
 // Run the exact rasterizer on `job` with its output redirected to a scratch
 // block, then compress into a fresh cache block. Returns the cache address
 // (0 on failure) and the hash of the compressed pixels.
+static uint32_t cc_tex_rasterize_impl(Context& ctx, Machine& base, uint32_t job,
+                                      uint32_t w, uint32_t h, uint32_t& hash);
 static uint32_t cc_tex_rasterize(Context& ctx, Machine& base, uint32_t job,
                                  uint32_t w, uint32_t h, uint32_t& hash) {
+#ifndef CC_XBOX_DRIVER
+  const auto t0 = std::chrono::steady_clock::now();
+  const uint32_t r = cc_tex_rasterize_impl(ctx, base, job, w, h, hash);
+  g_raster_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  ++g_raster_count;
+  return r;
+#else
+  return cc_tex_rasterize_impl(ctx, base, job, w, h, hash);
+#endif
+}
+static uint32_t cc_tex_rasterize_impl(Context& ctx, Machine& base, uint32_t job,
+                                      uint32_t w, uint32_t h, uint32_t& hash) {
   const uint32_t scratch = cc_phys_alloc(base, w * h * 4u, 0x1000u);
   base.memory.store_be(job + 564u, 4, scratch);
   Context c = ctx;
@@ -6518,8 +6548,27 @@ static void sub_82053C70(Context& ctx, Machine& base) {
 // WIP 022: remaining sub_82070AC8 tail (sub_82075C88 game-manager, sub_820759A8, sub_82070908)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-function"
+#ifndef CC_XBOX_DRIVER
+// Host timing split (CC_WORKSET): the game's per-frame update and render.
+#define sub_82075C88 sub_82075C88_exact
+#define sub_820759A8 sub_820759A8_exact
+#endif
 #include "generated/sub_82075C88.inc"
 #include "generated/sub_820759A8.inc"
+#ifndef CC_XBOX_DRIVER
+#undef sub_82075C88
+#undef sub_820759A8
+static void sub_82075C88(Context& ctx, Machine& base) {
+  const auto t0 = std::chrono::steady_clock::now();
+  sub_82075C88_exact(ctx, base);
+  g_update_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+}
+static void sub_820759A8(Context& ctx, Machine& base) {
+  const auto t0 = std::chrono::steady_clock::now();
+  sub_820759A8_exact(ctx, base);
+  g_render_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+}
+#endif
 #include "generated/sub_82070908.inc"
 #include "generated/sub_8209B648.inc"
 #include "generated/sub_82076CE0.inc"

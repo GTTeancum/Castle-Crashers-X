@@ -34,6 +34,7 @@ void cc_xr_frame_end();
 // prints the top entries at exit. Approximate self time at function-entry
 // granularity; port-side work shows up under the guest function that called it.
 static std::atomic<const char*> g_sample_fn{nullptr};
+static std::atomic<bool> g_sample_on{true};  // CC_SAMPLE_FROM/CC_SAMPLE_TO frame window
 namespace {
 struct CcSampler {
   std::atomic<bool> stop{false};
@@ -45,6 +46,7 @@ struct CcSampler {
     worker = std::thread([this] {
       while (!stop.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (!g_sample_on.load(std::memory_order_relaxed)) continue;
         if (const char* f = g_sample_fn.load(std::memory_order_relaxed)) { ++counts[f]; ++total; }
       }
     });
@@ -453,7 +455,7 @@ struct Machine {
   void prologue(const char *name, const Context& ctx) {
     last_function = name;
 #ifndef CC_XBOX_DRIVER
-    g_sample_fn.store(name, std::memory_order_relaxed);
+    if (name[0] != '_') g_sample_fn.store(name, std::memory_order_relaxed);  // skip register save/restore helpers
 #endif
     last_ctx = &ctx;
     recent_functions[recent_pos & 31u] = name;

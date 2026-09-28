@@ -18,6 +18,8 @@ SRCS = \
 NXDK_DIR ?= $(CURDIR)/../../buildkit/sources/nxdk
 CXXFLAGS += -std=c++20 -O2 -march=pentium3 -fno-exceptions -fno-rtti -ffp-contract=off -fno-fast-math
 CXXFLAGS += -DCC_XBOX_DRIVER
+# Play build: no verification counters (~16% faster; CHECKs report, not stop)
+CXXFLAGS += -DCC_FAST
 # The boundary harness keeps its guest stack/TLS arenas as C++ stack
 # arrays (up to 64 KiB each); give the XBE a 1 MiB thread stack.
 LDFLAGS += -stack:0x100000
