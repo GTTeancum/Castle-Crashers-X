@@ -1,0 +1,107 @@
+DE50 fn=1 widget=00040000
+915F0 fn=4 obj=00050000 pend=00000000 done=00000000 busy=00000 flags=010
+TRACE020 fail error=10 address=00021000 last=sub_8209CC98 funcs=1 memops=5 r1=00010800 r3=00020000 r4=00000000 r5=00000000 r6=00000000 r11=00000000 lr=12345678 recent=,sub_8209CC98@00010800
+DE50 fn=1 widget=00040000
+915F0 fn=1 obj=00050000 pend=00000000 done=00000000 busy=00000 flags=000
+DE50 fn=1 widget=00040000
+init_chain result=ok funcs=19 inserted_key=1
+active_chain result=ok@00000000 funcs=58 dispatches=3
+synthetic_chain manager=00071010 root_value=00071150 timeline_result=ok timeline_bits=40011111
+manager_init result=ok@00000000 funcs=48 memops=583 global=00071010
+manager_init global=00071010 sentinel=000710b0 root=00071140 value=00071150 nested_sentinel=00071170
+manager_second_insert result=ok@00000000 funcs=42 memops=494 ret=000711b0
+startup_full result=ok@00000000 funcs=182963 dispatch=10501 memops=2670632 r1=0003f000 r31=00000000
+startup_full globals label=00071010 small=00071100 input=00071130 hash=000718d0 pool=000718f0 manager=000758f0 async=000759c0 event=000759f0 game_manager=00075df0 state_pool=00076390 system_state=004e0da0 workers=005003e0 lookup=00500410 state_block=00091b34 sentinel=00075990 root=00075a20
+graphics_arena backing=2128K surfaces_aliased=1 ring_aliased=1
+crt_heap_init result=ok@00000000 funcs=16 memops=561 r3=00000001 handle=04000000
+crt_mtinit result=ok@00000000 funcs=56 memops=819 r3=00000001 tls_index=00000000 ptd=00000001
+crt_preinit result=ok@00000000 r3=00000000 onexit_table=04000770
+crt_cinit result=ok@00000000 funcs=1258 memops=23121 r3=00000000
+renderer_prefix result=ok@00000000 funcs=182986 dispatch=10501 memops=2671384 r1=0003eee0 r3=0003ef50 lr=82070b84
+renderer_prefix published=00525060 next_original_call=820A7990 platform_renderer_init
+platform_init_prefix result=ok@00000000 funcs=2 memops=104 r1=0003ed30 r3=00000000 r4=00000001 r7=0003edd0 r8=00525064
+platform_init_prefix presentation=640x480 next_original_call=820BEFD0 graphics_device_helper
+graphics_init_prefix result=ok@00000000 funcs=17008 memops=194116 r1=0003ed30 r3=00000000 r4=2
+file_open_request 'game:\shaders\GenericVS.xvu' shape r8=0 r9=0
+file_open_request 'game:\shaders\SpritePS.xpu' shape r8=0 r9=0
+file_open_request 'game:\shaders\GenericVS.xvu' shape r8=0 r9=0
+file_open_request 'game:\shaders\BlacknWhitePS.xpu' shape r8=0 r9=0
+file_open_request 'game:\shaders\OverlayVS.xvu' shape r8=0 r9=0
+file_open_request 'game:\shaders\BloomPS.xpu' shape r8=0 r9=0
+file_open_request 'game:\shaders\GenericVS.xvu' shape r8=0 r9=0
+file_open_request 'game:\shaders\BlurPS.xpu' shape r8=0 r9=0
+file_open_request 'game:\shaders\GenericVS.xvu' shape r8=0 r9=0
+file_open_request 'game:\shaders\SpritePS.xpu' shape r8=0 r9=0
+file_open_request 'game:\shaders\GenericVS.xvu' shape r8=0 r9=0
+file_open_request 'game:\shaders\FontPS.xpu' shape r8=0 r9=0
+file_open_request 'game:\shaders\OverlayVS.xvu' shape r8=0 r9=0
+file_open_request 'game:\shaders\GlowPS.xpu' shape r8=0 r9=0
+file_open_request 'game:\shaders\GenericVS.xvu' shape r8=0 r9=0
+file_open_request 'game:\shaders\GreyscalePS.xpu' shape r8=0 r9=0
+file_open_request 'game:\shaders\GenericVS.xvu' shape r8=0 r9=0
+file_open_request 'game:\shaders\HeatPS.xpu' shape r8=0 r9=0
+file_open_request 'game:\shaders\GenericVS.xvu' shape r8=0 r9=0
+file_open_request 'game:\shaders\InvertedPS.xpu' shape r8=0 r9=0
+file_open_request 'game:\shaders\OverlayVS.xvu' shape r8=0 r9=0
+file_open_request 'game:\shaders\MaskPS.xpu' shape r8=0 r9=0
+file_open_request 'game:\shaders\GenericVS.xvu' shape r8=0 r9=0
+file_open_request 'game:\shaders\SobelEdge.xpu' shape r8=0 r9=0
+file_open_request 'game:\shaders\GenericVS.xvu' shape r8=0 r9=0
+file_open_request 'game:\shaders\VertexColorFillPS.xpu' shape r8=0 r9=0
+file_open_request 'game:\shaders\OverlayVS.xvu' shape r8=0 r9=0
+file_open_request 'game:\shaders\WaterPS.xpu' shape r8=0 r9=0
+file_open_request 'game:\shaders\OverlayVS.xvu' shape r8=0 r9=0
+file_open_request 'game:\shaders\OutlinePS.xpu' shape r8=0 r9=0
+file_open_request 'game:\shaders\GenericVS.xvu' shape r8=0 r9=0
+file_open_request 'game:\shaders\RasterHackPS.xpu' shape r8=0 r9=0
+platform_post_graphics result=ok@00000000 funcs=2277 memops=67417 r1=0003eee0 lr=82070b84 r3=0003ef50 r4=bc800000 r5=00000c14 r6=00000000 r7=85000002 r8=00000c14 r9=00000086 r10=00000200 ctr=00000000
+post_vtable_presentation f30=00000000 f31=3f800000 r28=00000000 fields=[28740..28752]
+cf9d0_state f16720=00000000 f16724=00000000 tdiff=00000000 tloUPDATE dt=0.016667 obj=00095130
+UPDATE dt=0.016667 obj=00095130
+UPDATE dt=0.016667 obj=00095130
+UPDATE dt=0.016667 obj=00095130
+UPDATE dt=0.016667 obj=00095130
+TRACE020 fail error=8 address=8214a614 last=sub_820B74B0 funcs=36504166 memops=724532115 r1=0003ee70 r3=00000001 r4=00000000 r5=0003eec0 r6=00000280 r11=fffe2b40 lr=820b7504 recent=sub_820C6F68@0003eab0,__savegprlr_29@0003eab0,sub_820C6290@0003ea30,__savegprlr_29@0003ea30,sub_820C5E50@0003e9c0,__savegprlr_29@0003e9c0,__restgprlr_29@0003e9c0,__restgprlr_29@0003ea30,sub_820C6B18@0003ea30,__savegprlr_29@0003ea30,__restgprlr_29@0003ea30,__restgprlr_29@0003eab0,sub_820C6B18@0003eab0,__savegprlr_29@0003eab0,__restgprlr_29@0003eab0,sub_820CF9D0@0003eab0,sub_820CF858@0003e940,sub_821368C0@0003e890,sub_82129FA0@0003e890,sub_820BDE48@0003eab0,sub_820BB3B8@0003ea50,__savegprlr_21@0003ea50,__restgprlr_21@0003ea50,sub_820C9150@0003ea50,__restgprlr_23@0003ec70,__restfpr_28@0003eee0,sub_820B6D48@0003eee0,sub_8212B180@0003eee0,sub_8212B180@0003eee0,sub_8212B180@0003eee0,sub_820B6068@0003eee0,sub_820B74B0@0003eee0
+FAIL line 1230: pi.functions==320961210u && pi.memory_ops==4101260149u
+=00000000 thi=0000c2d3 q0=0000000000000000 q1=0000000000000000 copy0=00000000 copy1=00000000 state=0 r7=85000002
+post_restore_ring s14912=00010000 s14916=0202f40c s14928=0201f380 s14932=00000054 s14940=0000000d d52=0202f37c d56=0202f2dc next=820A7BC8_before_820AA5B8
+post_c0bc0 device21544=1280 device21548=720 device21552=1280 wptr=0201f73c packet=0200faa0..0200fadc
+c8e98_packet start=0200fe88 words=2309 hash=1de1b325315c84ac tail=0201229c words=17 tail_hash=1ca6adb697e47ca5
+post_scaler_init final_wptr=0201f73c copy_start=0200fb20 nops=184 tail_words=16 persist_free=closed second_retrain=closed next=820A7BC8_before_820AA5B8
+vdswap_packet addr=0200f950 frontbuffer=02211000 size=640x480 persist_free=closed second_retrain=closed next=820A7BC8_before_820AA5B8
+graphics_state device=02000080 ring=02007140 secondary=0200f140 descriptor=0220f140 workers=2 resources=02211730,0233d770,0233dad0 output_published=02000080 hsio=ok
+file_open_request 'game:\Fonts\synjUnicode_20.xpr' shape r8=1 r9=1
+profile_init step sub_820A1BF8 r3=0003ef50 lr=82070d74
+profile_init step sub_820D7E90 r3=00000000 lr=820a1c18
+profile_init step sub_820B6CA0 r3=00000003 lr=820a1c3c
+profile_init step sub_820FBF50 r3=0f110001 lr=820a1c54
+profile_init step sub_82104FD0 r3=00000000 lr=820a1c94
+profile_init step sub_820D7E90 r3=0003eb80 lr=8210c8b4
+profile_init step sub_820B6CA0 r3=00000007 lr=82104b94
+thread created start=8213a8e0 param=1e000320 flags=02000000
+thread 8213a8e0 ran until it blocked
+screen 'logo'
+file_open_request 'game:\GAME\LOGO.PAK' shape r8=128 r9=1
+pak_open LOGO.PAK bytes=1340218
+screen 'loading'
+file_open_request 'game:\GAME\LOADING.PAK' shape r8=128 r9=1
+pak_open LOADING.PAK bytes=19516
+screen 'pause'
+file_open_request 'game:\GAME\PAUSE.PAK' shape r8=128 r9=1
+pak_open PAUSE.PAK bytes=347360
+input frame=301 buttons=0010
+file_open_request 'game:\GAME\LEGAL.PAK' shape r8=128 r9=1
+pak_open LEGAL.PAK bytes=63848
+input frame=324 buttons=0000
+frame 500 state_obj=00095130 w=[8203e118 00525060 00000000 00000000] q=[00000000 00000000 00000000 00000000] file_open=0 pos=0 phys_live=2524K phys_peak=3549K cursor=12244000
+file_open_request 'game:\GAME\ATTRACT.PAK' shape r8=128 r9=1
+pak_open ATTRACT.PAK bytes=88052
+frame 1000 state_obj=00095130 w=[8203e118 00525060 00000000 00000000] q=[00000000 00000000 00000000 00000000] file_open=0 pos=0 phys_live=2524K phys_peak=3549K cursor=12244000
+input frame=1201 buttons=0010
+file_open_request 'game:\GAME\MENU.PAK' shape r8=128 r9=1
+pak_open MENU.PAK bytes=971538
+input frame=1260 buttons=0000
+frame 1500 state_obj=00095130 w=[8203e118 00525060 00000000 00000000] q=[00000000 00000000 00000000 00000000] file_open=0 pos=0 phys_live=2528K phys_peak=3553K cursor=12244000
+frame 2000 state_obj=00095130 w=[8203e118 00525060 00000000 00000000] q=[00000000 00000000 00000000 00000000] file_open=0 pos=0 phys_live=2528K phys_peak=3553K cursor=12244000
+frame 2500 state_obj=00095130 w=[8203e118 00525060 00000000 00000000] q=[00000000 00000000 00000000 00000000] file_open=0 pos=0 phys_live=2528K phys_peak=3553K cursor=12244000
+caller_post_init result=capacity@8214a614 funcs=36504166 memops=724532115 r1=0003ee70 lr=820b7504 r3=00000001 r4=00000000 r5=0003eec0 r6=00000280 r7=000001e0 r11=fffe2b40

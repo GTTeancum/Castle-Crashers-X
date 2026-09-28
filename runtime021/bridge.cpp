@@ -896,7 +896,7 @@ static constexpr uint8_t VectorMaskR[256] = {
   0x0E,0x0D,0x0C,0x0B,0x0A,0x09,0x08,0x07,0x06,0x05,0x04,0x03,0x02,0x01,0x00,0xFF
 };
 static simde__m128i simde_mm_setzero_si128() { return simde__m128i{}; }
-static uint8_t* raw_addr021(Machine& base,uint32_t a) { auto* p=base.memory.contiguous(a,16,3); if(!p) base.fail(Error::memory,a); return p; }
+static uint8_t* raw_addr021(Machine& base,uint32_t a) { auto* p=base.fast_host(a,16,3); if(!p) p=base.memory.contiguous(a,16,3); if(!p) base.fail(Error::memory,a); return p; }
 #define REX_RAW_ADDR(a) raw_addr021(base,uint32_t(a))
 using PPCRegister = Register;
 #define DEFINE_REX_FUNC(name)                                                  \
