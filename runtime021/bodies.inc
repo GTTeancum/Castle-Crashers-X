@@ -51,23 +51,22 @@ HARD_BOUNDARY(sub_82053648, 0x82053648u)
 // CC_MEM_REPORT.
 static std::map<uint32_t, std::pair<uint32_t, uint32_t>> g_heap_live;  // ptr -> (size, lr)
 #define sub_8209BDD8 sub_8209BDD8_exact
+#define sub_8209BF18 sub_8209BF18_exact
+#endif
 #include "generated/sub_8209BDD8.inc"
+#include "generated/sub_8209BF18.inc"
+#ifndef CC_XBOX_DRIVER
 #undef sub_8209BDD8
+#undef sub_8209BF18
 static void sub_8209BDD8(Context& ctx, Machine& base) {
   const uint32_t size = ctx.r4.u32, lr = uint32_t(ctx.lr);
   sub_8209BDD8_exact(ctx, base);
   if (ctx.r3.u32) g_heap_live[ctx.r3.u32] = {size, lr};
 }
-#define sub_8209BF18 sub_8209BF18_exact
-#include "generated/sub_8209BF18.inc"
-#undef sub_8209BF18
 static void sub_8209BF18(Context& ctx, Machine& base) {
   g_heap_live.erase(ctx.r4.u32);
   sub_8209BF18_exact(ctx, base);
 }
-#else
-#include "generated/sub_8209BDD8.inc"
-#include "generated/sub_8209BF18.inc"
 #endif
 #include "generated/__savegprlr_26.inc"
 #include "generated/__restgprlr_26.inc"
@@ -103,7 +102,12 @@ static uint32_t cc_phys_alloc(Machine& base, uint32_t bytes, uint32_t align);
 static bool cc_phys_free(Machine& base, uint32_t addr);
 static void cc_phys_shrink(Machine& base, uint32_t addr, uint32_t new_size);
 static uint64_t g_tex_cache_bytes = 0;
+static bool cc_texzone_free(uint32_t a);
+static uint32_t cc_texzone_alloc(Machine& base, uint32_t bytes, uint32_t keep);
+static uint32_t g_tex_alloc_keep = 0;
+static std::vector<std::pair<int64_t, uint32_t>> g_tex_swap_free_early;
 static uint32_t g_tex_replays = 0, g_tex_replay_mismatches = 0, g_tex_evictions = 0;
+static uint32_t g_tex_swap_ins = 0, g_tex_swap_outs = 0;
 static bool cc_audio_set_volume(uint32_t voice, float vol);
 static bool cc_audio_stop(uint32_t voice);
 static void cc_audio_frame();
@@ -1542,9 +1546,9 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   cc_capture_end_frame(base.memory, g_frame_delay_calls + 1u);
 #ifndef CC_XBOX_DRIVER
   if (std::getenv("CC_WORKSET") && (g_frame_delay_calls + 1u) % 250u == 0u)
-    cc_log("TEXSTREAM frame=%u cache=%lluK replays=%u mismatches=%u evictions=%u%c",
+    cc_log("TEXSTREAM frame=%u cache=%lluK replays=%u mismatches=%u evictions=%u swap_out=%u swap_in=%u%c",
            g_frame_delay_calls + 1u, (unsigned long long)(g_tex_cache_bytes >> 10),
-           g_tex_replays, g_tex_replay_mismatches, g_tex_evictions, 10);
+           g_tex_replays, g_tex_replay_mismatches, g_tex_evictions, g_tex_swap_outs, g_tex_swap_ins, 10);
   g_mem_report_space = &base.memory;
   cc_mem_report(g_frame_delay_calls + 1u);
 #endif
@@ -1974,29 +1978,55 @@ static void __imp__VdPersistDisplay(Context& ctx, Machine& base) {
   base.store(ctx.r4.u32, 4, token);
   ctx.r3.u64 = 1u;
 }
+// Two zones keep the retail-sized arena from fragmenting: small blocks
+// (<= 4 KiB with at most 16-byte alignment; thousands of them in a level)
+// come from their own zone at 0x1E000000, so they never split the space
+// the large texture and pak blocks need at 0x12000000.
+struct CcPhysZone { std::vector<PhysRange>* free; uint32_t* cursor; };
+static std::vector<PhysRange> g_phys_small_free, g_phys_stub_free;
+static uint32_t g_phys_small_cursor = 0x1E000000u, g_phys_stub_cursor = 0x1D000000u;
+static uint32_t g_phys_zone_hint = 0;  // 2: texture stub zone
+static uint32_t g_zone_hw[3] = {0x12000000u, 0x1E000000u, 0x1D000000u};  // cursor high-water
+static CcPhysZone cc_phys_zone_for(uint32_t addr) {
+  if (addr >= 0x1E000000u) return {&g_phys_small_free, &g_phys_small_cursor};
+  if (addr >= 0x1D000000u) return {&g_phys_stub_free, &g_phys_stub_cursor};
+  return {&g_phys_free_ranges, &g_phys_cursor};
+}
 static uint32_t cc_phys_alloc(Machine& base, uint32_t bytes, uint32_t align) {
   const uint32_t size=(bytes+15u)&~15u;
+  // Texture stubs only need to be distinct: the pixels live in the texture
+  // cache, so the page alignment the loader asks for is not kept.
+  if (g_phys_zone_hint == 2u) align = 16u;
+  const bool small = size <= 4096u && align <= 16u;
+  CcPhysZone z = g_phys_zone_hint == 2u ? CcPhysZone{&g_phys_stub_free, &g_phys_stub_cursor}
+               : small ? CcPhysZone{&g_phys_small_free, &g_phys_small_cursor}
+                       : CcPhysZone{&g_phys_free_ranges, &g_phys_cursor};
+  std::vector<PhysRange>& fl = *z.free;
     uint32_t p=0;
-    for (size_t i=0;i<g_phys_free_ranges.size();++i) {
-      const PhysRange fr=g_phys_free_ranges[i];
+    for (size_t i=0;i<fl.size();++i) {
+      const PhysRange fr=fl[i];
       const uint32_t a=(fr.addr+align-1u)&~(align-1u);
       if (a<fr.addr || a-fr.addr>fr.size || fr.size-(a-fr.addr)<size) continue;
       p=a;
       const uint32_t lead=a-fr.addr, tail=fr.size-lead-size;
-      g_phys_free_ranges.erase(g_phys_free_ranges.begin()+i);
-      if (tail) g_phys_free_ranges.insert(g_phys_free_ranges.begin()+i, PhysRange{a+size, tail});
-      if (lead) g_phys_free_ranges.insert(g_phys_free_ranges.begin()+i, PhysRange{fr.addr, lead});
+      fl.erase(fl.begin()+i);
+      if (tail) fl.insert(fl.begin()+i, PhysRange{a+size, tail});
+      if (lead) fl.insert(fl.begin()+i, PhysRange{fr.addr, lead});
       break;
     }
     if (!p) {
-      p=(g_phys_cursor+align-1u)&~(align-1u);
+      p=(*z.cursor+align-1u)&~(align-1u);
       if (p+size<p || base.memory.check(p,size,3)!=cc::xbox::MemoryError::ok) {
-        cc_elog("PHYS exhausted request=%u live=%llu peak=%llu blocks=%u free_ranges=%u\n",
+        cc_elog("PHYS exhausted zone=%s request=%u live=%llu peak=%llu blocks=%u free_ranges=%u\n",
+                g_phys_zone_hint == 2u ? "texture-stub" : small ? "small" : "large",
                 size,(unsigned long long)g_phys_live_bytes,(unsigned long long)g_phys_peak_bytes,
-                unsigned(g_phys_live_blocks.size()),unsigned(g_phys_free_ranges.size()));
+                unsigned(g_phys_live_blocks.size()),unsigned(fl.size()));
         base.fail(Error::memory,p);
       }
-      g_phys_cursor=p+size;
+      *z.cursor=p+size;
+      if (z.cursor == &g_phys_cursor && g_phys_cursor > g_zone_hw[0]) g_zone_hw[0] = g_phys_cursor;
+      if (z.cursor == &g_phys_small_cursor && g_phys_small_cursor > g_zone_hw[1]) g_zone_hw[1] = g_phys_small_cursor;
+      if (z.cursor == &g_phys_stub_cursor && g_phys_stub_cursor > g_zone_hw[2]) g_zone_hw[2] = g_phys_stub_cursor;
     }
     g_phys_live_blocks.push_back(PhysRange{p,size});
 #ifndef CC_XBOX_DRIVER
@@ -2089,6 +2119,9 @@ static void cc_mem_report(uint32_t frame) {
     const auto gh = touched(0x00071000u, 0x01071000u), gx = touched(0x02000000u, 0x02500000u);
     const auto mp = touched(0x10000000u, 0x11000000u);
     cc_log("MEMREPORT main_pool_highwater=%uK port_audio_loaded=%uK%c", mp.second, cc_audio_loaded_bytes() >> 10, 10);
+    cc_log("MEMREPORT zones_highwater large=%uK small=%uK stub=%uK%c",
+           (g_zone_hw[0] - 0x12000000u) >> 10, (g_zone_hw[1] - 0x1E000000u) >> 10,
+           (g_zone_hw[2] - 0x1D000000u) >> 10, 10);
     cc_log("MEMREPORT game_heap_touched=%uK highwater=%uK gpu_arena_touched=%uK highwater=%uK%c",
            gh.first, gh.second, gx.first, gx.second, 10);
     {
@@ -2120,8 +2153,10 @@ static bool cc_phys_free([[maybe_unused]] Machine& base, uint32_t addr) {
       if (g_dxt_textures[k].data == addr) {
         const uint32_t cache = g_dxt_textures[k].cache;
         if (cache) g_tex_cache_bytes -= uint64_t(g_dxt_textures[k].w) * g_dxt_textures[k].h;
+        if (g_dxt_textures[k].swap_off >= 0)
+          g_tex_swap_free_early.push_back({g_dxt_textures[k].swap_off, g_dxt_textures[k].w * g_dxt_textures[k].h});
         g_dxt_textures.erase(g_dxt_textures.begin() + long(k));
-        if (cache) cc_phys_free(base, cache);
+        if (cache) cc_texzone_free(cache);
         break;
       }
     size_t li = 0;
@@ -2133,25 +2168,24 @@ static bool cc_phys_free([[maybe_unused]] Machine& base, uint32_t addr) {
     g_phys_live_blocks[li] = g_phys_live_blocks.back();
     g_phys_live_blocks.pop_back();
     g_phys_live_bytes -= r.size;
+    CcPhysZone z = cc_phys_zone_for(r.addr);
+    std::vector<PhysRange>& fl = *z.free;
     // Insert sorted, then merge with the neighbours on either side.
     size_t pos = 0;
-    while (pos < g_phys_free_ranges.size() && g_phys_free_ranges[pos].addr < r.addr) ++pos;
-    g_phys_free_ranges.insert(g_phys_free_ranges.begin() + pos, r);
-    if (pos + 1 < g_phys_free_ranges.size() &&
-        g_phys_free_ranges[pos].addr + g_phys_free_ranges[pos].size == g_phys_free_ranges[pos+1].addr) {
-      g_phys_free_ranges[pos].size += g_phys_free_ranges[pos+1].size;
-      g_phys_free_ranges.erase(g_phys_free_ranges.begin() + pos + 1);
+    while (pos < fl.size() && fl[pos].addr < r.addr) ++pos;
+    fl.insert(fl.begin() + pos, r);
+    if (pos + 1 < fl.size() && fl[pos].addr + fl[pos].size == fl[pos+1].addr) {
+      fl[pos].size += fl[pos+1].size;
+      fl.erase(fl.begin() + pos + 1);
     }
-    if (pos > 0 &&
-        g_phys_free_ranges[pos-1].addr + g_phys_free_ranges[pos-1].size == g_phys_free_ranges[pos].addr) {
-      g_phys_free_ranges[pos-1].size += g_phys_free_ranges[pos].size;
-      g_phys_free_ranges.erase(g_phys_free_ranges.begin() + pos);
+    if (pos > 0 && fl[pos-1].addr + fl[pos-1].size == fl[pos].addr) {
+      fl[pos-1].size += fl[pos].size;
+      fl.erase(fl.begin() + pos);
     }
     // A free range ending at the cursor returns its space to the cursor.
-    if (!g_phys_free_ranges.empty() &&
-        g_phys_free_ranges.back().addr + g_phys_free_ranges.back().size == g_phys_cursor) {
-      g_phys_cursor = g_phys_free_ranges.back().addr;
-      g_phys_free_ranges.pop_back();
+    if (!fl.empty() && fl.back().addr + fl.back().size == *z.cursor) {
+      *z.cursor = fl.back().addr;
+      fl.pop_back();
     }
   return true;
 }
@@ -2172,8 +2206,9 @@ static void __imp__MmFreePhysicalMemory(Context& ctx, Machine& base) {
   // WIP 023: the pak-mount path frees cursor-arena blocks through the exact
   // wrapper sub_820B6190 (type 0); the shared allocator reuses the space.
   // An address this fixture never handed out fails closed.
-  if (ctx.r3.u32 == 0u && ctx.r4.u32 >= 0x12000000u &&
-      ctx.r4.u32 < g_phys_cursor) {
+  if (ctx.r3.u32 == 0u && ((ctx.r4.u32 >= 0x12000000u && ctx.r4.u32 < g_phys_cursor) ||
+                           (ctx.r4.u32 >= 0x1E000000u && ctx.r4.u32 < g_phys_small_cursor) ||
+                           (ctx.r4.u32 >= 0x1D000000u && ctx.r4.u32 < g_phys_stub_cursor))) {
     if (!cc_phys_free(base, ctx.r4.u32))
       base.fail(Error::unsupported, 0x8214A504u);  // not a block we handed out
     ctx.r3.u64 = 0u;
@@ -2269,7 +2304,9 @@ static void __imp__MmAllocatePhysicalMemoryEx(Context& ctx, Machine& base) {
   if (ctx.r4.u32==0x01000FFFu && ctx.r5.u32==4u && ctx.r8.u32==0x1000u &&
       !g_main_pool_allocated) {
     const uint32_t p=0x10000000u;
-    if (base.memory.check(p,0x01001000u,3)!=cc::xbox::MemoryError::ok)
+    // Only the retail budget's share of the pool is backed (see the test's
+    // main_pool_arena); accesses past it fail closed.
+    if (base.memory.check(p,0x1000u,3)!=cc::xbox::MemoryError::ok)
       base.fail(Error::memory,p);
     g_main_pool_allocated=true;
     ctx.r3.u64=p;
@@ -2288,19 +2325,23 @@ static void __imp__MmAllocatePhysicalMemoryEx(Context& ctx, Machine& base) {
       base.fail(Error::unsupported, 0x8214A4F4u);
     const uint32_t size=(ctx.r4.u32+0xFFFu)&~0xFFFu;
     g_phys_tag=uint32_t(ctx.lr);
+    // The shared allocation wrapper's callers: saved LRs two and three
+    // frames up the guest back chain (raw, uncounted reads).
+    uint64_t f1=0,l1=0,f2=0,l2=0;
+    base.memory.load_be(ctx.r1.u32,4,f1);
+    base.memory.load_be(uint32_t(f1)-8u,4,l1);
+    base.memory.load_be(uint32_t(f1),4,f2);
+    base.memory.load_be(uint32_t(f2)-8u,4,l2);
 #ifndef CC_XBOX_DRIVER
-    {
-      // Attribute the shared allocation wrapper to its callers: saved LRs
-      // two and three frames up the guest back chain (raw, uncounted reads).
-      uint64_t f1=0,l1=0,f2=0,l2=0;
-      base.memory.load_be(ctx.r1.u32,4,f1);
-      base.memory.load_be(uint32_t(f1)-8u,4,l1);
-      base.memory.load_be(uint32_t(f1),4,f2);
-      base.memory.load_be(uint32_t(f2)-8u,4,l2);
-      g_phys_tag2=uint32_t(l1); g_phys_tag3=uint32_t(l2);
-    }
+    g_phys_tag2=uint32_t(l1); g_phys_tag3=uint32_t(l2);
 #endif
+    // Texture pixel blocks (allocated by exact sub_820B1078 at lr
+    // 0x820B1340, then cut to a 16-byte stub by the port) come from their
+    // own zone so the stubs pack together instead of fragmenting the
+    // large-block arena.
+    g_phys_zone_hint = uint32_t(l1) == 0x820B1340u ? 2u : 0u;
     ctx.r3.u64=cc_phys_alloc(base,size,align);
+    g_phys_zone_hint = 0u;
     return;
   }
   cc_elog(
@@ -5019,12 +5060,12 @@ static void sub_820B1478_exact(Context& ctx, Machine& base);
 static uint64_t cc_tex_cache_limit() {
 #ifndef CC_XBOX_DRIVER
   static uint64_t lim = 0;
-  if (!lim) { const char* e = std::getenv("CC_TEX_CACHE_KB"); lim = uint64_t(e ? std::strtoul(e, nullptr, 10) : 6144u) << 10; }
+  if (!lim) { const char* e = std::getenv("CC_TEX_CACHE_KB"); lim = uint64_t(e ? std::strtoul(e, nullptr, 10) : 4096u) << 10; }
   return lim;
 #else
-  // Retail 64 MB budget: level 1 draws <3 MB per 10 s; 6 MB costs 137
-  // replays over the 10,000-frame session.
-  return uint64_t(6144u) << 10;
+  // Retail 64 MB budget: the 4 MiB texture zone (menu draws ~4.5 MB per
+  // frame, level 1 <3 MB per 10 s; overflow goes through the Z: swap).
+  return uint64_t(4096u) << 10;
 #endif
 }
 // Host verification mode CC_TEX_EAGER=1 rasterizes every texture at load,
@@ -5043,6 +5084,137 @@ static uint32_t cc_hash_bytes(const uint8_t* p, size_t n) {
   for (size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 16777619u; }
   return h;
 }
+// ---- Texture cache zone: buddy allocator --------------------------------
+// Compressed textures are power-of-two sized (w*h bytes for power-of-two
+// w, h), so a buddy allocator over a dedicated 4 MiB zone at 0x1C000000
+// never fragments beyond what freeing re-merges. When no block of the
+// needed order is free, least recently drawn textures are evicted (to the
+// scratch swap) until one is.
+constexpr uint32_t kTexZoneBase = 0x1C000000u, kTexZoneOrder = 22u, kTexMinOrder = 8u;
+static std::vector<uint32_t> g_texzone_free[kTexZoneOrder + 1];
+static std::vector<uint8_t> g_texzone_alloc_order;  // per min block: order+1 if allocated here
+static std::vector<uint8_t> g_texzone_free_order;   // per min block: order+1 if free block here
+static void cc_texzone_init() {
+  if (!g_texzone_alloc_order.empty()) return;
+  const size_t n = size_t(1) << (kTexZoneOrder - kTexMinOrder);
+  g_texzone_alloc_order.assign(n, 0);
+  g_texzone_free_order.assign(n, 0);
+  g_texzone_free[kTexZoneOrder].push_back(kTexZoneBase);
+  g_texzone_free_order[0] = uint8_t(kTexZoneOrder + 1);
+}
+static uint32_t cc_texzone_index(uint32_t a) { return (a - kTexZoneBase) >> kTexMinOrder; }
+static void cc_texzone_take(uint32_t order, uint32_t a) {
+  auto& fl = g_texzone_free[order];
+  for (size_t i = 0; i < fl.size(); ++i) if (fl[i] == a) { fl[i] = fl.back(); fl.pop_back(); break; }
+  g_texzone_free_order[cc_texzone_index(a)] = 0;
+}
+static void cc_texzone_put(uint32_t order, uint32_t a) {
+  g_texzone_free[order].push_back(a);
+  g_texzone_free_order[cc_texzone_index(a)] = uint8_t(order + 1);
+}
+static uint32_t cc_texzone_try_alloc(uint32_t bytes) {
+  cc_texzone_init();
+  uint32_t order = kTexMinOrder;
+  while ((1u << order) < bytes) ++order;
+  if (order > kTexZoneOrder) return 0;
+  uint32_t k = order;
+  while (k <= kTexZoneOrder && g_texzone_free[k].empty()) ++k;
+  if (k > kTexZoneOrder) return 0;
+  const uint32_t a = g_texzone_free[k].back();
+  cc_texzone_take(k, a);
+  while (k > order) { --k; cc_texzone_put(k, a + (1u << k)); }
+  g_texzone_alloc_order[cc_texzone_index(a)] = uint8_t(order + 1);
+  return a;
+}
+static bool cc_texzone_free(uint32_t a) {
+  if (a < kTexZoneBase || a >= kTexZoneBase + (1u << kTexZoneOrder) || g_texzone_alloc_order.empty()) return false;
+  const uint32_t ix = cc_texzone_index(a);
+  if (!g_texzone_alloc_order[ix]) return false;
+  uint32_t order = g_texzone_alloc_order[ix] - 1u;
+  g_texzone_alloc_order[ix] = 0;
+  while (order < kTexZoneOrder) {
+    const uint32_t buddy = kTexZoneBase + (((a - kTexZoneBase) ^ (1u << order)));
+    if (g_texzone_free_order[cc_texzone_index(buddy)] != uint8_t(order + 1)) break;
+    cc_texzone_take(order, buddy);
+    a = a < buddy ? a : buddy;
+    ++order;
+  }
+  cc_texzone_put(order, a);
+  return true;
+}
+// Scratch swap for evicted textures (the retail install runs from the hard
+// drive; Z: is the title's scratch drive, which the dashboard may wipe, so
+// the swap is only ever a cache: a missing or wrong copy is re-rasterized).
+// Regions are reused by exact size when textures are freed.
+static std::FILE* g_tex_swap = nullptr;
+static bool g_tex_swap_tried = false;
+static int64_t g_tex_swap_end = 0;
+static std::vector<std::pair<int64_t, uint32_t>>& g_tex_swap_free = g_tex_swap_free_early;
+static std::FILE* cc_tex_swap() {
+  if (g_tex_swap_tried) return g_tex_swap;
+  g_tex_swap_tried = true;
+#ifdef CC_XBOX_DRIVER
+  if (!nxIsDriveMounted('Z')) nxMountDrive('Z', "\\Device\\Harddisk0\\Partition5\\");
+  g_tex_swap = std::fopen("Z:\\cctexswap.bin", "w+b");
+#else
+  const char* dir = std::getenv("CC_SCRATCH_DIR");
+  char path[400];
+  if (dir) std::snprintf(path, sizeof(path), "%s/cctexswap.bin", dir);
+  else {
+    std::snprintf(path, sizeof(path), "%s", g_game_root);
+    const size_t n = std::strlen(path);
+    if (n >= 9 && !std::strcmp(path + n - 9, "extracted"))
+      std::snprintf(path + n - 9, sizeof(path) - (n - 9), "converted/cctexswap.bin");
+    else path[0] = 0;
+  }
+  if (path[0] && !(dir && !std::strcmp(dir, "none"))) g_tex_swap = std::fopen(path, "w+b");
+#endif
+  if (!g_tex_swap) cc_log("TEXSWAP unavailable; evicted textures are re-rasterized%c", 10);
+  return g_tex_swap;
+}
+static void cc_tex_swap_release(CcDxtTexture& t) {
+  if (t.swap_off >= 0) g_tex_swap_free.push_back({t.swap_off, t.w * t.h});
+  t.swap_off = -1;
+}
+// Write an evicted texture's pixels to the swap (once; they never change).
+static void cc_tex_swap_out(Machine& base, CcDxtTexture& t) {
+  if (t.swap_off >= 0 || !t.hashed) return;
+  std::FILE* f = cc_tex_swap();
+  const uint8_t* q = base.memory.contiguous(t.cache, size_t(t.w) * t.h, 1);
+  if (!f || !q) return;
+  const uint32_t bytes = t.w * t.h;
+  int64_t off = -1;
+  for (size_t i = 0; i < g_tex_swap_free.size(); ++i)
+    if (g_tex_swap_free[i].second == bytes) {
+      off = g_tex_swap_free[i].first;
+      g_tex_swap_free.erase(g_tex_swap_free.begin() + long(i));
+      break;
+    }
+  if (off < 0) { off = g_tex_swap_end; g_tex_swap_end += bytes; }
+  if (std::fseek(f, long(off), SEEK_SET) != 0 || std::fwrite(q, 1, bytes, f) != bytes) {
+    g_tex_swap_free.push_back({off, bytes});
+    return;
+  }
+  t.swap_off = off;
+  ++g_tex_swap_outs;
+}
+// Read a texture back from the swap into a new cache block; 0 on failure.
+static uint32_t cc_tex_swap_in(Machine& base, CcDxtTexture& t) {
+  std::FILE* f = g_tex_swap;
+  if (t.swap_off < 0 || !f) return 0;
+  const uint32_t bytes = t.w * t.h;
+  const uint32_t cache = cc_texzone_alloc(base, bytes, t.data);
+  uint8_t* q = base.memory.contiguous(cache, bytes, 3);
+  if (!q || std::fseek(f, long(t.swap_off), SEEK_SET) != 0 || std::fread(q, 1, bytes, f) != bytes ||
+      cc_hash_bytes(q, bytes) != t.hash) {
+    cc_texzone_free(cache);
+    cc_tex_swap_release(t);
+    return 0;
+  }
+  g_tex_cache_bytes += bytes;
+  ++g_tex_swap_ins;
+  return cache;
+}
 // Evict least recently bound textures until the cache fits (never `keep`).
 static void cc_tex_cache_trim(Machine& base, uint32_t keep) {
   while (g_tex_cache_bytes > cc_tex_cache_limit()) {
@@ -5050,11 +5222,29 @@ static void cc_tex_cache_trim(Machine& base, uint32_t keep) {
     for (auto& t : g_dxt_textures)
       if (t.cache && t.data != keep && (!victim || t.last_use < victim->last_use)) victim = &t;
     if (!victim) return;
+    cc_tex_swap_out(base, *victim);
     const uint32_t cache = victim->cache;
     victim->cache = 0;
     g_tex_cache_bytes -= uint64_t(victim->w) * victim->h;
     ++g_tex_evictions;
-    cc_phys_free(base, cache);
+    cc_texzone_free(cache);
+  }
+}
+// A cache block for a w*h texture, evicting least recently drawn textures
+// (never `keep`) until the zone has a free block of the right order.
+static uint32_t cc_texzone_alloc(Machine& base, uint32_t bytes, uint32_t keep) {
+  for (;;) {
+    if (const uint32_t a = cc_texzone_try_alloc(bytes)) return a;
+    CcDxtTexture* victim = nullptr;
+    for (auto& t : g_dxt_textures)
+      if (t.cache && t.data != keep && (!victim || t.last_use < victim->last_use)) victim = &t;
+    if (!victim) base.fail(Error::memory, kTexZoneBase);
+    cc_tex_swap_out(base, *victim);
+    const uint32_t cache = victim->cache;
+    victim->cache = 0;
+    g_tex_cache_bytes -= uint64_t(victim->w) * victim->h;
+    ++g_tex_evictions;
+    cc_texzone_free(cache);
   }
 }
 // Run the exact rasterizer on `job` with its output redirected to a scratch
@@ -5067,10 +5257,10 @@ static uint32_t cc_tex_rasterize(Context& ctx, Machine& base, uint32_t job,
   Context c = ctx;
   c.r3.u64 = job;
   sub_820B1478_exact(c, base);
-  const uint32_t cache = cc_phys_alloc(base, w * h, 16u);
+  const uint32_t cache = cc_texzone_alloc(base, w * h, g_tex_alloc_keep);
   const bool ok = cc_compress_texture_dxt5(base, scratch, cache, w, h);
   cc_phys_free(base, scratch);
-  if (!ok) { cc_phys_free(base, cache); return 0; }
+  if (!ok) { cc_texzone_free(cache); return 0; }
   const uint8_t* q = base.memory.contiguous(cache, size_t(w) * h, 1);
   hash = q ? cc_hash_bytes(q, size_t(w) * h) : 0u;
   g_tex_cache_bytes += uint64_t(w) * h;
@@ -5084,6 +5274,11 @@ static void cc_tex_stream_on_bind(Context& ctx, Machine& base, uint32_t record) 
   if (!t) return;
   t->last_use = g_frame_delay_calls;
   if (t->cache) return;
+  if (const uint32_t swapped = cc_tex_swap_in(base, *t)) {
+    t->cache = swapped;
+    cc_tex_cache_trim(base, t->data);
+    return;
+  }
   // Regenerate from the snapshot in a guest job block.
   const uint32_t job = cc_phys_alloc(base, 596u, 16u);
   uint8_t* jp = base.memory.contiguous(job, 596u, 3);
@@ -5091,6 +5286,7 @@ static void cc_tex_stream_on_bind(Context& ctx, Machine& base, uint32_t record) 
   std::memcpy(jp, t->job.data(), 596u);
   const uint32_t want = t->hash, data_key = t->data, w = t->w, h = t->h;
   uint32_t hash = 0;
+  g_tex_alloc_keep = data_key;
   const uint32_t cache = cc_tex_rasterize(ctx, base, job, w, h, hash);
   cc_phys_free(base, job);
   for (auto& e : g_dxt_textures) if (e.data == data_key) { e.cache = cache; break; }
@@ -5139,6 +5335,7 @@ static void sub_820B1478(Context& ctx, Machine& base) {
     g_dxt_textures.push_back(std::move(t));
     return;
   }
+  g_tex_alloc_keep = t.data;
   t.cache = cc_tex_rasterize(ctx, base, obj, t.w, t.h, t.hash);
   t.hashed = t.cache != 0;
   base.memory.store_be(obj + 564u, 4, t.data);

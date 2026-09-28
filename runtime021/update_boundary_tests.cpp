@@ -474,7 +474,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   std::array<uint8_t,0x10000> stack{};
   std::array<uint8_t,0x1000> tls{};
   std::array<uint8_t,0x1000> allocator{};
-  std::vector<uint8_t> heap(0x1000000);
+  std::vector<uint8_t> heap(0xE00000);  // game heap: level 1 high-water 13.3 MiB (retail budget)
   std::array<uint8_t,0x1000> platform_globals{};
   std::array<uint8_t,0x1000> thread_state{};
   AddressSpace m;
@@ -592,16 +592,33 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // CRT heap blocks (logo.pak alone is 1.3 MiB), so the startup-era 1 MiB
   // arena starves it and the loader retries forever. 8 MiB covers the
   // observed intro assets; exhaustion still fails closed.
-  static std::vector<uint8_t> heap_arena(0x2000000);
+  // Retail 64 MB budget (TODO.md): 20 KB used by level 1 of 1 MiB reserved.
+  static std::vector<uint8_t> heap_arena(0x100000);
   CHECK(m.map(0x04000000u,uint32_t(heap_arena.size()),heap_arena.data(),3)==cc::xbox::MemoryError::ok);
   // Guest arena backing the single observed MmAllocatePhysicalMemoryEx main
   // pool (16 MiB + guard page) requested by exact sub_8209BC98 after Init.
-  static std::vector<uint8_t> main_pool_arena(0x01001000);
+  // Retail budget: the game reserves 16 MiB but uses 3.9 MiB (high-water)
+  // once SOUNDS.PAK's unused MP3 data is stripped; only 4.5 MiB is backed and
+  // any access beyond it fails closed.
+  static std::vector<uint8_t> main_pool_arena(0x480000);
   CHECK(m.map(0x10000000u,uint32_t(main_pool_arena.size()),main_pool_arena.data(),3)==cc::xbox::MemoryError::ok);
   // Cursor arena backing the smaller observed physical blocks (font/texture
   // memory allocated write-combined by the exact font loader).
-  static std::vector<uint8_t> phys_arena(0x0E000000); // 224 MiB: gameplay measured >100 MiB live // font/texture blocks + pak/sound streaming buffers
+  // Retail budget: fonts, rasterizer scratch and pak/sound buffers (the
+  // texture cache and small blocks have zones of their own below).
+  static std::vector<uint8_t> phys_arena(0x00480000);  // level 1 high-water 3.3 MiB
   CHECK(m.map(0x12000000u,uint32_t(phys_arena.size()),phys_arena.data(),3)==cc::xbox::MemoryError::ok);
+  // Small-block zone of the same allocator (<= 4 KiB blocks), kept apart so
+  // they cannot fragment the large-block arena.
+  static std::vector<uint8_t> phys_small_arena(0x00100000);  // high-water 0.26 MiB
+  CHECK(m.map(0x1E000000u,uint32_t(phys_small_arena.size()),phys_small_arena.data(),3)==cc::xbox::MemoryError::ok);
+  // Texture stub zone: the loader's full-size texture blocks, each cut to a
+  // 16-byte stub once recorded (the largest transient block is 2 MiB).
+  static std::vector<uint8_t> tex_stub_arena(0x00180000);  // high-water 1.07 MiB
+  CHECK(m.map(0x1D000000u,uint32_t(tex_stub_arena.size()),tex_stub_arena.data(),3)==cc::xbox::MemoryError::ok);
+  // Texture cache zone (buddy allocator, 4 MiB) for the DXT5 texture cache.
+  static std::vector<uint8_t> tex_zone_arena(0x00400000);
+  CHECK(m.map(0x1C000000u,uint32_t(tex_zone_arena.size()),tex_zone_arena.data(),3)==cc::xbox::MemoryError::ok);
 
   // Execute the exact CRT heap initialization (sub_820B7880 -> exact
   // sub_820B93B0) that original startup performs before any game code runs.
@@ -1195,13 +1212,14 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // chain (sub_820C3568/sub_820C3930/sub_820C4488/sub_820C4498) creates the
   // font texture. The slice ends by dispatching renderer vtable slot +12 to
   // exact sub_820A7E80 (with exact sub_820BFB50), which returns normally.
-  // Default port policy: DXT5 textures streamed through a 6 MB cache,
+  // Default port policy: DXT5 textures streamed through a 5 MB cache with
+  // a scratch swap,
   // rasterized on first bind (CC_TEX_EAGER=1 gives the load-time order),
   // and SOUNDS.PAK without its unused MP3 payloads from the port data
   // overlay (tools/strip_sound_bank.py -> game-data/converted/data/), and
   // the port audio layer playing Xbox ADPCM (tools/convert_audio.py ->
   // game-data/converted/audio/).
-  CHECK(pi.functions==326577939u && pi.memory_ops==163233894u);
+  CHECK(pi.functions==320961210u && pi.memory_ops==4101260149u);
   CHECK(c.r1.u32==0x0003ee70u); // pacing-sleep frame at the budget stop
   // The boot-era pool record at 0x75240 (size 16 MiB, base 0x10000000) has
   // been released and cleared by the time the session reaches gameplay.

@@ -7,6 +7,9 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
+#ifdef CC_XBOX_DRIVER
+#include <nxdk/mount.h>
+#endif
 #include <map>
 #include <set>
 #include "cc_log.h"
@@ -61,6 +64,7 @@ static std::vector<PhysRange> g_phys_live_blocks;
 struct CcDxtTexture {
   uint32_t data = 0, w = 0, h = 0, cache = 0, last_use = 0, hash = 0;
   bool hashed = false;  // hash holds the first compression's hash
+  int64_t swap_off = -1;  // copy of the DXT5 pixels in the scratch swap file
   std::vector<uint8_t> job;
 };
 static std::vector<CcDxtTexture> g_dxt_textures;

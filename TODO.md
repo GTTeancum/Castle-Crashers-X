@@ -36,36 +36,42 @@ textures natively. DXT5 is 4x smaller than 32-bit colour, so the level's
 Compressing at load time (or converting the pak art offline) is the main
 lever; unloading art the level no longer needs is the second.
 
-**64 MB budget, second pass (2026-09-28, 10,000-frame session incl. level 1):**
+**64 MB budget, third pass (2026-09-28): enforced.** The host harness now
+maps every guest region at its retail size, so the 10,000-frame session
+(boot, menus, character select, level 1) runs inside the budget; any
+overflow fails loudly. The game runs identical instruction and memory-op
+counts and pixel-identical frames at these sizes.
 
-| Item | Measured | Xbox sizing |
+| Item | Size | Level 1 peak |
 | --- | --- | --- |
-| Kernel, system, NV2A push buffer | - | ~4 MB |
-| Game code (XBE) | 10 MB | 10 MB |
-| Game data image (guest globals) | 2.9 MB | 3 MB |
-| Framebuffers 640x480 x2 | - | 2.4 MB |
-| Game heap (0x71000) | 13.5 MB live, 13.3 MB high-water | 14 MB |
-|   - of which fixed object pools (`sub_8208CFA0`) | 2.6 + 2x1.5 MB | |
-|   - of which loaded level/movie data (`sub_82095A08`) | 3.7 MB | |
-| Game main pool (0x10000000) | 3.9 MB high-water of 16 MB | 6 MB |
-| Graphics blocks (textures cache, fonts, buffers) | 12 MB peak, 6 MB late | 14 MB |
-| GPU command arena (0x02000000) | 4.8 MB high-water | 5 MB |
-| CRT heap | 20 KB | 1 MB |
-| Sound effects (registered, ADPCM) | 7.5 MB | 7.5 MB |
-| Texture job snapshots | 1.7 MB | 1.7 MB |
-| Open pak file buffers (harness reads files whole) | up to ~3 MB | stream instead |
-| **Total** | | **~73 MB (~9 MB over)** |
+| Game heap (0x71000) | 14 MB | 13.3 MB |
+| Game main pool (0x10000000, game reserves 16 MB) | 4.5 MB backed | 3.9 MB |
+| CRT heap | 1 MB | 20 KB |
+| Graphics arena (360 surfaces and ring aliased) | 2.1 MB | - |
+| Physical: general zone | 4.5 MB | 3.3 MB |
+| Physical: small-block zone | 1 MB | 0.26 MB |
+| Physical: texture stub zone | 1.5 MB | 1.07 MB |
+| Texture cache zone (buddy, overflow to Z: swap) | 4 MB | full at menus |
+| Game data image | 2.9 MB | - |
+| **Guest total** | **35.5 MB** | |
+| Game code (XBE) | 10 MB | |
+| Sound-effect cache | 2 MB | |
+| Texture job snapshots | 1.7 MB | |
+| Kernel, system, framebuffers, NV2A push buffer | ~6.4 MB | |
+| **Estimated total** | **~56 MB (~8 MB headroom)** | |
 
-Candidate cuts, largest and safest first:
-- [x] Texture cache limit 16 -> 6 MB (done): 137 replays over the whole
-  session, zero mismatches; graphics peak 12.1 -> 10.0 MB.
-- Sound effects at 16 kHz instead of 22 kHz (~2 MB), or load an effect on
-  first play with a small LRU cache (costs a disc read on first play).
-- Game object pools: measure peak use of the three `sub_8208CFA0` pools;
-  if mostly empty, shrink them (changes game constants, needs care).
-- GPU command ring: the 360 command stream is not consumed on the Xbox
-  (the port draws from the game's draw calls); a smaller ring (~2 MB).
-- File buffers: read paks from disc on demand instead of whole-file copies.
+Not yet counted: the Xbox renderer's own buffers (still to be written) and
+music stream buffers (small). Later levels may peak higher than level 1;
+the zones fail loudly if they do, and the headroom above is where they
+grow.
+
+Done in this pass: graphics arena 5 -> 2.1 MB (unused 360 surfaces and
+command ring aliased); game files read from disk on demand; sound effects
+loaded on first play (2 MB cache, bit-identical audio); texture cache
+6 -> 4 MB in its own buddy-allocated zone with a Z: scratch swap (a whole
+session: 2,985 swap-ins, zero re-rasterizations, every swap-in hash
+verified); separate zones for small blocks and texture stubs (the
+retail-sized arena fragmented otherwise); texture stubs 16-byte aligned.
 
 **Streaming policy (user direction 2026-09-28):** stream music; preload
 sound effects where possible; stream art wherever it can be streamed.
