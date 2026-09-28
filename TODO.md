@@ -44,12 +44,12 @@ lever; unloading art the level no longer needs is the second.
 | Game code (XBE) | 10 MB | 10 MB |
 | Game data image (guest globals) | 3 MB | 3 MB |
 | Framebuffers 640x480, double buffered | — | 2.5 MB |
-| Game's own memory pool | 16 MB reserved, 12.6 MB used | ~13 MB |
+| Game's own memory pool | 16 MB reserved; 3.9 MB used after the sound-bank strip | ~4 MB |
 | General heap | ~20 KB | ~0 |
 | Sprite textures | 158 MB (32-bit) -> streamed DXT5 cache, 16 MB limit, 2-7 MB used | 16 MB |
 | Texture job snapshots (596 B each) | 1.7 MB | 1.7 MB |
 | Rasterizer temporaries (one texture at a time) | up to ~6 MB for a 512x512 | ~6 MB |
-| Audio | 5 MB (music stream buffers; audio stubbed) | ~6 MB |
+| Audio | SFX ADPCM for registered sounds (all 420 = 8.6 MB) + small music stream buffers | ~9 MB |
 | Everything else | <1 MB | ~1 MB |
 
 The textures cannot all be resident even compressed (~40 MB as DXT5), so
@@ -105,8 +105,12 @@ sound effects where possible; stream art wherever it can be streamed.
       audio. Next: find what fills the two heaps (loaded paks: SOUNDS.PAK
       alone is 16.5 MB; MAIN 2.7 MB, SKY 0.5-2.4 MB, LEVEL2) and which of it
       can be streamed or dropped after use.
-- [ ] Audio: re-encode (XMA is not playable on the original Xbox), stream
-      music, preload sound effects.
+- [x] Strip the unused MP3 data from SOUNDS.PAK (`tools/strip_sound_bank.py`):
+      the SWF sound bank the game loads whole kept 9.8 MB of MP3 the 360
+      never plays (effects play from game:\sounds\*.xma). Main pool
+      13.5 -> 3.9 MB; identical instruction count and frames.
+- [ ] Audio: the port's own PlatformAudio layer (sfx.xab / music .xad,
+      software mixer to AC97 on the Xbox), music streamed from disc.
 
 ## Xbox 360 leftovers in the menus
 

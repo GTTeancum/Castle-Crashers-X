@@ -1137,7 +1137,30 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
 #ifdef CC_XBOX_DRIVER
     for (char* p=host; *p; ++p) if (*p=='/') *p='\\';
 #endif
-    std::FILE* f=std::fopen(host,"rb");
+    std::FILE* f=nullptr;
+#ifndef CC_XBOX_DRIVER
+    // Port data overlay: files the port rewrites (e.g. the stripped sound
+    // bank) live in game-data/converted/data/<folder>/ and take precedence.
+    // The Xbox disc ships the rewritten files in place instead.
+    {
+      char port_root[300]{};
+      if (const char* e = std::getenv("CC_PORT_DATA")) std::snprintf(port_root, sizeof(port_root), "%s", e);
+      else {
+        std::snprintf(port_root, sizeof(port_root), "%s", g_game_root);
+        const size_t n = std::strlen(port_root);
+        if (n >= 9 && !std::strcmp(port_root + n - 9, "extracted"))
+          std::snprintf(port_root + n - 9, sizeof(port_root) - (n - 9), "converted/data");
+        else port_root[0] = 0;
+      }
+      if (port_root[0] && std::strcmp(port_root, "none")) {
+        char over[400];
+        std::snprintf(over, sizeof(over), "%s%s%s", port_root, host_dir, fname);
+        f = std::fopen(over, "rb");
+        if (f) cc_log("port_data %s%c", over, 10);
+      }
+    }
+#endif
+    if (!f) f=std::fopen(host,"rb");
     if (!f) {
       // The sealed shader-name table requests SobelEdge.xpu (the container
       // ships SobelEdgePS.xpu) and VertexColorFillPS.xpu (absent from the
