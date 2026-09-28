@@ -164,7 +164,9 @@ struct Machine {
   // WIP 023: the frame loop keeps several files open at once (a streamed
   // XMA sound bank stays open across pak opens), so the single-file
   // fixture became a bounded 8-slot handle table.
-  struct FileSlot { bool open{}; uint32_t handle{}; uint32_t pos{}; std::vector<uint8_t> bytes; };
+  // Open game files are read from disk on demand (the original Xbox cannot
+  // afford whole-file copies next to the game's own buffers).
+  struct FileSlot { bool open{}; uint32_t handle{}; uint32_t pos{}; uint32_t size{}; std::FILE* fp{}; };
   std::array<FileSlot,8> files{};
   FileSlot* find_file(uint32_t h) {
     for (auto &f : files) if (f.open && f.handle==h) return &f;
@@ -1189,13 +1191,8 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
       cc_elog("NTCREATE reject size name='%s' bytes=%ld cap=%ld\n",fname,sz,size_cap);
       base.fail(Error::unsupported, address);
     }
-    slot->bytes.assign(size_t(sz),0);
-    const bool ok=std::fread(slot->bytes.data(),1,size_t(sz),f)==size_t(sz);
-    std::fclose(f);
-    if (!ok) {
-      cc_elog("NTCREATE short read name='%s' bytes=%ld\n",fname,sz);
-      base.fail(Error::unsupported, address);
-    }
+    slot->fp=f;
+    slot->size=uint32_t(sz);
     if (pak_open_shape) cc_log("pak_open %s bytes=%ld\n",fname,sz);
     slot->open=true;
     slot->pos=0;
@@ -1217,7 +1214,7 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
       base.fail(Error::unsupported, address);
     const uint64_t hi=base.load(info+0,4), lo=base.load(info+4,4);
     const uint64_t pos=(hi<<32)|lo;
-    if (pos>fsl->bytes.size())
+    if (pos>fsl->size)
       base.fail(Error::unsupported, address);
     fsl->pos=uint32_t(pos);
     base.store(iosb+0,4,0u);
@@ -1244,8 +1241,8 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     if (ctx.r6.u32!=56u || ctx.r7.u32!=34u)
       base.fail(Error::unsupported, address);
     for (unsigned i=0;i<4;++i) base.store(buf+i*8u,8,0u); // four timestamps
-    base.store(buf+32u,8,uint64_t(fsl->bytes.size())); // AllocationSize
-    base.store(buf+40u,8,uint64_t(fsl->bytes.size())); // EndOfFile
+    base.store(buf+32u,8,uint64_t(fsl->size)); // AllocationSize
+    base.store(buf+40u,8,uint64_t(fsl->size)); // EndOfFile
     base.store(buf+48u,4,0x80u); // FILE_ATTRIBUTE_NORMAL
     base.store(buf+52u,4,0u);
     base.store(iosb+0,4,0u);
@@ -1265,17 +1262,24 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     auto* fsl=base.find_file(ctx.r3.u32);
     if (!fsl || ctx.r4.u32!=0u ||
         ctx.r5.u32!=0u || (!plain_shape && !apcctx_shape) ||
-        fsl->pos>fsl->bytes.size())
+        fsl->pos>fsl->size)
       base.fail(Error::unsupported, address);
     if (apcctx_shape && ctx.r10.u32!=0u) {
       const uint64_t off=base.load(ctx.r10.u32,8);
-      if (off>fsl->bytes.size()) base.fail(Error::unsupported, address);
+      if (off>fsl->size) base.fail(Error::unsupported, address);
       fsl->pos=uint32_t(off);
     }
-    const uint32_t avail=uint32_t(fsl->bytes.size()-fsl->pos);
+    const uint32_t avail=fsl->size-fsl->pos;
     const uint32_t take=len<avail?len:avail;
-    for (uint32_t i=0;i<take;++i)
-      base.store(buf+i,1,fsl->bytes[fsl->pos+i]);
+    if (take && std::fseek(fsl->fp,long(fsl->pos),SEEK_SET)!=0)
+      base.fail(Error::unsupported, address);
+    static uint8_t chunk[65536];
+    for (uint32_t done=0; done<take; ) {
+      const uint32_t n=(take-done)<uint32_t(sizeof(chunk))?(take-done):uint32_t(sizeof(chunk));
+      if (std::fread(chunk,1,n,fsl->fp)!=n) base.fail(Error::unsupported, address);
+      for (uint32_t i=0;i<n;++i) base.store(buf+done+i,1,chunk[i]);
+      done+=n;
+    }
     fsl->pos+=take;
     base.store(iosb+0,4,take?0u:0xC0000011u); // STATUS_END_OF_FILE when empty
     base.store(iosb+4,4,take);
@@ -1290,7 +1294,8 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     fsl->open=false;
     fsl->handle=0;
     fsl->pos=0;
-    fsl->bytes.clear();
+    fsl->size=0;
+    if (fsl->fp) { std::fclose(fsl->fp); fsl->fp=nullptr; }
     ctx.r3.u64=0;
     return;
   }
