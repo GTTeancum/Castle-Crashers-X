@@ -99,6 +99,14 @@ def decode_texture(w, h, fmt, raw):
         v = (b[offs].astype(np.uint16) << 8) | b[offs + 1]
         chans = [((v >> s) & 15).astype(np.uint8) * 17 for s in (8, 4, 0, 12)]
         return np.stack(chans, -1)
+    if fmt == 100:  # the port's DXT5: standard little-endian block layout
+        import io
+        hdr = bytearray(128)
+        struct.pack_into('<4sIIIIIII', hdr, 0, b'DDS ', 124, 0x81007, h, w, w * h, 0, 1)
+        struct.pack_into('<II4s', hdr, 76, 32, 4, b'DXT5')
+        struct.pack_into('<I', hdr, 108, 0x1000)
+        img = Image.open(io.BytesIO(bytes(hdr) + raw[:w * h])).convert('RGBA')
+        return np.asarray(img)
     if fmt == 7:
         return decode_dxt(raw, w, h, 1)
     if fmt in (8, 9):

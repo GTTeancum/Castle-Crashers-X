@@ -540,9 +540,16 @@ New in this increment (~500 exact bodies since 023b, all byte-exact from the sea
 - **Visual evidence** (`logs/frames_full/*.png`): 3500 story book, 4200 Live notice, 5200 character select (green knight, level 1), 7500 in level with HUD, 7800 walking (camera scrolls), 8102/8200 sword swings, 8600 walked to the room's left edge, 9362 at the training dummy with **gold 2**, 9900 opening cutscene (wizard in the throne room).
 - **Measured default session:** 10,000 frames, 4,046 assertions PASS (rc=0), `capacity@8214a614 funcs=361,075,719 memops=1,050,751,650`; physical memory peak 184 MB in the level.
 
+### 2026-09-28 — WIP 023g: RETAIL 64 MB TARGET; textures DXT5-compressed at creation (level peak 184 MB -> 51 MB).
+
+- **Target decided by the user: retail 64 MB original Xbox only.** Streaming policy: stream music, preload SFX where possible, stream art where possible (TODO.md budget table).
+- `CC_MEM_REPORT=<frame>`: live physical blocks by allocating guest code/caller chain, drawn-texture blocks, content signatures, filled/empty, CRT heap and main-pool usage. Level 1: 158 of 166 MB were ~2,800 A8R8G8B8 textures; CRT heap ~20 KB; main pool 12.6 of 16 MB.
+- The art is vector shapes rasterized on the CPU at load: exact `sub_820B1078` allocates the texture and parses the shape (SWF-style bit-packed RECT), exact `sub_820B1478` rasterizes into a float buffer and converts w*h pixels into `[obj+564]`. Wrappers (exact bodies unchanged): the texture block is shrunk to w*h at allocation, the rasterizer writes into a transient scratch block, the port DXT5-compresses into the texture (`cc_dxt5_block`, standard little-endian blocks for the NV2A). Freed blocks drop out of the tables; a second rasterization into a compressed texture fails closed.
+- **Result: level live 166 -> 47 MB, peak 184 -> 51 MB; identical funcs/memops (361,075,719 / 1,050,751,650), 4,046 assertions PASS, provenance 3,613 PASS; frames verified by eye (`logs/frames_dxt/`).** Capture format code 100 = port DXT5; `render_capture.py` decodes it.
+
 ## 6. NEXT_ACTION
 
-**WIP 023f: gameplay runs and is visually verified in the host harness (see above). Next: (1) rebuild nxdk ISO with all functions and run the gameplay script natively in XEMU; (2) the Xbox render path (pbkit/NV2A) and the 64 MB memory budget (TODO.md) — the two big blockers to playing on hardware.**
+**WIP 023g: level memory 51 MB peak with DXT5 textures. Next: art streaming to reach the ~22 MB texture budget; then (1) rebuild nxdk ISO with all functions and run the gameplay script natively in XEMU; (2) the Xbox render path (pbkit/NV2A) and the 64 MB memory budget (TODO.md) — the two big blockers to playing on hardware.**
 
 **Earlier (WIP 023): the main game loop runs — three full frames (update `sub_82075C88` + render `sub_820759A8` + `VdSwap` + EDRAM retrain) execute deterministically against the idle-pad/no-music fixtures, stopping at the bounded `KeDelayExecutionThread` frame budget (`capacity@8214a614`, 1,331 / 2,276,618, 4,030 assertions). Reproduce first with `renderer011\startup.cct`. Frontiers, in preference order: (1) rebuild `nxdk-checkpoint022` with the current sources and run the frame loop natively in XEMU (`C:\Games\Emulators`) — native original-Xbox proof of live frames; (2) raise the frame budget and inject fixture input transitions (e.g. START press on port 0) at the XamInputGetState boundary as labeled diagnostic input to drive the menu state machine toward gameplay; (3) real pbkit rendering of the frame's draw output on the Xbox target.**
 

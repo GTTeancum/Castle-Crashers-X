@@ -81,9 +81,11 @@ static uint16_t cc_mm_load_u16(Machine& base, uint32_t a);
 // MmAllocatePhysicalMemoryEx/MmFreePhysicalMemory and the kernel pool).
 static uint32_t cc_phys_alloc(Machine& base, uint32_t bytes, uint32_t align);
 static bool cc_phys_free(Machine& base, uint32_t addr);
+static void cc_phys_shrink(Machine& base, uint32_t addr, uint32_t new_size);
 #ifndef CC_XBOX_DRIVER
 static void cc_mem_report(uint32_t frame);
 static cc::xbox::AddressSpace* g_mem_report_space = nullptr;
+static std::set<uint32_t> g_committed_pages;
 #endif
 #define REX_QUERY_TIMEBASE() base.query_timebase()
 #include "generated/sub_820B6D10.inc"
@@ -2015,10 +2017,37 @@ static void cc_mem_report(uint32_t frame) {
       uint64_t w0=0; g_mem_report_space->load_be(b.addr,4,w0);
       auto& c = sig[uint32_t(w0)]; ++c.first; c.second += b.size;
     }
+    uint32_t filled = 0, empty = 0; uint64_t filled_b = 0, empty_b = 0;
+    for (const PhysRange& b : g_phys_live_blocks) {
+      bool nz = false;
+      for (uint32_t o = 0; o < b.size && !nz; o += 64u) {
+        uint64_t w = 0; g_mem_report_space->load_be(b.addr + o, 4, w); nz = w != 0;
+      }
+      if (nz) { ++filled; filled_b += b.size; } else { ++empty; empty_b += b.size; }
+    }
+    cc_log("MEMREPORT filled_blocks=%u (%lluK) empty_blocks=%u (%lluK)%c", filled,
+           (unsigned long long)(filled_b >> 10), empty, (unsigned long long)(empty_b >> 10), 10);
     for (const auto& [k, c] : sig)
       if (c.second >= 512u * 1024u)
         cc_log("MEMREPORT first_word=%08x blocks=%u bytes=%lluK%c", k, c.first,
                (unsigned long long)(c.second >> 10), 10);
+  }
+  {
+    uint32_t pool_touched=0;
+    for (uint32_t pg=0x10000000u; pg<0x11000000u; pg+=0x1000u)
+      for (uint32_t o=0; o<0x1000u; o+=64u) {
+        uint64_t w=0; g_mem_report_space->load_be(pg+o,4,w);
+        if (w) { ++pool_touched; break; }
+      }
+    uint32_t heap_touched=0;
+    for (uint32_t pg=0x04000000u; pg<g_valloc_cursor; pg+=0x1000u)
+      for (uint32_t o=0; o<0x1000u; o+=64u) {
+        uint64_t w=0; g_mem_report_space->load_be(pg+o,4,w);
+        if (w) { ++heap_touched; break; }
+      }
+    cc_log("MEMREPORT crt_heap_committed=%uK crt_heap_touched=%uK reserved=%uK main_pool_touched=%uK (of 16384K)%c",
+           unsigned(g_committed_pages.size()*4u), heap_touched*4u,
+           unsigned((g_valloc_cursor-0x04000000u)>>10), pool_touched*4u, 10);
   }
   cc_log("MEMREPORT frame=%u live=%lluK blocks=%u drawn_texture_blocks=%lluK\n", frame,
          (unsigned long long)(total >> 10), unsigned(g_phys_live_blocks.size()),
@@ -2033,6 +2062,10 @@ static bool cc_phys_free([[maybe_unused]] Machine& base, uint32_t addr) {
     size_t li = 0;
     while (li < g_phys_live_blocks.size() && g_phys_live_blocks[li].addr != addr) ++li;
     if (li == g_phys_live_blocks.size()) return false;
+    for (size_t k = 0; k < g_dxt_textures.size(); ++k)
+      if (g_dxt_textures[k].data == addr) { g_dxt_textures.erase(g_dxt_textures.begin() + long(k)); break; }
+    for (size_t k = 0; k < g_pending_textures.size(); ++k)
+      if (g_pending_textures[k].data == addr) { g_pending_textures.erase(g_pending_textures.begin() + long(k)); break; }
     PhysRange r = g_phys_live_blocks[li];
     g_phys_live_blocks[li] = g_phys_live_blocks.back();
     g_phys_live_blocks.pop_back();
@@ -2147,6 +2180,19 @@ static void __imp__MmFreePhysicalMemory(Context& ctx, Machine& base) {
 // title's main physical pool through MmAllocatePhysicalMemoryEx; the bounded
 // contract below serves it from the dedicated fixture arena and fails closed
 // outside the observed shape.
+// Keep the first new_size bytes of a live block and release the rest.
+static void cc_phys_shrink(Machine& base, uint32_t addr, uint32_t new_size) {
+  new_size = (new_size + 15u) & ~15u;
+  for (auto& b : g_phys_live_blocks) {
+    if (b.addr != addr) continue;
+    if (new_size >= b.size) return;
+    const PhysRange tail{addr + new_size, b.size - new_size};
+    b.size = new_size;
+    g_phys_live_blocks.push_back(tail);
+    cc_phys_free(base, tail.addr);
+    return;
+  }
+}
 static void __imp__MmAllocatePhysicalMemoryEx(Context& ctx, Machine& base) {
   // Bounded physical-memory contract. Two observed request families:
   //  - the single 16 MiB title main pool (flags 0, size 0x01000FFF,
@@ -4774,7 +4820,151 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_82084720.inc"
 #include "generated/sub_820B1008.inc"
 #include "generated/sub_82084448.inc"
+// ---- Port policy: sprite textures are stored DXT5-compressed ------------
+// Castle Crashers renders its vector art into 32-bit A8R8G8B8 textures at
+// load time (exact sub_820B1078 parses the shape and rasterizes it; the
+// caller sub_82091AC0 then builds the texture record: w +16, h +20,
+// format +24, pixels +36). A level holds ~158 MB of them; a retail 64 MB
+// original Xbox cannot. The port therefore compresses each finished
+// texture in place to DXT5 (4:1, read natively by the NV2A) and returns
+// the unused three quarters of its block to the allocator. The pixel
+// bytes are only ever consumed by the GPU path, which knows the format from
+// g_dxt_textures.
+static bool cc_texture_dxt5_enabled() {
+#ifndef CC_XBOX_DRIVER
+  static int on = -1;
+  // Port default; CC_TEXTURE_DXT5=0 keeps the original 32-bit textures.
+  if (on < 0) { const char* e = std::getenv("CC_TEXTURE_DXT5"); on = !(e && e[0] == '0'); }
+  return on == 1;
+#else
+  return true;
+#endif
+}
+// Encode one 4x4 block of RGBA pixels (r,g,b,a bytes) as standard DXT5
+// (little-endian block layout as the NV2A and DDS files store it).
+static void cc_dxt5_block(const uint8_t px[16][4], uint8_t out[16]) {
+  // Alpha: endpoints are the block min/max, eight-value mode (a0 > a1).
+  uint8_t amin = 255, amax = 0;
+  for (int i = 0; i < 16; ++i) { if (px[i][3] < amin) amin = px[i][3]; if (px[i][3] > amax) amax = px[i][3]; }
+  out[0] = amax; out[1] = amin;
+  uint64_t abits = 0;
+  if (amax != amin) {
+    int pal[8] = {amax, amin};
+    for (int j = 1; j <= 6; ++j) pal[1 + j] = ((7 - j) * amax + j * amin) / 7;
+    for (int i = 0; i < 16; ++i) {
+      int best = 0, be = 1 << 30;
+      for (int k = 0; k < 8; ++k) { const int e = std::abs(pal[k] - px[i][3]); if (e < be) { be = e; best = k; } }
+      abits |= uint64_t(best) << (3 * i);
+    }
+  }
+  for (int k = 0; k < 6; ++k) out[2 + k] = uint8_t(abits >> (8 * k));
+  // Colour: bounding-box endpoints inset by 1/16 of the range.
+  int lo[3] = {255, 255, 255}, hi[3] = {0, 0, 0};
+  for (int i = 0; i < 16; ++i)
+    for (int c = 0; c < 3; ++c) { if (px[i][c] < lo[c]) lo[c] = px[i][c]; if (px[i][c] > hi[c]) hi[c] = px[i][c]; }
+  for (int c = 0; c < 3; ++c) { const int in = (hi[c] - lo[c]) >> 4; lo[c] += in; hi[c] -= in; }
+  auto pack = [](const int v[3]) {
+    return uint16_t(((v[0] * 31 + 127) / 255) << 11 | ((v[1] * 63 + 127) / 255) << 5 | ((v[2] * 31 + 127) / 255));
+  };
+  uint16_t c0 = pack(hi), c1 = pack(lo);
+  if (c0 < c1) { const uint16_t t = c0; c0 = c1; c1 = t; }
+  auto unpack = [](uint16_t c, int v[3]) {
+    v[0] = ((c >> 11) & 31) * 255 / 31; v[1] = ((c >> 5) & 63) * 255 / 63; v[2] = (c & 31) * 255 / 31;
+  };
+  int pal[4][3];
+  unpack(c0, pal[0]); unpack(c1, pal[1]);
+  for (int c = 0; c < 3; ++c) { pal[2][c] = (2 * pal[0][c] + pal[1][c]) / 3; pal[3][c] = (pal[0][c] + 2 * pal[1][c]) / 3; }
+  uint32_t cbits = 0;
+  if (c0 != c1)
+    for (int i = 0; i < 16; ++i) {
+      int best = 0, be = 1 << 30;
+      for (int k = 0; k < 4; ++k) {
+        int e = 0;
+        for (int c = 0; c < 3; ++c) { const int d = pal[k][c] - px[i][c]; e += d * d; }
+        if (e < be) { be = e; best = k; }
+      }
+      cbits |= uint32_t(best) << (2 * i);
+    }
+  out[8] = uint8_t(c0); out[9] = uint8_t(c0 >> 8); out[10] = uint8_t(c1); out[11] = uint8_t(c1 >> 8);
+  for (int k = 0; k < 4; ++k) out[12 + k] = uint8_t(cbits >> (8 * k));
+}
+// Compress a w x h A8R8G8B8 image (big-endian guest pixels, pitch w*4) at
+// src into DXT5 blocks at dst (w*h bytes). dst may equal src.
+static bool cc_compress_texture_dxt5(Machine& base, uint32_t src, uint32_t dst, uint32_t w, uint32_t h) {
+  if (w < 4u || h < 4u || (w & 3u) || (h & 3u) || w > 4096u || h > 4096u) return false;
+  const uint8_t* p = base.memory.contiguous(src, size_t(w) * h * 4u, 3);
+  uint8_t* q = base.memory.contiguous(dst, size_t(w) * h, 3);
+  if (!p || !q) return false;
+  static uint8_t rows[4 * 4096 * 4];
+  for (uint32_t by = 0; by < h / 4u; ++by) {
+    std::memcpy(rows, p + size_t(by) * 16u * w, size_t(w) * 16u);
+    for (uint32_t bx = 0; bx < w / 4u; ++bx) {
+      uint8_t px[16][4];
+      for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 4; ++x) {
+          const uint8_t* s = rows + (size_t(y) * w + bx * 4u + x) * 4u;  // A R G B
+          px[y * 4 + x][0] = s[1]; px[y * 4 + x][1] = s[2]; px[y * 4 + x][2] = s[3]; px[y * 4 + x][3] = s[0];
+        }
+      cc_dxt5_block(px, q + (size_t(by) * (w / 4u) + bx) * 16u);
+    }
+  }
+  return true;
+}
+// The loader (exact sub_820B1078) allocates a w*h*4 texture block and
+// parses the shape; the pixels are written later by the rasterizer (exact
+// sub_820B1478: renders into a float buffer, then converts w*h pixels to
+// the texture at [obj+564], pitch w*4). Between the two the game never
+// touches the pixels, so the port shrinks the block to its DXT5 size at
+// once, lets the rasterizer write into a transient 32-bit scratch block,
+// and compresses from the scratch into the texture. Only one full-size
+// image exists at a time.
+#define sub_820B1078 sub_820B1078_exact
 #include "generated/sub_820B1078.inc"
+#undef sub_820B1078
+static void sub_820B1078(Context& ctx, Machine& base) {
+  // Out parameters (as passed by sub_82091AC0): r5 -> pixels, r6 -> width,
+  // r7 -> height.
+  const uint32_t out_data = ctx.r5.u32, out_w = ctx.r6.u32, out_h = ctx.r7.u32;
+  sub_820B1078_exact(ctx, base);
+  if (!cc_texture_dxt5_enabled()) return;
+  uint64_t data = 0, w = 0, h = 0;
+  if (base.memory.load_be(out_data, 4, data) != cc::xbox::MemoryError::ok ||
+      base.memory.load_be(out_w, 4, w) != cc::xbox::MemoryError::ok ||
+      base.memory.load_be(out_h, 4, h) != cc::xbox::MemoryError::ok || !data) return;
+  if (w < 4u || h < 4u || (w & 3u) || (h & 3u) || w > 4096u || h > 4096u) return;
+  cc_phys_shrink(base, uint32_t(data), uint32_t(w * h));
+  g_pending_textures.push_back(CcDxtTexture{uint32_t(data), uint32_t(w), uint32_t(h)});
+}
+#define sub_820B1478 sub_820B1478_exact
+#include "generated/sub_820B1478.inc"
+#undef sub_820B1478
+static void sub_820B1478(Context& ctx, Machine& base) {
+  const uint32_t obj = ctx.r3.u32;
+  uint64_t target = 0;
+  base.memory.load_be(obj + 564u, 4, target);
+  size_t pending = g_pending_textures.size();
+  for (size_t i = 0; i < g_pending_textures.size(); ++i)
+    if (g_pending_textures[i].data == uint32_t(target)) { pending = i; break; }
+  if (pending == g_pending_textures.size()) {
+    if (cc_texture_dxt5_enabled() && cc_find_dxt_texture(uint32_t(target))) {
+      // Re-rasterizing a compressed texture would write 32-bit pixels past
+      // its DXT5-sized block: stop instead.
+      cc_elog("DXT5 texture %08x rasterized again\n", uint32_t(target));
+      base.fail(Error::unsupported, 0x820B1478u);
+    }
+    sub_820B1478_exact(ctx, base);
+    return;
+  }
+  const CcDxtTexture t = g_pending_textures[pending];
+  g_pending_textures.erase(g_pending_textures.begin() + long(pending));
+  const uint32_t scratch = cc_phys_alloc(base, t.w * t.h * 4u, 0x1000u);
+  base.memory.store_be(obj + 564u, 4, scratch);
+  sub_820B1478_exact(ctx, base);
+  base.memory.store_be(obj + 564u, 4, t.data);
+  if (cc_compress_texture_dxt5(base, scratch, t.data, t.w, t.h))
+    g_dxt_textures.push_back(t);
+  cc_phys_free(base, scratch);
+}
 #include "generated/sub_8208F930.inc"
 #include "generated/sub_82091AC0.inc"
 #include "generated/sub_82091C88.inc"
@@ -4815,7 +5005,6 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_820B31D0.inc"
 #include "generated/sub_820B1960.inc"
 #include "generated/sub_820B1838.inc"
-#include "generated/sub_820B1478.inc"
 #include "generated/sub_82130408.inc"
 #include "generated/sub_8212A2E0.inc"
 #include "generated/sub_8212F288.inc"
@@ -6173,6 +6362,9 @@ static void __imp__NtAllocateVirtualMemory(Context& ctx, Machine& base) {
     const uint32_t size=((want_base-start)+want_size+0xFFFu)&~0xFFFu;
     if (base.memory.check(start,size,3)!=cc::xbox::MemoryError::ok)
       base.fail(Error::memory,start);
+#ifndef CC_XBOX_DRIVER
+    for (uint32_t pg=start;pg<start+size;pg+=0x1000u) g_committed_pages.insert(pg);
+#endif
     base.store(base_ptr,4,start);
     base.store(size_ptr,4,size);
     ctx.r3.u64=0;

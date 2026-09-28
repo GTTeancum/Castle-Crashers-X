@@ -4,6 +4,9 @@ Deferred until the port is fully playable.
 
 ## Memory budget (biggest known porting constraint)
 
+**Decision (2026-09-28): retail 64 MB consoles only.** No 128 MB
+(modded/devkit) target, not even as a stepping stone.
+
 **Measured 2026-09-27** in the host test harness, counting only the
 graphics/streaming ("physical") memory the game allocates:
 
@@ -33,6 +36,28 @@ textures natively. DXT5 is 4x smaller than 32-bit colour, so the level's
 Compressing at load time (or converting the pak art offline) is the main
 lever; unloading art the level no longer needs is the second.
 
+**Rough 64 MB budget (first pass):**
+
+| Item | Now (level) | Target |
+| --- | --- | --- |
+| Kernel + system reserve | — | ~4 MB |
+| Game code (XBE) | 10 MB | 10 MB |
+| Game data image (guest globals) | 3 MB | 3 MB |
+| Framebuffers 640x480, double buffered | — | 2.5 MB |
+| Game's own memory pool | 16 MB reserved, 12.6 MB used | ~13 MB |
+| General heap | ~20 KB | ~0 |
+| Sprite textures | 158 MB (32-bit); now ~44 MB as DXT5 | ~22 MB |
+| Audio | 5 MB (music stream buffers; audio stubbed) | ~6 MB |
+| Everything else | <1 MB | ~1 MB |
+
+The textures cannot all be resident even compressed (~40 MB as DXT5), so
+the level's art has to be streamed: keep what is on or near the screen,
+load the rest as the camera approaches. About 27 MB (32-bit) had actually
+been drawn in the first ~2,000 frames of level 1, ~7 MB as DXT5.
+
+**Streaming policy (user direction 2026-09-28):** stream music; preload
+sound effects where possible; stream art wherever it can be streamed.
+
 **To do:**
 
 - [x] Measure the true gameplay peak once a level is running.
@@ -46,8 +71,18 @@ lever; unloading art the level no longer needs is the second.
       Side-by-side: `logs/frames_full/texture_format_compare.png`
       (original | DXT5 | 16-bit, 3x zoom). DXT5 is the better and smaller
       choice.
-- [ ] Compress textures to DXT5 when the loader creates them on the Xbox
-      (hook at the texture records built in `sub_82091AC0`).
+- [x] Compress textures to DXT5 as they are created. Done 2026-09-28:
+      the art is vector shapes rasterized at load (`sub_820B1078` allocates
+      and parses, `sub_820B1478` rasterizes). The port shrinks each texture
+      block to its DXT5 size at allocation, lets the rasterizer write into
+      one transient 32-bit scratch block, and compresses into the texture.
+      Level 1: **166 MB -> 47 MB live, peak 184 MB -> 51 MB**; the game runs
+      the identical instruction/memory-op counts (it never reads texture
+      pixels on the CPU) and frames look right (`logs/frames_dxt/`).
+      `CC_TEXTURE_DXT5=0` turns it off on the host for comparison.
+- [ ] Get the level's ~44 MB of compressed textures down to the ~22 MB
+      budget: stream art (the vector source stays in the pak, so a texture
+      can be re-rasterized on demand) and drop art the level has passed.
 - [ ] Plan the cuts: smaller or recompressed textures (360 formats are
       larger than needed at 640x480), audio re-encoded (see the audio item),
       streaming instead of loading everything up front.
@@ -56,8 +91,8 @@ lever; unloading art the level no longer needs is the second.
 
 - [ ] Starting a story game shows "Sign in to Xbox LIVE to post your score
       to the leaderboards" (A continues). Remove it on the original Xbox.
-- [ ] The main menu still lists Xbox LIVE Game, Leaderboards and
-      Achievements; hide them or grey them out.
+- [ ] The main menu still lists Xbox LIVE Game, Leaderboards,
+      Achievements and Download Content; hide them or grey them out.
 
 ## Language
 

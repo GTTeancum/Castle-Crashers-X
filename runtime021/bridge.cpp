@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <map>
+#include <set>
 #include "cc_log.h"
 #include <string>
 #include <vector>
@@ -53,6 +54,14 @@ static uint64_t g_tls_allocated = 0;  // bitmap over the 64 fixture TLS slots
 struct PhysRange { uint32_t addr, size; };
 static std::vector<PhysRange> g_phys_free_ranges;  // sorted by addr
 static std::vector<PhysRange> g_phys_live_blocks;
+// Textures the port stored DXT5-compressed (see cc_compress_texture_dxt5).
+struct CcDxtTexture { uint32_t data, w, h; };
+static std::vector<CcDxtTexture> g_dxt_textures;
+static std::vector<CcDxtTexture> g_pending_textures;  // allocated, not yet rasterized
+[[maybe_unused]] static const CcDxtTexture* cc_find_dxt_texture(uint32_t data) {
+  for (const auto& t : g_dxt_textures) if (t.data == data) return &t;
+  return nullptr;
+}
 // Guest return address of the allocation currently being served (set by the
 // allocator shims just before cc_phys_alloc), and, host only, each live
 // block's owner for the CC_MEM_REPORT breakdown.
@@ -860,6 +869,8 @@ static void cc_capture_on_function(const char* name, const Context& ctx,
       g_bound_textures[cc_rd32(mem, d + 36)] = cc_rd32(mem, d + 16) | (cc_rd32(mem, d + 20) << 16);
     g_cap.cur_w = cc_rd32(mem, d + 16); g_cap.cur_h = cc_rd32(mem, d + 20);
     g_cap.cur_fmt = cc_rd32(mem, d + 24); g_cap.cur_tex = cc_rd32(mem, d + 36);
+    // Capture format 100: the port's in-place DXT5 (standard block layout).
+    if (cc_find_dxt_texture(g_cap.cur_tex)) g_cap.cur_fmt = 100u;
     return;
   }
   if (!g_cap.enabled || !g_cap.active || std::strcmp(name, "sub_820C1980")) return;
@@ -898,6 +909,7 @@ static void cc_capture_on_function(const char* name, const Context& ctx,
   const uint32_t W = (cc_pow2(t.w) + 31u) & ~31u, H = (cc_pow2(t.h) + 31u) & ~31u;
   uint32_t bytes = 0;
   if (t.fmt == 1) bytes = W * H * 4u;
+  else if (t.fmt == 100) bytes = t.w * t.h;
   else if (t.fmt == 5) bytes = W * H * 2u;
   else if (t.fmt >= 7 && t.fmt <= 11) bytes = (W / 4u) * (H / 4u) * (t.fmt == 7 ? 8u : 16u);
   if (bytes && bytes <= 16u * 1024u * 1024u) {
