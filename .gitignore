@@ -59,3 +59,10 @@ logs/*.mp3
 # Disc image staging (game data copied at build time; never commit)
 nxdk-checkpoint022/bin/
 *.iso
+
+# Game-derived test inputs kept local only: the program image and captured
+# game memory/render snapshots (.cct/.ccr). Supply them separately on a
+# fresh clone.
+castle-crashers-port/reference/default.image.bin
+*.cct
+*.ccr
