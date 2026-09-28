@@ -13,6 +13,8 @@
 #ifdef CC_XBOX_DRIVER
 // nxdk-checkpoint022/xbox_audio.cpp: AC97 output for the port mixer.
 void cc_xbox_audio_submit(const int16_t* frame, int samples);
+void cc_xbox_audio_stats(unsigned* started, unsigned* submitted, unsigned* callbacks,
+                         unsigned* underruns, unsigned* dropped);
 // nxdk-checkpoint022/xbox_render.cpp: NV2A renderer for the game's draw calls.
 void cc_xr_bind(uint32_t key, const void* data, uint32_t w, uint32_t h, int kind);
 void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t stride, uint32_t blend);

@@ -265,8 +265,10 @@ static void result(Machine& base, uint32_t out, uint32_t code) {
 }
 
 // Mix one frame's worth of output (48 kHz / 60) and hand it to the backend.
+static uint32_t g_mixed_frames = 0;
 static void mix_frame() {
   constexpr int n = kOutRate / 60;
+  ++g_mixed_frames;
   static int32_t acc[n * 2];
   std::memset(acc, 0, sizeof(acc));
   for (Voice& v : g.voices) {
@@ -488,6 +490,12 @@ static void sub_8209F400(Context& ctx, Machine& base) {
 }
 
 static void cc_audio_frame() { ccaudio::mix_frame(); }
+static uint32_t cc_audio_active_voices() {
+  uint32_t n = 0;
+  for (const auto& v : ccaudio::g.voices) n += v.active ? 1u : 0u;
+  return n;
+}
+static uint32_t cc_audio_mixed_frames() { return ccaudio::g_mixed_frames; }
 static uint32_t cc_audio_loaded_bytes() {
   uint32_t n = 0;
   for (const auto& s : ccaudio::g.sounds) n += uint32_t(s.data.size());

@@ -112,6 +112,8 @@ static bool cc_audio_set_volume(uint32_t voice, float vol);
 static bool cc_audio_stop(uint32_t voice);
 static void cc_audio_frame();
 static uint32_t cc_audio_loaded_bytes();
+static uint32_t cc_audio_active_voices();
+static uint32_t cc_audio_mixed_frames();
 #ifndef CC_XBOX_DRIVER
 static void cc_mem_report(uint32_t frame);
 static cc::xbox::AddressSpace* g_mem_report_space = nullptr;
@@ -1585,6 +1587,14 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
            base.open_files(),base.files[0].pos,
            (unsigned long long)(g_phys_live_bytes/1024u),(unsigned long long)(g_phys_peak_bytes/1024u),
            g_phys_cursor);
+#ifdef CC_XBOX_DRIVER
+    {
+      unsigned st = 0, sub = 0, cb = 0, ur = 0, dr = 0;
+      ::cc_xbox_audio_stats(&st, &sub, &cb, &ur, &dr);
+      cc_log("AUDIO voices=%u mixed=%u ac97=%u fed=%u callbacks=%u underruns=%u dropped=%u\n",
+             cc_audio_active_voices(), cc_audio_mixed_frames(), st, sub, cb, ur, dr);
+    }
+#endif
   }
   ctx.r3.u64 = 0u;  // STATUS_SUCCESS
 }
