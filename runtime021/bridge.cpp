@@ -7,6 +7,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
+#include <map>
 #include "cc_log.h"
 #include <string>
 #include <vector>
@@ -52,6 +53,16 @@ static uint64_t g_tls_allocated = 0;  // bitmap over the 64 fixture TLS slots
 struct PhysRange { uint32_t addr, size; };
 static std::vector<PhysRange> g_phys_free_ranges;  // sorted by addr
 static std::vector<PhysRange> g_phys_live_blocks;
+// Guest return address of the allocation currently being served (set by the
+// allocator shims just before cc_phys_alloc), and, host only, each live
+// block's owner for the CC_MEM_REPORT breakdown.
+static uint32_t g_phys_tag = 0;
+#ifndef CC_XBOX_DRIVER
+static std::map<uint32_t, uint32_t> g_phys_owner;
+static std::map<uint32_t, uint64_t> g_phys_owner2;
+static uint32_t g_phys_tag2 = 0, g_phys_tag3 = 0;
+static std::map<uint32_t, uint32_t> g_bound_textures; // data -> w|h<<16
+#endif
 static uint64_t g_phys_live_bytes = 0, g_phys_peak_bytes = 0;
 // One-shot XAM notification listener.
 static bool g_xam_listener_created = false;
@@ -810,7 +821,7 @@ struct CcCapDraw {
   std::vector<uint8_t> verts;
 };
 static struct {
-  bool init = false, enabled = false, active = false;
+  bool init = false, enabled = false, active = false, mem_report = false;
   std::vector<uint32_t> frames;
   char dir[512] = {};
   uint32_t cur_tex = 0, cur_w = 0, cur_h = 0, cur_fmt = 0;
@@ -823,6 +834,7 @@ static uint32_t cc_rd32(cc::xbox::AddressSpace& mem, uint32_t a) {
 }
 static void cc_capture_init(uint32_t first_frame) {
   g_cap.init = true;
+  g_cap.mem_report = std::getenv("CC_MEM_REPORT") != nullptr;
   const char* f = std::getenv("CC_CAPTURE_FRAMES");
   const char* d = std::getenv("CC_CAPTURE_DIR");
   if (!f || !d) return;
@@ -840,15 +852,17 @@ static void cc_capture_init(uint32_t first_frame) {
 static void cc_capture_on_function(const char* name, const Context& ctx,
                                    cc::xbox::AddressSpace& mem) {
   if (!g_cap.init) cc_capture_init(1u);
-  if (!g_cap.enabled) return;
+  if (!g_cap.enabled && !g_cap.mem_report) return;
   if (name[0] != 's' || name[4] != '8' || name[5] != '2') return;
   if (!std::strcmp(name, "sub_820A89F8")) {
     const uint32_t d = ctx.r4.u32;
+    if (std::getenv("CC_MEM_REPORT"))
+      g_bound_textures[cc_rd32(mem, d + 36)] = cc_rd32(mem, d + 16) | (cc_rd32(mem, d + 20) << 16);
     g_cap.cur_w = cc_rd32(mem, d + 16); g_cap.cur_h = cc_rd32(mem, d + 20);
     g_cap.cur_fmt = cc_rd32(mem, d + 24); g_cap.cur_tex = cc_rd32(mem, d + 36);
     return;
   }
-  if (!g_cap.active || std::strcmp(name, "sub_820C1980")) return;
+  if (!g_cap.enabled || !g_cap.active || std::strcmp(name, "sub_820C1980")) return;
   CcCapDraw dr{};
   const uint32_t dev = ctx.r3.u32;
   dr.prim = ctx.r4.u32; dr.count = ctx.r5.u32; dr.stride = ctx.r7.u32;

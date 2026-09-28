@@ -81,6 +81,10 @@ static uint16_t cc_mm_load_u16(Machine& base, uint32_t a);
 // MmAllocatePhysicalMemoryEx/MmFreePhysicalMemory and the kernel pool).
 static uint32_t cc_phys_alloc(Machine& base, uint32_t bytes, uint32_t align);
 static bool cc_phys_free(Machine& base, uint32_t addr);
+#ifndef CC_XBOX_DRIVER
+static void cc_mem_report(uint32_t frame);
+static cc::xbox::AddressSpace* g_mem_report_space = nullptr;
+#endif
 #define REX_QUERY_TIMEBASE() base.query_timebase()
 #include "generated/sub_820B6D10.inc"
 #include "generated/sub_820B6D48.inc"
@@ -821,6 +825,7 @@ static void sub_82136670(Context& ctx, Machine& base) {
   // page-aligned from 4 KiB up, bounded to 16 MiB per call.
   const uint32_t size=ctx.r3.u32;
   if (size == 0u || size > 0x01000000u) base.fail(Error::unsupported,0x82136670u);
+  g_phys_tag=uint32_t(ctx.lr);
   const uint32_t q=cc_phys_alloc(base,size,size>=0x1000u?0x1000u:16u);
   for (uint32_t i=0;i<((size+3u)&~3u);i+=4u) base.memory.store_be(q+i,4,0u);
   ctx.r3.u64=q;
@@ -1506,6 +1511,10 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     base.memory.store_be(0x02500110u, 4, uint32_t(t100ns / 10000ull));
   }
   cc_capture_end_frame(base.memory, g_frame_delay_calls + 1u);
+#ifndef CC_XBOX_DRIVER
+  g_mem_report_space = &base.memory;
+  cc_mem_report(g_frame_delay_calls + 1u);
+#endif
   if (++g_frame_delay_calls >= frame_budget())
     base.fail(Error::capacity, 0x8214A614u);
   // WIP 023 bounded worker-thread model: the five startup workers run the
@@ -1957,10 +1966,69 @@ static uint32_t cc_phys_alloc(Machine& base, uint32_t bytes, uint32_t align) {
       g_phys_cursor=p+size;
     }
     g_phys_live_blocks.push_back(PhysRange{p,size});
+#ifndef CC_XBOX_DRIVER
+    g_phys_owner[p]=g_phys_tag;
+    g_phys_owner2[p]=(uint64_t(g_phys_tag2)<<32)|g_phys_tag3;
+    g_phys_tag2=g_phys_tag3=0;
+#endif
+    g_phys_tag=0;
     g_phys_live_bytes+=size;
     if (g_phys_live_bytes>g_phys_peak_bytes) g_phys_peak_bytes=g_phys_live_bytes;
     return p;
 }
+#ifndef CC_XBOX_DRIVER
+// Host diagnostic: CC_MEM_REPORT=<frame> logs every live physical block
+// grouped by the guest code that allocated it, and how much of it holds
+// textures the game has bound for drawing.
+static void cc_mem_report(uint32_t frame) {
+  const char* e = std::getenv("CC_MEM_REPORT");
+  if (!e || std::strtoul(e, nullptr, 10) != frame) return;
+  struct Group { uint32_t blocks = 0; uint64_t bytes = 0, tex_bytes = 0; uint32_t largest = 0; };
+  std::map<uint32_t, Group> groups;
+  uint64_t total = 0, tex_total = 0;
+  for (const PhysRange& b : g_phys_live_blocks) {
+    const auto it = g_phys_owner.find(b.addr);
+    Group& g = groups[it == g_phys_owner.end() ? 0u : it->second];
+    ++g.blocks; g.bytes += b.size; total += b.size;
+    if (b.size > g.largest) g.largest = b.size;
+    const auto t = g_bound_textures.lower_bound(b.addr);
+    if (t != g_bound_textures.end() && t->first < b.addr + b.size) {
+      g.tex_bytes += b.size; tex_total += b.size;
+    }
+  }
+  {
+    std::map<uint64_t, std::pair<uint32_t,uint64_t>> chains;
+    for (const PhysRange& b : g_phys_live_blocks) {
+      const auto it = g_phys_owner2.find(b.addr);
+      auto& c = chains[it == g_phys_owner2.end() ? 0u : it->second];
+      ++c.first; c.second += b.size;
+    }
+    for (const auto& [k, c] : chains)
+      if (c.second >= 256u * 1024u)
+        cc_log("MEMREPORT chain=%08x<-%08x blocks=%u bytes=%lluK\n", unsigned(k >> 32),
+               unsigned(k & 0xFFFFFFFFu), c.first, (unsigned long long)(c.second >> 10));
+  }
+  {
+    // Content signature (first 4 guest bytes) and size spread of live blocks.
+    std::map<uint32_t, std::pair<uint32_t,uint64_t>> sig;
+    for (const PhysRange& b : g_phys_live_blocks) {
+      uint64_t w0=0; g_mem_report_space->load_be(b.addr,4,w0);
+      auto& c = sig[uint32_t(w0)]; ++c.first; c.second += b.size;
+    }
+    for (const auto& [k, c] : sig)
+      if (c.second >= 512u * 1024u)
+        cc_log("MEMREPORT first_word=%08x blocks=%u bytes=%lluK%c", k, c.first,
+               (unsigned long long)(c.second >> 10), 10);
+  }
+  cc_log("MEMREPORT frame=%u live=%lluK blocks=%u drawn_texture_blocks=%lluK\n", frame,
+         (unsigned long long)(total >> 10), unsigned(g_phys_live_blocks.size()),
+         (unsigned long long)(tex_total >> 10));
+  for (const auto& [lr, g] : groups)
+    cc_log("MEMREPORT owner_lr=%08x blocks=%u bytes=%lluK textures=%lluK largest=%uK\n", lr,
+           g.blocks, (unsigned long long)(g.bytes >> 10),
+           (unsigned long long)(g.tex_bytes >> 10), g.largest >> 10);
+}
+#endif
 static bool cc_phys_free([[maybe_unused]] Machine& base, uint32_t addr) {
     size_t li = 0;
     while (li < g_phys_live_blocks.size() && g_phys_live_blocks[li].addr != addr) ++li;
@@ -1997,6 +2065,7 @@ static bool cc_phys_free([[maybe_unused]] Machine& base, uint32_t addr) {
 static void __imp__ExAllocatePoolTypeWithTag(Context& ctx, Machine& base) {
   if (ctx.r3.u32 == 0u || ctx.r3.u32 > 0x01000000u)
     base.fail(Error::unsupported, 0x8214ACA4u);
+  g_phys_tag=uint32_t(ctx.lr);
   ctx.r3.u64 = cc_phys_alloc(base, ctx.r3.u32, 16u);
 }
 [[maybe_unused]] static void __imp__ExFreePool(Context& ctx, Machine& base) {
@@ -2109,6 +2178,19 @@ static void __imp__MmAllocatePhysicalMemoryEx(Context& ctx, Machine& base) {
     if (align & (align-1u))
       base.fail(Error::unsupported, 0x8214A4F4u);
     const uint32_t size=(ctx.r4.u32+0xFFFu)&~0xFFFu;
+    g_phys_tag=uint32_t(ctx.lr);
+#ifndef CC_XBOX_DRIVER
+    {
+      // Attribute the shared allocation wrapper to its callers: saved LRs
+      // two and three frames up the guest back chain (raw, uncounted reads).
+      uint64_t f1=0,l1=0,f2=0,l2=0;
+      base.memory.load_be(ctx.r1.u32,4,f1);
+      base.memory.load_be(uint32_t(f1)-8u,4,l1);
+      base.memory.load_be(uint32_t(f1),4,f2);
+      base.memory.load_be(uint32_t(f2)-8u,4,l2);
+      g_phys_tag2=uint32_t(l1); g_phys_tag3=uint32_t(l2);
+    }
+#endif
     ctx.r3.u64=cc_phys_alloc(base,size,align);
     return;
   }

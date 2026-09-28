@@ -16,11 +16,30 @@ code, game data, graphics and audio. The test harness currently gives the
 game a 224 MB pool so gameplay can be reached and measured; the native Xbox
 build cannot do that.
 
+**Breakdown, measured 2026-09-28** (`CC_MEM_REPORT=<frame>` in the host
+harness; frame 9000 is inside the first level):
+
+- 166 MB live in the level. **158 MB of it is ~2,800 sprite textures**
+  stored as uncompressed 32-bit colour (A8R8G8B8), created by the asset
+  loader (texture records built in `sub_82091AC0`). Only ~27 MB of those
+  textures have actually been drawn in the first ~2,000 frames of the
+  level; the rest is preloaded art for the whole level.
+- ~5 MB audio stream buffers, 2 MB font, <1 MB everything else.
+- Menu: 62 MB live, ~32 MB of it textures already drawn on the menu.
+
+What that means for the budget: the original Xbox GPU reads DXT-compressed
+textures natively. DXT5 is 4x smaller than 32-bit colour, so the level's
+158 MB of textures would be ~40 MB; 16-bit colour would be ~79 MB.
+Compressing at load time (or converting the pak art offline) is the main
+lever; unloading art the level no longer needs is the second.
+
 **To do:**
 
-- [ ] Measure the true gameplay peak once a level is running.
-- [ ] Break it down by what it is (textures, audio, vertex data, render
+- [x] Measure the true gameplay peak once a level is running.
+- [x] Break it down by what it is (textures, audio, vertex data, render
       targets) to see where the space goes.
+- [ ] Check what the textures look like after DXT5 compression (sprite
+      edges, gradients) before committing to it.
 - [ ] Plan the cuts: smaller or recompressed textures (360 formats are
       larger than needed at 640x480), audio re-encoded (see the audio item),
       streaming instead of loading everything up front.
