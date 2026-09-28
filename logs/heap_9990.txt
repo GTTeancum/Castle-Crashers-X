@@ -1,0 +1,21 @@
+MEMREPORT game_heap_touched=12056K highwater=13348K gpu_arena_touched=2392K highwater=4816K
+MEMREPORT game_heap_live=13500K blocks=16991
+MEMREPORT heap_owner lr=8207060c blocks=2 bytes=219K
+MEMREPORT heap_owner lr=82070668 blocks=2 bytes=244K
+MEMREPORT heap_owner lr=8207534c blocks=508 bytes=130K
+MEMREPORT heap_owner lr=8208bc90 blocks=563 bytes=195K
+MEMREPORT heap_owner lr=8208bdd8 blocks=3016 bytes=926K
+MEMREPORT heap_owner lr=8208d01c blocks=1 bytes=2542K
+MEMREPORT heap_owner lr=8208d0cc blocks=2 bytes=2945K
+MEMREPORT heap_owner lr=8208d64c blocks=2 bytes=187K
+MEMREPORT heap_owner lr=8208d74c blocks=2 bytes=109K
+MEMREPORT heap_owner lr=8208df04 blocks=2 bytes=281K
+MEMREPORT heap_owner lr=8208e46c blocks=2 bytes=164K
+MEMREPORT heap_owner lr=82090780 blocks=3 bytes=384K
+MEMREPORT heap_owner lr=820907bc blocks=3 bytes=96K
+MEMREPORT heap_owner lr=820907f8 blocks=3 bytes=96K
+MEMREPORT heap_owner lr=82091b60 blocks=2882 bytes=270K
+MEMREPORT heap_owner lr=82093750 blocks=2452 bytes=222K
+MEMREPORT heap_owner lr=82095b10 blocks=11 bytes=3651K
+MEMREPORT heap_owner lr=8209dca4 blocks=11 bytes=327K
+MEMREPORT heap_owner lr=820a73e8 blocks=768 bytes=165K

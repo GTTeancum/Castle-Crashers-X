@@ -45,8 +45,30 @@ HARD_BOUNDARY(sub_82053648, 0x82053648u)
 #undef HARD_BOUNDARY
 
 #include "generated/sub_820B5EB8.inc"
+#ifndef CC_XBOX_DRIVER
+// Host diagnostic: live game-heap blocks (exact sub_8209BDD8 alloc(heap,
+// size) / sub_8209BF18 free(heap, ptr)) with their caller, for
+// CC_MEM_REPORT.
+static std::map<uint32_t, std::pair<uint32_t, uint32_t>> g_heap_live;  // ptr -> (size, lr)
+#define sub_8209BDD8 sub_8209BDD8_exact
+#include "generated/sub_8209BDD8.inc"
+#undef sub_8209BDD8
+static void sub_8209BDD8(Context& ctx, Machine& base) {
+  const uint32_t size = ctx.r4.u32, lr = uint32_t(ctx.lr);
+  sub_8209BDD8_exact(ctx, base);
+  if (ctx.r3.u32) g_heap_live[ctx.r3.u32] = {size, lr};
+}
+#define sub_8209BF18 sub_8209BF18_exact
+#include "generated/sub_8209BF18.inc"
+#undef sub_8209BF18
+static void sub_8209BF18(Context& ctx, Machine& base) {
+  g_heap_live.erase(ctx.r4.u32);
+  sub_8209BF18_exact(ctx, base);
+}
+#else
 #include "generated/sub_8209BDD8.inc"
 #include "generated/sub_8209BF18.inc"
+#endif
 #include "generated/__savegprlr_26.inc"
 #include "generated/__restgprlr_26.inc"
 #include "generated/sub_82099A80.inc"
@@ -85,6 +107,7 @@ static uint32_t g_tex_replays = 0, g_tex_replay_mismatches = 0, g_tex_evictions 
 static bool cc_audio_set_volume(uint32_t voice, float vol);
 static bool cc_audio_stop(uint32_t voice);
 static void cc_audio_frame();
+static uint32_t cc_audio_loaded_bytes();
 #ifndef CC_XBOX_DRIVER
 static void cc_mem_report(uint32_t frame);
 static cc::xbox::AddressSpace* g_mem_report_space = nullptr;
@@ -2064,8 +2087,19 @@ static void cc_mem_report(uint32_t frame) {
       return std::pair<uint32_t, uint32_t>(n * 4u, (last - lo) >> 10);
     };
     const auto gh = touched(0x00071000u, 0x01071000u), gx = touched(0x02000000u, 0x02500000u);
+    const auto mp = touched(0x10000000u, 0x11000000u);
+    cc_log("MEMREPORT main_pool_highwater=%uK port_audio_loaded=%uK%c", mp.second, cc_audio_loaded_bytes() >> 10, 10);
     cc_log("MEMREPORT game_heap_touched=%uK highwater=%uK gpu_arena_touched=%uK highwater=%uK%c",
            gh.first, gh.second, gx.first, gx.second, 10);
+    {
+      std::map<uint32_t, std::pair<uint32_t, uint64_t>> by;
+      uint64_t tot = 0;
+      for (const auto& [a, e] : g_heap_live) { auto& b = by[e.second]; ++b.first; b.second += e.first; tot += e.first; }
+      cc_log("MEMREPORT game_heap_live=%lluK blocks=%u%c", (unsigned long long)(tot >> 10), unsigned(g_heap_live.size()), 10);
+      for (const auto& [lr, b] : by)
+        if (b.second >= 64u * 1024u)
+          cc_log("MEMREPORT heap_owner lr=%08x blocks=%u bytes=%lluK%c", lr, b.first, (unsigned long long)(b.second >> 10), 10);
+    }
     cc_log("MEMREPORT crt_heap_committed=%uK crt_heap_touched=%uK reserved=%uK main_pool_touched=%uK (of 16384K)%c",
            unsigned(g_committed_pages.size()*4u), heap_touched*4u,
            unsigned((g_valloc_cursor-0x04000000u)>>10), pool_touched*4u, 10);

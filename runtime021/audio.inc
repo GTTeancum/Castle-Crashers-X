@@ -432,6 +432,11 @@ static void sub_8209F400(Context& ctx, Machine& base) {
 }
 
 static void cc_audio_frame() { ccaudio::mix_frame(); }
+static uint32_t cc_audio_loaded_bytes() {
+  uint32_t n = 0;
+  for (const auto& s : ccaudio::g.sounds) n += uint32_t(s.data.size());
+  return n;
+}
 static bool cc_audio_set_volume(uint32_t voice, float vol) {
   ccaudio::Voice* v = ccaudio::port_voice(voice);
   if (!v) return false;
