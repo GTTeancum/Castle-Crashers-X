@@ -51,9 +51,9 @@ counts and pixel-identical frames at these sizes.
 | Physical: general zone | 4.5 MB | 3.3 MB |
 | Physical: small-block zone | 1 MB | 0.26 MB |
 | Physical: texture stub zone | 1.5 MB | 1.07 MB |
-| Texture cache zone (buddy, overflow to Z: swap) | 4 MB | full at menus |
+| Texture cache zone (buddy, overflow to Z: swap) | 6 MB | ~4.5 MB at menus |
 | Game data image | 2.9 MB | - |
-| **Guest total** | **35.5 MB** | |
+| **Guest total** | **37.5 MB** | |
 | Game code (XBE) | 10 MB | |
 | Sound-effect cache | 2 MB | |
 | Texture job snapshots | 1.7 MB | |
@@ -137,6 +137,22 @@ sound effects where possible; stream art wherever it can be streamed.
 - [ ] The game asks for `sound_gemsplin_loop` (the file is
       `sound_gemspin_loop`); the 360 build fails the same lookup. Decide
       whether to fix the name.
+
+## Native (XEMU, retail 64 MB) status
+
+- 2026-09-28: the Xbox build boots and runs the game to frame 7,500 (inside
+  level 1) on XEMU's retail 64 MB configuration. No renderer yet: the
+  screen shows only the diagnostic log. Speed under XEMU: ~7 frames/s in
+  the intro, ~3 in the menus.
+- [ ] Xbox renderer (pbkit/NV2A) from the game's draw calls.
+- [ ] No sound heard in XEMU. Check whether the mixer produces samples on
+      the Xbox and whether the AC97 path starts (log from xbox_audio.cpp).
+- [ ] Z: scratch swap: never exercised natively (no eviction happened with
+      the 6 MB zone); the first run's 4 MB zone reported it unavailable.
+- [ ] Performance: Machine::prologue compares every function name against
+      a list of strings (strcmp) on every call; costly on a 733 MHz CPU.
+- [x] The 4 MB texture zone thrashed the menus without the swap (menus draw
+      ~4.5 MB per frame); zone raised to 6 MB.
 
 ## Xbox 360 leftovers in the menus
 

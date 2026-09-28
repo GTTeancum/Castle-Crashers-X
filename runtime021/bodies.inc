@@ -5060,12 +5060,12 @@ static void sub_820B1478_exact(Context& ctx, Machine& base);
 static uint64_t cc_tex_cache_limit() {
 #ifndef CC_XBOX_DRIVER
   static uint64_t lim = 0;
-  if (!lim) { const char* e = std::getenv("CC_TEX_CACHE_KB"); lim = uint64_t(e ? std::strtoul(e, nullptr, 10) : 4096u) << 10; }
+  if (!lim) { const char* e = std::getenv("CC_TEX_CACHE_KB"); lim = uint64_t(e ? std::strtoul(e, nullptr, 10) : 6144u) << 10; }
   return lim;
 #else
-  // Retail 64 MB budget: the 4 MiB texture zone (menu draws ~4.5 MB per
+  // Retail 64 MB budget: the 6 MiB texture zone (menus draw ~4.5 MB per
   // frame, level 1 <3 MB per 10 s; overflow goes through the Z: swap).
-  return uint64_t(4096u) << 10;
+  return uint64_t(6144u) << 10;
 #endif
 }
 // Host verification mode CC_TEX_EAGER=1 rasterizes every texture at load,
@@ -5087,20 +5087,27 @@ static uint32_t cc_hash_bytes(const uint8_t* p, size_t n) {
 // ---- Texture cache zone: buddy allocator --------------------------------
 // Compressed textures are power-of-two sized (w*h bytes for power-of-two
 // w, h), so a buddy allocator over a dedicated 4 MiB zone at 0x1C000000
-// never fragments beyond what freeing re-merges. When no block of the
-// needed order is free, least recently drawn textures are evicted (to the
-// scratch swap) until one is.
+// never fragments beyond what freeing re-merges. The zone is 6 MiB: one
+// 4 MiB and one 2 MiB top-level block (the menus draw ~4.5 MB of art per
+// frame, so the cache must hold that even without the scratch swap). When
+// no block of the needed order is free, least recently drawn textures are
+// evicted (to the swap) until one is.
 constexpr uint32_t kTexZoneBase = 0x1C000000u, kTexZoneOrder = 22u, kTexMinOrder = 8u;
+constexpr uint32_t kTexZoneBytes = 0x600000u;
 static std::vector<uint32_t> g_texzone_free[kTexZoneOrder + 1];
 static std::vector<uint8_t> g_texzone_alloc_order;  // per min block: order+1 if allocated here
 static std::vector<uint8_t> g_texzone_free_order;   // per min block: order+1 if free block here
+static uint32_t cc_texzone_index(uint32_t a);
 static void cc_texzone_init() {
   if (!g_texzone_alloc_order.empty()) return;
-  const size_t n = size_t(1) << (kTexZoneOrder - kTexMinOrder);
+  const size_t n = size_t(kTexZoneBytes >> kTexMinOrder);
   g_texzone_alloc_order.assign(n, 0);
   g_texzone_free_order.assign(n, 0);
   g_texzone_free[kTexZoneOrder].push_back(kTexZoneBase);
   g_texzone_free_order[0] = uint8_t(kTexZoneOrder + 1);
+  const uint32_t second = kTexZoneBase + (1u << kTexZoneOrder);
+  g_texzone_free[kTexZoneOrder - 1].push_back(second);
+  g_texzone_free_order[cc_texzone_index(second)] = uint8_t(kTexZoneOrder);
 }
 static uint32_t cc_texzone_index(uint32_t a) { return (a - kTexZoneBase) >> kTexMinOrder; }
 static void cc_texzone_take(uint32_t order, uint32_t a) {
@@ -5127,13 +5134,14 @@ static uint32_t cc_texzone_try_alloc(uint32_t bytes) {
   return a;
 }
 static bool cc_texzone_free(uint32_t a) {
-  if (a < kTexZoneBase || a >= kTexZoneBase + (1u << kTexZoneOrder) || g_texzone_alloc_order.empty()) return false;
+  if (a < kTexZoneBase || a >= kTexZoneBase + kTexZoneBytes || g_texzone_alloc_order.empty()) return false;
   const uint32_t ix = cc_texzone_index(a);
   if (!g_texzone_alloc_order[ix]) return false;
   uint32_t order = g_texzone_alloc_order[ix] - 1u;
   g_texzone_alloc_order[ix] = 0;
   while (order < kTexZoneOrder) {
     const uint32_t buddy = kTexZoneBase + (((a - kTexZoneBase) ^ (1u << order)));
+    if (buddy + (1u << order) > kTexZoneBase + kTexZoneBytes) break;  // top of the 2 MiB block
     if (g_texzone_free_order[cc_texzone_index(buddy)] != uint8_t(order + 1)) break;
     cc_texzone_take(order, buddy);
     a = a < buddy ? a : buddy;
@@ -5154,8 +5162,11 @@ static std::FILE* cc_tex_swap() {
   if (g_tex_swap_tried) return g_tex_swap;
   g_tex_swap_tried = true;
 #ifdef CC_XBOX_DRIVER
-  if (!nxIsDriveMounted('Z')) nxMountDrive('Z', "\\Device\\Harddisk0\\Partition5\\");
+  const bool was_mounted = nxIsDriveMounted('Z');
+  const bool mounted = was_mounted || nxMountDrive('Z', "\\Device\\Harddisk0\\Partition5\\");
   g_tex_swap = std::fopen("Z:\\cctexswap.bin", "w+b");
+  cc_log("TEXSWAP Z: was_mounted=%d mounted=%d open=%d\n", int(was_mounted), int(mounted),
+         int(g_tex_swap != nullptr));
 #else
   const char* dir = std::getenv("CC_SCRATCH_DIR");
   char path[400];

@@ -616,8 +616,8 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // 16-byte stub once recorded (the largest transient block is 2 MiB).
   static std::vector<uint8_t> tex_stub_arena(0x00180000);  // high-water 1.07 MiB
   CHECK(m.map(0x1D000000u,uint32_t(tex_stub_arena.size()),tex_stub_arena.data(),3)==cc::xbox::MemoryError::ok);
-  // Texture cache zone (buddy allocator, 4 MiB) for the DXT5 texture cache.
-  static std::vector<uint8_t> tex_zone_arena(0x00400000);
+  // Texture cache zone (buddy allocator, 6 MiB) for the DXT5 texture cache.
+  static std::vector<uint8_t> tex_zone_arena(0x00600000);
   CHECK(m.map(0x1C000000u,uint32_t(tex_zone_arena.size()),tex_zone_arena.data(),3)==cc::xbox::MemoryError::ok);
 
   // Execute the exact CRT heap initialization (sub_820B7880 -> exact
