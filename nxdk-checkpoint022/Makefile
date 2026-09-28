@@ -2,6 +2,7 @@ XBE_TITLE = CastleCrashersX Checkpoint 022
 GEN_XISO = CastleCrashersX-Checkpoint022.iso
 SRCS = \
   $(CURDIR)/xbox_shims.cpp \
+  $(CURDIR)/xbox_audio.cpp \
   $(CURDIR)/../runtime007/numeric/fused.cpp \
   $(CURDIR)/../runtime007/numeric/target_fma.cpp \
   $(CURDIR)/../runtime021/update_boundary_tests.cpp \
@@ -37,5 +38,13 @@ discdata: $(OUTPUT_DIR)
 	cp -f $(CURDIR)/../castle-crashers-port/reference/default.image.bin $(OUTPUT_DIR)/data/default.image.bin
 	cp -rf $(CURDIR)/../game-data/extracted/shaders $(OUTPUT_DIR)/data/game-data/
 	cp -rf $(CURDIR)/../game-data/extracted/fonts $(OUTPUT_DIR)/data/game-data/Fonts
+	# Game session data: paks and levels as shipped, with the port's
+	# rewritten files (game-data/converted/data, e.g. the stripped
+	# SOUNDS.PAK) replacing their originals, and the converted Xbox ADPCM
+	# audio (tools/convert_audio.py) under audio/.
+	for d in game levels art bsps; do cp -rf $(CURDIR)/../game-data/extracted/$$d $(OUTPUT_DIR)/data/game-data/; done
+	if [ -d $(CURDIR)/../game-data/converted/data ]; then cp -rf $(CURDIR)/../game-data/converted/data/. $(OUTPUT_DIR)/data/game-data/; fi
+	@mkdir -p $(OUTPUT_DIR)/data/game-data/audio
+	cp -rf $(CURDIR)/../game-data/converted/audio/. $(OUTPUT_DIR)/data/game-data/audio/
 
 $(GEN_XISO): discdata

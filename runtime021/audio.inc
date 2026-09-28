@@ -290,7 +290,9 @@ static void mix_frame() {
   }
   static int16_t out[n * 2];
   for (int i = 0; i < n * 2; ++i) out[i] = int16_t(acc[i] < -32768 ? -32768 : (acc[i] > 32767 ? 32767 : acc[i]));
-#ifndef CC_XBOX_DRIVER
+#ifdef CC_XBOX_DRIVER
+  ::cc_xbox_audio_submit(out, n);
+#else
   static bool tried = false;
   if (!tried) {
     tried = true;

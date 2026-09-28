@@ -10,6 +10,10 @@
 #ifdef CC_XBOX_DRIVER
 #include <nxdk/mount.h>
 #endif
+#ifdef CC_XBOX_DRIVER
+// nxdk-checkpoint022/xbox_audio.cpp: AC97 output for the port mixer.
+void cc_xbox_audio_submit(const int16_t* frame, int samples);
+#endif
 #include <map>
 #include <set>
 #include "cc_log.h"
