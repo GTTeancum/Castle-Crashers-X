@@ -16,7 +16,7 @@ SRCS = \
   $(CURDIR)/../runtime006/bridge.cpp \
   $(CURDIR)/../xbox-runtime/guest_memory.cpp
 NXDK_DIR ?= $(CURDIR)/../../buildkit/sources/nxdk
-CXXFLAGS += -std=c++20 -O2 -fno-exceptions -fno-rtti -ffp-contract=off -fno-fast-math
+CXXFLAGS += -std=c++20 -O2 -march=pentium3 -fno-exceptions -fno-rtti -ffp-contract=off -fno-fast-math
 CXXFLAGS += -DCC_XBOX_DRIVER
 # The boundary harness keeps its guest stack/TLS arenas as C++ stack
 # arrays (up to 64 KiB each); give the XBE a 1 MiB thread stack.

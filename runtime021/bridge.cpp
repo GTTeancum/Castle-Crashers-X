@@ -314,17 +314,65 @@ struct Machine {
   }
   const char* trace_names[256] = {};
   unsigned trace_count = 0;
+  // Hook flags per generated function, resolved once from its name and then
+  // looked up by the name pointer (each function's __func__ is a distinct
+  // static string), so the common case costs one small hash probe instead of
+  // a string comparison per hook.
+  enum : uint32_t { kHookAny = 1u };
+  struct HookSlot { const char* name; uint32_t flags; };
+  HookSlot hook_slots[16384] = {};
+  uint32_t hook_flags(const char* name) {
+    uint32_t h = uint32_t(reinterpret_cast<uintptr_t>(name) >> 3) * 2654435761u;
+    for (uint32_t i = 0;; ++i) {
+      HookSlot& s = hook_slots[(h + i) & 16383u];
+      if (s.name == name) return s.flags;
+      if (!s.name) {
+        static const char* const hooked[] = {
+          "sub_8209CD08", "sub_8209CC98", "sub_8209DE50", "sub_8209DF48", "sub_82091248",
+          "sub_820B0F18", "sub_8208A7A0", "sub_820A1BF8", "sub_820FBF50", "sub_82104FD0",
+          "sub_820FBF60", "sub_820B6CA0", "sub_820D7E90", "sub_82077CE0", "sub_820915F0",
+          "sub_82075C88", "sub_820BE9F0", "sub_820C5E50", "sub_820C5EE8", "sub_820A89F8",
+          "sub_820C1980"};
+        uint32_t f = 0;
+        for (const char* hn : hooked)
+          if (!std::strncmp(name, hn, 12)) f = kHookAny;
+        s.name = name;
+        s.flags = f;
+        return f;
+      }
+    }
+  }
+  bool prof_enabled = false;
   void prologue(const char *name, const Context& ctx) {
     last_function = name;
     last_ctx = &ctx;
     recent_functions[recent_pos & 31u] = name;
     recent_r1[recent_pos & 31u] = ctx.r1.u32;
     ++recent_pos;
+    if (++result.functions > 500000000u && budget != 0xFFFFFFFFu) capacity_stop();
+    if (prof_enabled) prof_hit(name);
+    if (trace_one_frame && trace_count < 2000) {
+      ++trace_count;
+      cc_elog("FT %s r3=%08x r4=%08x r5=%08x lr=%08x\n",
+              name, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, uint32_t(ctx.lr));
+    }
+    if (!(hook_flags(name) & kHookAny)) return;
+    hooked_prologue(name, ctx);
+  }
+  void capacity_stop() {
+    prof_dump();
+    uint64_t pend=0,done=0,b=0;
+    memory.load_be(0x8228A770u,4,pend); memory.load_be(0x8228A764u,4,done);
+    char busy[6]{};
+    for (unsigned i=0;i<5;++i){ memory.load_be(0x8228A768u+i,1,b); busy[i]=char('0'+(b&1)); }
+    cc_elog("WORKERSTATE pend=%08x done=%08x busy=%s\n",uint32_t(pend),uint32_t(done),busy);
+    fail(Error::capacity);
+  }
+  void hooked_prologue(const char *name, const Context& ctx) {
     if (!std::strcmp(name,"sub_8209CD08") || !std::strcmp(name,"sub_8209CC98")) validate_widget_list(ctx.r3.u32);
     if (!std::strcmp(name,"sub_8209DE50")) validate_widget_update(ctx.r3.u32);
     if (!std::strcmp(name,"sub_8209DF48")) validate_widget_owner(ctx.r3.u32);
     if (!std::strcmp(name,"sub_82091248")) validate_owner(ctx.r3.u32);
-    prof_hit(name);
     // WIP 023: the exact in-frame waits poll sub_820B0F18 ("all workers
     // quiet?") while jobs sit in the pending lists; the bounded worker
     // model drains them synchronously at that poll, exactly as at the
@@ -333,15 +381,6 @@ struct Machine {
       drain_active = true;
       g_drain_workers(*this, ctx.r13.u32);
       drain_active = false;
-    }
-    if (++result.functions > 500000000u && budget != 0xFFFFFFFFu) {
-      prof_dump();
-      uint64_t pend=0,done=0,b=0;
-      memory.load_be(0x8228A770u,4,pend); memory.load_be(0x8228A764u,4,done);
-      char busy[6]{};
-      for (unsigned i=0;i<5;++i){ memory.load_be(0x8228A768u+i,1,b); busy[i]=char('0'+(b&1)); }
-      cc_elog("WORKERSTATE pend=%08x done=%08x busy=%s\n",uint32_t(pend),uint32_t(done),busy);
-      fail(Error::capacity);
     }
     if (!std::strcmp(name, "sub_8208A7A0"))
       ++result.tree_visits;
@@ -376,11 +415,6 @@ struct Machine {
     if (frame_probe_log && !std::strcmp(name, "sub_82075C88")) {
       cc_elog("UPDATE dt=%f obj=%08x\n", ctx.f1.f64, ctx.r3.u32);
       frame_probe_log = false;
-    }
-    if (trace_one_frame && trace_count < 2000) {
-      ++trace_count;
-      cc_elog("FT %s r3=%08x r4=%08x r5=%08x lr=%08x\n",
-              name, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, uint32_t(ctx.lr));
     }
     // Writeback publishes below use the raw address space: they model the
     // GPU's own memory traffic, which never counts as guest CPU memory ops,
@@ -529,8 +563,38 @@ struct Machine {
     if (getter != 0x82086810u) fail(Error::dispatch, getter);
     validate_list(object);
   }
+  // Recently used regions (most recent first). A hit resolves a guest
+  // access to host memory without searching the region table; misses take
+  // the checked path and refill the cache. Same results either way.
+  struct RegionHit { uint32_t lo = 0, hi = 0, access = 0; uint8_t* host = nullptr; };
+  RegionHit region_cache[4];
+  uint8_t* fast_host(uint32_t a, unsigned n, uint32_t access) {
+    for (unsigned i = 0; i < 4; ++i) {
+      const RegionHit& r = region_cache[i];
+      if (a >= r.lo && a - r.lo <= r.hi - r.lo - n && r.hi - r.lo >= n && (r.access & access) == access) {
+        if (i) { const RegionHit t = r; for (unsigned k = i; k; --k) region_cache[k] = region_cache[k - 1]; region_cache[0] = t; }
+        return region_cache[0].host + (a - region_cache[0].lo);
+      }
+    }
+    const cc::xbox::Region* rs = memory.regions();
+    for (size_t i = 0; i < memory.region_count(); ++i) {
+      const cc::xbox::Region& r = rs[i];
+      if (a >= r.guest && uint64_t(a) - r.guest + n <= r.bytes && (r.access & access) == access) {
+        for (unsigned k = 3; k; --k) region_cache[k] = region_cache[k - 1];
+        region_cache[0] = RegionHit{r.guest, uint32_t(r.guest + (r.bytes - 1u)) + 1u, r.access, r.host};
+        if (region_cache[0].hi < region_cache[0].lo) region_cache[0].hi = 0xFFFFFFFFu;
+        return r.host + (a - r.guest);
+      }
+    }
+    return nullptr;
+  }
   uint64_t load(uint32_t a, unsigned n) {
     tick(a);
+    if (const uint8_t* p = fast_host(a, n, 1u)) {
+      uint64_t v = 0;
+      for (unsigned i = 0; i < n; ++i) v = (v << 8) | p[i];
+      return v;
+    }
     uint64_t v = 0;
     if (memory.load_be(a, n, v) != cc::xbox::MemoryError::ok)
       fail(Error::memory, a);
@@ -538,6 +602,10 @@ struct Machine {
   }
   void store(uint32_t a, unsigned n, uint64_t v) {
     tick(a);
+    if (uint8_t* p = fast_host(a, n, 2u)) {
+      for (unsigned i = n; i; --i) { p[i - 1] = uint8_t(v); v >>= 8; }
+      return;
+    }
     if (memory.store_be(a, n, v) != cc::xbox::MemoryError::ok)
       fail(Error::memory, a);
   }
