@@ -66,3 +66,4 @@ nxdk-checkpoint022/bin/
 castle-crashers-port/reference/default.image.bin
 *.cct
 *.ccr
+logs/frames_bake/

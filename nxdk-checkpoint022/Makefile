@@ -49,5 +49,7 @@ discdata: $(OUTPUT_DIR)
 	if [ -d $(CURDIR)/../game-data/converted/data ]; then cp -rf $(CURDIR)/../game-data/converted/data/. $(OUTPUT_DIR)/data/game-data/; fi
 	@mkdir -p $(OUTPUT_DIR)/data/game-data/audio
 	cp -rf $(CURDIR)/../game-data/converted/audio/. $(OUTPUT_DIR)/data/game-data/audio/
+	# Pre-rasterized DXT5 textures (runtime021 CC_TEX_BAKE), optional.
+	if [ -f $(CURDIR)/../game-data/converted/texbake.pak ]; then cp -f $(CURDIR)/../game-data/converted/texbake.pak $(OUTPUT_DIR)/data/game-data/; fi
 
 $(GEN_XISO): discdata
