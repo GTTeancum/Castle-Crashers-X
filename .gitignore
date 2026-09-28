@@ -55,3 +55,7 @@ game-data/converted/
 # Recorded or excerpted game audio (game content)
 logs/*.wav
 logs/*.mp3
+
+# Disc image staging (game data copied at build time; never commit)
+nxdk-checkpoint022/bin/
+*.iso
