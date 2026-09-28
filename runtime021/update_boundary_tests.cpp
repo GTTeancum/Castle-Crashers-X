@@ -1149,7 +1149,9 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // chain (sub_820C3568/sub_820C3930/sub_820C4488/sub_820C4498) creates the
   // font texture. The slice ends by dispatching renderer vtable slot +12 to
   // exact sub_820A7E80 (with exact sub_820BFB50), which returns normally.
-  CHECK(pi.functions==361075719u && pi.memory_ops==1050751650u);
+  // Default port policy: DXT5 textures streamed through a 16 MB cache,
+  // rasterized on first bind (CC_TEX_EAGER=1 gives the load-time order).
+  CHECK(pi.functions==321116952u && pi.memory_ops==4121608529u);
   CHECK(c.r1.u32==0x0003ee70u); // pacing-sleep frame at the budget stop
   // The boot-era pool record at 0x75240 (size 16 MiB, base 0x10000000) has
   // been released and cleared by the time the session reaches gameplay.

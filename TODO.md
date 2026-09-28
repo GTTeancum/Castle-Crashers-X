@@ -46,7 +46,9 @@ lever; unloading art the level no longer needs is the second.
 | Framebuffers 640x480, double buffered | — | 2.5 MB |
 | Game's own memory pool | 16 MB reserved, 12.6 MB used | ~13 MB |
 | General heap | ~20 KB | ~0 |
-| Sprite textures | 158 MB (32-bit); now ~44 MB as DXT5 | ~22 MB |
+| Sprite textures | 158 MB (32-bit) -> streamed DXT5 cache, 16 MB limit, 2-7 MB used | 16 MB |
+| Texture job snapshots (596 B each) | 1.7 MB | 1.7 MB |
+| Rasterizer temporaries (one texture at a time) | up to ~6 MB for a 512x512 | ~6 MB |
 | Audio | 5 MB (music stream buffers; audio stubbed) | ~6 MB |
 | Everything else | <1 MB | ~1 MB |
 
@@ -80,12 +82,23 @@ sound effects where possible; stream art wherever it can be streamed.
       the identical instruction/memory-op counts (it never reads texture
       pixels on the CPU) and frames look right (`logs/frames_dxt/`).
       `CC_TEXTURE_DXT5=0` turns it off on the host for comparison.
-- [ ] Get the level's ~44 MB of compressed textures down to the ~22 MB
-      budget: stream art (the vector source stays in the pak, so a texture
-      can be re-rasterized on demand) and drop art the level has passed.
-- [ ] Plan the cuts: smaller or recompressed textures (360 formats are
-      larger than needed at 640x480), audio re-encoded (see the audio item),
-      streaming instead of loading everything up front.
+- [x] Stream the art. Done 2026-09-28: each texture keeps a 596-byte
+      snapshot of its rasterizer job; the compressed pixels live in a cache
+      (16 MB limit, least recently drawn evicted) and a missing texture is
+      re-rasterized by replaying the exact rasterizer on its next bind.
+      Textures are rasterized on first bind, not at load. Every replay is
+      checked against the hash of the first compression: a 2 MB stress
+      cache forced 45,614 replays over 10,000 frames with **zero
+      mismatches**. Level 1 graphics memory: **10 MB live, 12 MB peak**
+      (was 166 / 184 MB). Working set: ~1 MB drawn per frame, <3 MB per
+      10 s window. Host knobs: `CC_TEX_CACHE_KB`, `CC_TEX_EAGER=1`,
+      `CC_WORKSET=1`.
+- [ ] Measure re-rasterization cost on the Xbox CPU (one core, 733 MHz)
+      and decide whether to pre-rasterize textures near the camera.
+- [ ] Measure the whole session against 64 MB on the Xbox build itself
+      (arenas sized for retail, not the harness's 224 MB).
+- [ ] Audio: re-encode (XMA is not playable on the original Xbox), stream
+      music, preload sound effects.
 
 ## Xbox 360 leftovers in the menus
 

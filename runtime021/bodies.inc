@@ -82,6 +82,8 @@ static uint16_t cc_mm_load_u16(Machine& base, uint32_t a);
 static uint32_t cc_phys_alloc(Machine& base, uint32_t bytes, uint32_t align);
 static bool cc_phys_free(Machine& base, uint32_t addr);
 static void cc_phys_shrink(Machine& base, uint32_t addr, uint32_t new_size);
+static uint64_t g_tex_cache_bytes = 0;
+static uint32_t g_tex_replays = 0, g_tex_replay_mismatches = 0, g_tex_evictions = 0;
 #ifndef CC_XBOX_DRIVER
 static void cc_mem_report(uint32_t frame);
 static cc::xbox::AddressSpace* g_mem_report_space = nullptr;
@@ -1514,6 +1516,10 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   }
   cc_capture_end_frame(base.memory, g_frame_delay_calls + 1u);
 #ifndef CC_XBOX_DRIVER
+  if (std::getenv("CC_WORKSET") && (g_frame_delay_calls + 1u) % 250u == 0u)
+    cc_log("TEXSTREAM frame=%u cache=%lluK replays=%u mismatches=%u evictions=%u%c",
+           g_frame_delay_calls + 1u, (unsigned long long)(g_tex_cache_bytes >> 10),
+           g_tex_replays, g_tex_replay_mismatches, g_tex_evictions, 10);
   g_mem_report_space = &base.memory;
   cc_mem_report(g_frame_delay_calls + 1u);
 #endif
@@ -2059,11 +2065,19 @@ static void cc_mem_report(uint32_t frame) {
 }
 #endif
 static bool cc_phys_free([[maybe_unused]] Machine& base, uint32_t addr) {
+    // A freed texture takes its streaming-cache copy with it. Done before
+    // this block is looked up: the nested free reorders the live list.
+    for (size_t k = 0; k < g_dxt_textures.size(); ++k)
+      if (g_dxt_textures[k].data == addr) {
+        const uint32_t cache = g_dxt_textures[k].cache;
+        if (cache) g_tex_cache_bytes -= uint64_t(g_dxt_textures[k].w) * g_dxt_textures[k].h;
+        g_dxt_textures.erase(g_dxt_textures.begin() + long(k));
+        if (cache) cc_phys_free(base, cache);
+        break;
+      }
     size_t li = 0;
     while (li < g_phys_live_blocks.size() && g_phys_live_blocks[li].addr != addr) ++li;
     if (li == g_phys_live_blocks.size()) return false;
-    for (size_t k = 0; k < g_dxt_textures.size(); ++k)
-      if (g_dxt_textures[k].data == addr) { g_dxt_textures.erase(g_dxt_textures.begin() + long(k)); break; }
     for (size_t k = 0; k < g_pending_textures.size(); ++k)
       if (g_pending_textures[k].data == addr) { g_pending_textures.erase(g_pending_textures.begin() + long(k)); break; }
     PhysRange r = g_phys_live_blocks[li];
@@ -4605,7 +4619,16 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_820C1980.inc"
 #include "generated/__restfpr_20.inc"
 #include "generated/sub_820A9308.inc"
+static void cc_tex_stream_on_bind(Context& ctx, Machine& base, uint32_t record);
+#define sub_820A89F8 sub_820A89F8_exact
 #include "generated/sub_820A89F8.inc"
+#undef sub_820A89F8
+static void sub_820A89F8(Context& ctx, Machine& base) {
+  // Texture bind (r4 = the game's texture record): make sure a streamed
+  // texture's pixels are resident before the exact bind runs.
+  cc_tex_stream_on_bind(ctx, base, ctx.r4.u32);
+  sub_820A89F8_exact(ctx, base);
+}
 #include "generated/sub_82086680.inc"
 #include "generated/sub_82086778.inc"
 #include "generated/sub_820866D0.inc"
@@ -4914,10 +4937,11 @@ static bool cc_compress_texture_dxt5(Machine& base, uint32_t src, uint32_t dst, 
 // parses the shape; the pixels are written later by the rasterizer (exact
 // sub_820B1478: renders into a float buffer, then converts w*h pixels to
 // the texture at [obj+564], pitch w*4). Between the two the game never
-// touches the pixels, so the port shrinks the block to its DXT5 size at
-// once, lets the rasterizer write into a transient 32-bit scratch block,
-// and compresses from the scratch into the texture. Only one full-size
-// image exists at a time.
+// touches the pixels, so the port cuts the game's block to 16 bytes at
+// once (the pointer stays the texture's identity), lets the rasterizer
+// write into a transient 32-bit scratch block, and compresses into the
+// texture streaming cache (below). Only one full-size image exists at a
+// time.
 #define sub_820B1078 sub_820B1078_exact
 #include "generated/sub_820B1078.inc"
 #undef sub_820B1078
@@ -4932,8 +4956,104 @@ static void sub_820B1078(Context& ctx, Machine& base) {
       base.memory.load_be(out_w, 4, w) != cc::xbox::MemoryError::ok ||
       base.memory.load_be(out_h, 4, h) != cc::xbox::MemoryError::ok || !data) return;
   if (w < 4u || h < 4u || (w & 3u) || (h & 3u) || w > 4096u || h > 4096u) return;
-  cc_phys_shrink(base, uint32_t(data), uint32_t(w * h));
-  g_pending_textures.push_back(CcDxtTexture{uint32_t(data), uint32_t(w), uint32_t(h)});
+  cc_phys_shrink(base, uint32_t(data), 16u);
+  CcDxtTexture t; t.data = uint32_t(data); t.w = uint32_t(w); t.h = uint32_t(h);
+  g_pending_textures.push_back(t);
+}
+// ---- Texture streaming ------------------------------------------------------
+static void sub_820B1478_exact(Context& ctx, Machine& base);
+// Compressed pixels live in a cache bounded by cc_tex_cache_limit(). Every
+// texture keeps a snapshot of its 596-byte rasterizer job (the job's inputs
+// are its own bytes plus the shape tag bytes in the loaded movie, which stay
+// resident), so an evicted texture is regenerated on its next bind by
+// replaying the exact rasterizer. Each replay is checked against the hash of
+// the first compression.
+static uint64_t cc_tex_cache_limit() {
+#ifndef CC_XBOX_DRIVER
+  static uint64_t lim = 0;
+  if (!lim) { const char* e = std::getenv("CC_TEX_CACHE_KB"); lim = uint64_t(e ? std::strtoul(e, nullptr, 10) : 16384u) << 10; }
+  return lim;
+#else
+  return uint64_t(16384u) << 10;
+#endif
+}
+// Host verification mode CC_TEX_EAGER=1 rasterizes every texture at load,
+// as the original game does; the port default rasterizes on first bind.
+static bool cc_tex_eager() {
+#ifndef CC_XBOX_DRIVER
+  static int on = -1;
+  if (on < 0) { const char* e = std::getenv("CC_TEX_EAGER"); on = e && e[0] == '1'; }
+  return on == 1;
+#else
+  return false;
+#endif
+}
+static uint32_t cc_hash_bytes(const uint8_t* p, size_t n) {
+  uint32_t h = 2166136261u;
+  for (size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 16777619u; }
+  return h;
+}
+// Evict least recently bound textures until the cache fits (never `keep`).
+static void cc_tex_cache_trim(Machine& base, uint32_t keep) {
+  while (g_tex_cache_bytes > cc_tex_cache_limit()) {
+    CcDxtTexture* victim = nullptr;
+    for (auto& t : g_dxt_textures)
+      if (t.cache && t.data != keep && (!victim || t.last_use < victim->last_use)) victim = &t;
+    if (!victim) return;
+    const uint32_t cache = victim->cache;
+    victim->cache = 0;
+    g_tex_cache_bytes -= uint64_t(victim->w) * victim->h;
+    ++g_tex_evictions;
+    cc_phys_free(base, cache);
+  }
+}
+// Run the exact rasterizer on `job` with its output redirected to a scratch
+// block, then compress into a fresh cache block. Returns the cache address
+// (0 on failure) and the hash of the compressed pixels.
+static uint32_t cc_tex_rasterize(Context& ctx, Machine& base, uint32_t job,
+                                 uint32_t w, uint32_t h, uint32_t& hash) {
+  const uint32_t scratch = cc_phys_alloc(base, w * h * 4u, 0x1000u);
+  base.memory.store_be(job + 564u, 4, scratch);
+  Context c = ctx;
+  c.r3.u64 = job;
+  sub_820B1478_exact(c, base);
+  const uint32_t cache = cc_phys_alloc(base, w * h, 16u);
+  const bool ok = cc_compress_texture_dxt5(base, scratch, cache, w, h);
+  cc_phys_free(base, scratch);
+  if (!ok) { cc_phys_free(base, cache); return 0; }
+  const uint8_t* q = base.memory.contiguous(cache, size_t(w) * h, 1);
+  hash = q ? cc_hash_bytes(q, size_t(w) * h) : 0u;
+  g_tex_cache_bytes += uint64_t(w) * h;
+  return cache;
+}
+static void cc_tex_stream_on_bind(Context& ctx, Machine& base, uint32_t record) {
+  uint64_t data = 0;
+  if (!record || base.memory.load_be(record + 36u, 4, data) != cc::xbox::MemoryError::ok) return;
+  CcDxtTexture* t = nullptr;
+  for (auto& e : g_dxt_textures) if (e.data == uint32_t(data)) { t = &e; break; }
+  if (!t) return;
+  t->last_use = g_frame_delay_calls;
+  if (t->cache) return;
+  // Regenerate from the snapshot in a guest job block.
+  const uint32_t job = cc_phys_alloc(base, 596u, 16u);
+  uint8_t* jp = base.memory.contiguous(job, 596u, 3);
+  if (!jp) base.fail(Error::memory, job);
+  std::memcpy(jp, t->job.data(), 596u);
+  const uint32_t want = t->hash, data_key = t->data, w = t->w, h = t->h;
+  uint32_t hash = 0;
+  const uint32_t cache = cc_tex_rasterize(ctx, base, job, w, h, hash);
+  cc_phys_free(base, job);
+  for (auto& e : g_dxt_textures) if (e.data == data_key) { e.cache = cache; break; }
+  bool first = false;
+  for (auto& e : g_dxt_textures)
+    if (e.data == data_key) { first = !e.hashed; if (first) { e.hash = hash; e.hashed = true; } break; }
+  if (first) { cc_tex_cache_trim(base, data_key); return; }
+  ++g_tex_replays;
+  if (hash != want) {
+    ++g_tex_replay_mismatches;
+    cc_elog("TEXSTREAM replay mismatch data=%08x %ux%u\n", data_key, w, h);
+  }
+  cc_tex_cache_trim(base, data_key);
 }
 #define sub_820B1478 sub_820B1478_exact
 #include "generated/sub_820B1478.inc"
@@ -4947,23 +5067,34 @@ static void sub_820B1478(Context& ctx, Machine& base) {
     if (g_pending_textures[i].data == uint32_t(target)) { pending = i; break; }
   if (pending == g_pending_textures.size()) {
     if (cc_texture_dxt5_enabled() && cc_find_dxt_texture(uint32_t(target))) {
-      // Re-rasterizing a compressed texture would write 32-bit pixels past
-      // its DXT5-sized block: stop instead.
+      // The game's block for a known texture is only 16 bytes: stop rather
+      // than let a second rasterization write past it.
       cc_elog("DXT5 texture %08x rasterized again\n", uint32_t(target));
       base.fail(Error::unsupported, 0x820B1478u);
     }
     sub_820B1478_exact(ctx, base);
     return;
   }
-  const CcDxtTexture t = g_pending_textures[pending];
+  CcDxtTexture t = g_pending_textures[pending];
   g_pending_textures.erase(g_pending_textures.begin() + long(pending));
-  const uint32_t scratch = cc_phys_alloc(base, t.w * t.h * 4u, 0x1000u);
-  base.memory.store_be(obj + 564u, 4, scratch);
-  sub_820B1478_exact(ctx, base);
+  // Snapshot the job before the rasterizer advances its stream pointer.
+  t.job.resize(596u);
+  if (base.memory.read(obj, t.job.data(), 596u) != cc::xbox::MemoryError::ok)
+    base.fail(Error::memory, obj);
+  const uint32_t key = t.data;
+  if (!cc_tex_eager()) {
+    // Lazy: the pixels are produced on first bind. The exact rasterizer
+    // only allocates and frees its own temporaries, so skipping it here
+    // leaves no game-visible state behind.
+    g_dxt_textures.push_back(std::move(t));
+    return;
+  }
+  t.cache = cc_tex_rasterize(ctx, base, obj, t.w, t.h, t.hash);
+  t.hashed = t.cache != 0;
   base.memory.store_be(obj + 564u, 4, t.data);
-  if (cc_compress_texture_dxt5(base, scratch, t.data, t.w, t.h))
-    g_dxt_textures.push_back(t);
-  cc_phys_free(base, scratch);
+  t.last_use = g_frame_delay_calls;
+  if (t.cache) g_dxt_textures.push_back(std::move(t));
+  cc_tex_cache_trim(base, key);
 }
 #include "generated/sub_8208F930.inc"
 #include "generated/sub_82091AC0.inc"

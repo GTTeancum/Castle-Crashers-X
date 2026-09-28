@@ -55,7 +55,14 @@ struct PhysRange { uint32_t addr, size; };
 static std::vector<PhysRange> g_phys_free_ranges;  // sorted by addr
 static std::vector<PhysRange> g_phys_live_blocks;
 // Textures the port stored DXT5-compressed (see cc_compress_texture_dxt5).
-struct CcDxtTexture { uint32_t data, w, h; };
+// data: the game's texture pointer (identity; the game's own block is cut
+// to 16 bytes), cache: guest address of the DXT5 pixels or 0 when evicted,
+// job: snapshot of the rasterizer job that regenerates the pixels.
+struct CcDxtTexture {
+  uint32_t data = 0, w = 0, h = 0, cache = 0, last_use = 0, hash = 0;
+  bool hashed = false;  // hash holds the first compression's hash
+  std::vector<uint8_t> job;
+};
 static std::vector<CcDxtTexture> g_dxt_textures;
 static std::vector<CcDxtTexture> g_pending_textures;  // allocated, not yet rasterized
 [[maybe_unused]] static const CcDxtTexture* cc_find_dxt_texture(uint32_t data) {
@@ -71,6 +78,7 @@ static std::map<uint32_t, uint32_t> g_phys_owner;
 static std::map<uint32_t, uint64_t> g_phys_owner2;
 static uint32_t g_phys_tag2 = 0, g_phys_tag3 = 0;
 static std::map<uint32_t, uint32_t> g_bound_textures; // data -> w|h<<16
+static std::map<uint32_t, uint32_t> g_tex_last_bound; // data -> last frame bound
 #endif
 static uint64_t g_phys_live_bytes = 0, g_phys_peak_bytes = 0;
 // One-shot XAM notification listener.
@@ -830,10 +838,11 @@ struct CcCapDraw {
   std::vector<uint8_t> verts;
 };
 static struct {
-  bool init = false, enabled = false, active = false, mem_report = false;
+  bool init = false, enabled = false, active = false, mem_report = false, workset = false;
+  uint32_t frame_now = 0;
   std::vector<uint32_t> frames;
   char dir[512] = {};
-  uint32_t cur_tex = 0, cur_w = 0, cur_h = 0, cur_fmt = 0;
+  uint32_t cur_tex = 0, cur_w = 0, cur_h = 0, cur_fmt = 0, cur_src = 0;
   std::vector<CcCapTex> texs;
   std::vector<CcCapDraw> draws;
 } g_cap;
@@ -844,6 +853,7 @@ static uint32_t cc_rd32(cc::xbox::AddressSpace& mem, uint32_t a) {
 static void cc_capture_init(uint32_t first_frame) {
   g_cap.init = true;
   g_cap.mem_report = std::getenv("CC_MEM_REPORT") != nullptr;
+  g_cap.workset = std::getenv("CC_WORKSET") != nullptr;
   const char* f = std::getenv("CC_CAPTURE_FRAMES");
   const char* d = std::getenv("CC_CAPTURE_DIR");
   if (!f || !d) return;
@@ -861,16 +871,19 @@ static void cc_capture_init(uint32_t first_frame) {
 static void cc_capture_on_function(const char* name, const Context& ctx,
                                    cc::xbox::AddressSpace& mem) {
   if (!g_cap.init) cc_capture_init(1u);
-  if (!g_cap.enabled && !g_cap.mem_report) return;
+  if (!g_cap.enabled && !g_cap.mem_report && !g_cap.workset) return;
   if (name[0] != 's' || name[4] != '8' || name[5] != '2') return;
-  if (!std::strcmp(name, "sub_820A89F8")) {
+  if (!std::strncmp(name, "sub_820A89F8", 12)) {
     const uint32_t d = ctx.r4.u32;
     if (std::getenv("CC_MEM_REPORT"))
       g_bound_textures[cc_rd32(mem, d + 36)] = cc_rd32(mem, d + 16) | (cc_rd32(mem, d + 20) << 16);
+    if (g_cap.workset) g_tex_last_bound[cc_rd32(mem, d + 36)] = g_cap.frame_now;
     g_cap.cur_w = cc_rd32(mem, d + 16); g_cap.cur_h = cc_rd32(mem, d + 20);
     g_cap.cur_fmt = cc_rd32(mem, d + 24); g_cap.cur_tex = cc_rd32(mem, d + 36);
-    // Capture format 100: the port's in-place DXT5 (standard block layout).
-    if (cc_find_dxt_texture(g_cap.cur_tex)) g_cap.cur_fmt = 100u;
+    // Capture format 100: the port's DXT5 (standard block layout), read from
+    // the streaming cache rather than the game's (cut-down) block.
+    g_cap.cur_src = g_cap.cur_tex;
+    if (const CcDxtTexture* t = cc_find_dxt_texture(g_cap.cur_tex)) { g_cap.cur_fmt = 100u; g_cap.cur_src = t->cache; }
     return;
   }
   if (!g_cap.enabled || !g_cap.active || std::strcmp(name, "sub_820C1980")) return;
@@ -914,12 +927,34 @@ static void cc_capture_on_function(const char* name, const Context& ctx,
   else if (t.fmt >= 7 && t.fmt <= 11) bytes = (W / 4u) * (H / 4u) * (t.fmt == 7 ? 8u : 16u);
   if (bytes && bytes <= 16u * 1024u * 1024u) {
     t.bytes.resize(bytes);
-    if (mem.read(t.data, t.bytes.data(), bytes) != cc::xbox::MemoryError::ok) t.bytes.clear();
+    if (mem.read(g_cap.cur_src ? g_cap.cur_src : t.data, t.bytes.data(), bytes) != cc::xbox::MemoryError::ok) t.bytes.clear();
   }
   g_cap.texs.push_back(std::move(t));
 }
 static void cc_capture_end_frame(cc::xbox::AddressSpace& mem, uint32_t frame) {
   if (!g_cap.init) cc_capture_init(frame);
+  if (g_cap.workset) {
+    // Texture working set (DXT5 bytes = w*h): drawn this frame, within the
+    // last 60 and 600 frames, and all compressed textures resident.
+    g_cap.frame_now = frame;
+    if (frame % 250u == 0u) {
+      uint64_t now = 0, w60 = 0, w600 = 0, resident = 0;
+      for (const auto& t : g_dxt_textures) {
+        const uint64_t b = uint64_t(t.w) * t.h;
+        resident += b;
+        const auto it = g_tex_last_bound.find(t.data);
+        if (it == g_tex_last_bound.end()) continue;
+        const uint32_t age = frame - it->second;
+        if (age <= 1u) now += b;
+        if (age <= 60u) w60 += b;
+        if (age <= 600u) w600 += b;
+      }
+      cc_log("WORKSET frame=%u drawn_now=%lluK last_60=%lluK last_600=%lluK resident=%lluK textures=%u\n",
+             frame, (unsigned long long)(now >> 10), (unsigned long long)(w60 >> 10),
+             (unsigned long long)(w600 >> 10), (unsigned long long)(resident >> 10),
+             unsigned(g_dxt_textures.size()));
+    }
+  }
   if (!g_cap.enabled) return;
   if (g_cap.active) {
     char path[640];
