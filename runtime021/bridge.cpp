@@ -2,6 +2,7 @@
 #include "../runtime008/bridge.h"
 #include <climits>
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <csetjmp>
 #include <cstring>
@@ -23,6 +24,46 @@ void cc_xr_frame_end();
 #include <map>
 #include <set>
 #include "cc_log.h"
+#ifndef CC_XBOX_DRIVER
+#include <atomic>
+#include <unordered_map>
+#include <chrono>
+#include <thread>
+// Host sampling profiler (CC_SAMPLE=1): a background thread records which
+// generated function was most recently entered, once per millisecond, and
+// prints the top entries at exit. Approximate self time at function-entry
+// granularity; port-side work shows up under the guest function that called it.
+static std::atomic<const char*> g_sample_fn{nullptr};
+namespace {
+struct CcSampler {
+  std::atomic<bool> stop{false};
+  std::thread worker;
+  std::unordered_map<const char*, unsigned> counts;
+  unsigned total = 0;
+  CcSampler() {
+    if (!std::getenv("CC_SAMPLE")) return;
+    worker = std::thread([this] {
+      while (!stop.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (const char* f = g_sample_fn.load(std::memory_order_relaxed)) { ++counts[f]; ++total; }
+      }
+    });
+  }
+  ~CcSampler() {
+    if (!worker.joinable()) return;
+    stop = true;
+    worker.join();
+    std::vector<std::pair<unsigned, const char*>> v;
+    for (const auto& [f, c] : counts) v.push_back({c, f});
+    std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    std::fprintf(stderr, "SAMPLE total=%u\n", total);
+    for (size_t i = 0; i < v.size() && i < 30; ++i)
+      std::fprintf(stderr, "SAMPLE %5.1f%% %s\n", 100.0 * v[i].first / (total ? total : 1), v[i].second);
+  }
+};
+CcSampler g_sampler;
+}  // namespace
+#endif
 #include <string>
 #include <vector>
 namespace cc::tree {
@@ -78,10 +119,76 @@ struct CcDxtTexture {
   std::vector<uint8_t> job;
 };
 static std::vector<CcDxtTexture> g_dxt_textures;
+// data pointer -> index into g_dxt_textures (textures are looked up on every
+// bind, ~250 times a frame, among ~2,800 entries). Open addressing with
+// linear probing; the nxdk C++ runtime has no std::unordered_map support.
+struct CcDxtIndex {
+  static constexpr uint32_t kEmpty = 0u, kGone = 1u;  // texture pointers are never 0 or 1
+  std::vector<uint32_t> keys, values;
+  uint32_t used = 0;  // live + tombstones
+  static uint32_t hash(uint32_t k) { return (k >> 4) * 2654435761u; }
+  void rebuild(uint32_t capacity, const std::vector<CcDxtTexture>& live) {
+    keys.assign(capacity, kEmpty);
+    values.assign(capacity, 0u);
+    used = 0;
+    for (uint32_t i = 0; i < live.size(); ++i) set(live[i].data, i);
+  }
+  void set(uint32_t k, uint32_t v) {
+    const uint32_t mask = uint32_t(keys.size()) - 1u;
+    for (uint32_t i = hash(k) & mask;; i = (i + 1u) & mask) {
+      if (keys[i] == k) { values[i] = v; return; }
+      if (keys[i] == kEmpty || keys[i] == kGone) {
+        if (keys[i] == kEmpty) ++used;
+        keys[i] = k; values[i] = v; return;
+      }
+    }
+  }
+  int64_t get(uint32_t k) const {
+    if (keys.empty()) return -1;
+    const uint32_t mask = uint32_t(keys.size()) - 1u;
+    for (uint32_t i = hash(k) & mask;; i = (i + 1u) & mask) {
+      if (keys[i] == k) return values[i];
+      if (keys[i] == kEmpty) return -1;
+    }
+  }
+  void remove(uint32_t k) {
+    const uint32_t mask = uint32_t(keys.size()) - 1u;
+    for (uint32_t i = hash(k) & mask;; i = (i + 1u) & mask) {
+      if (keys[i] == k) { keys[i] = kGone; return; }
+      if (keys[i] == kEmpty) return;
+    }
+  }
+};
+static CcDxtIndex g_dxt_index;
+[[maybe_unused]] static CcDxtTexture* cc_dxt_lookup(uint32_t data) {
+  const int64_t i = g_dxt_index.get(data);
+  return i < 0 ? nullptr : &g_dxt_textures[size_t(i)];
+}
+[[maybe_unused]] static void cc_dxt_add(CcDxtTexture&& t) {
+  g_dxt_textures.push_back(std::move(t));
+  if ((g_dxt_index.used + 1u) * 2u > g_dxt_index.keys.size()) {
+    uint32_t cap = 8192u;
+    while (cap < g_dxt_textures.size() * 4u) cap *= 2u;
+    g_dxt_index.rebuild(cap, g_dxt_textures);
+  } else {
+    g_dxt_index.set(g_dxt_textures.back().data, uint32_t(g_dxt_textures.size() - 1u));
+  }
+}
+// Remove by swapping the last entry into its place.
+[[maybe_unused]] static void cc_dxt_erase(uint32_t data) {
+  const int64_t found = g_dxt_index.get(data);
+  if (found < 0) return;
+  const uint32_t k = uint32_t(found);
+  g_dxt_index.remove(data);
+  if (k + 1u != g_dxt_textures.size()) {
+    g_dxt_textures[k] = std::move(g_dxt_textures.back());
+    g_dxt_index.set(g_dxt_textures[k].data, k);
+  }
+  g_dxt_textures.pop_back();
+}
 static std::vector<CcDxtTexture> g_pending_textures;  // allocated, not yet rasterized
 [[maybe_unused]] static const CcDxtTexture* cc_find_dxt_texture(uint32_t data) {
-  for (const auto& t : g_dxt_textures) if (t.data == data) return &t;
-  return nullptr;
+  return cc_dxt_lookup(data);
 }
 // Guest return address of the allocation currently being served (set by the
 // allocator shims just before cc_phys_alloc), and, host only, each live
@@ -345,11 +452,16 @@ struct Machine {
   bool prof_enabled = false;
   void prologue(const char *name, const Context& ctx) {
     last_function = name;
+#ifndef CC_XBOX_DRIVER
+    g_sample_fn.store(name, std::memory_order_relaxed);
+#endif
     last_ctx = &ctx;
     recent_functions[recent_pos & 31u] = name;
     recent_r1[recent_pos & 31u] = ctx.r1.u32;
     ++recent_pos;
+#ifndef CC_FAST
     if (++result.functions > 500000000u && budget != 0xFFFFFFFFu) capacity_stop();
+#endif
     if (prof_enabled) prof_hit(name);
     if (trace_one_frame && trace_count < 2000) {
       ++trace_count;
@@ -480,9 +592,13 @@ struct Machine {
       }
     }
   }
-  void tick(uint32_t a) {
+  void tick([[maybe_unused]] uint32_t a) {
+#ifndef CC_FAST
+    // Verification builds count every guest memory access; the fast (play)
+    // build does not.
     if (++result.memory_ops > budget && budget != 0xFFFFFFFFu)
       fail(Error::capacity, a);
+#endif
   }
   [[noreturn]] void fail(Error e, uint32_t a = 0) {
     result.error = e;
@@ -588,22 +704,58 @@ struct Machine {
     }
     return nullptr;
   }
+  // Hot path: the last region read from and the last written to (mostly the
+  // stack) are checked inline with one comparison; everything else takes
+  // the cached/checked path, which also refreshes the hot entry.
+  struct HotRegion { uint32_t lo = 0, span = 0; uint8_t* host = nullptr; };
+  HotRegion hot_read, hot_write;
+  static uint64_t get_be(const uint8_t* p, unsigned n) {
+    switch (n) {
+      case 1: return p[0];
+      case 2: { uint16_t x; std::memcpy(&x, p, 2); return __builtin_bswap16(x); }
+      case 4: { uint32_t x; std::memcpy(&x, p, 4); return __builtin_bswap32(x); }
+      default: { uint64_t x; std::memcpy(&x, p, 8); return __builtin_bswap64(x); }
+    }
+  }
+  static void put_be(uint8_t* p, unsigned n, uint64_t v) {
+    switch (n) {
+      case 1: p[0] = uint8_t(v); return;
+      case 2: { const uint16_t x = __builtin_bswap16(uint16_t(v)); std::memcpy(p, &x, 2); return; }
+      case 4: { const uint32_t x = __builtin_bswap32(uint32_t(v)); std::memcpy(p, &x, 4); return; }
+      default: { const uint64_t x = __builtin_bswap64(v); std::memcpy(p, &x, 8); return; }
+    }
+  }
+  void refresh_hot(HotRegion& h) {
+    h.lo = region_cache[0].lo;
+    h.span = region_cache[0].hi - region_cache[0].lo;
+    h.host = region_cache[0].host;
+  }
   uint64_t load(uint32_t a, unsigned n) {
     tick(a);
+    const uint32_t off = a - hot_read.lo;
+    if (off < hot_read.span && hot_read.span - off >= n) return get_be(hot_read.host + off, n);
+    return load_slow(a, n);
+  }
+  void store(uint32_t a, unsigned n, uint64_t v) {
+    tick(a);
+    const uint32_t off = a - hot_write.lo;
+    if (off < hot_write.span && hot_write.span - off >= n) { put_be(hot_write.host + off, n, v); return; }
+    store_slow(a, n, v);
+  }
+  uint64_t load_slow(uint32_t a, unsigned n) {
     if (const uint8_t* p = fast_host(a, n, 1u)) {
-      uint64_t v = 0;
-      for (unsigned i = 0; i < n; ++i) v = (v << 8) | p[i];
-      return v;
+      refresh_hot(hot_read);
+      return get_be(p, n);
     }
     uint64_t v = 0;
     if (memory.load_be(a, n, v) != cc::xbox::MemoryError::ok)
       fail(Error::memory, a);
     return v;
   }
-  void store(uint32_t a, unsigned n, uint64_t v) {
-    tick(a);
+  void store_slow(uint32_t a, unsigned n, uint64_t v) {
     if (uint8_t* p = fast_host(a, n, 2u)) {
-      for (unsigned i = n; i; --i) { p[i - 1] = uint8_t(v); v >>= 8; }
+      refresh_hot(hot_write);
+      put_be(p, n, v);
       return;
     }
     if (memory.store_be(a, n, v) != cc::xbox::MemoryError::ok)

@@ -2162,16 +2162,14 @@ static void cc_mem_report(uint32_t frame) {
 static bool cc_phys_free([[maybe_unused]] Machine& base, uint32_t addr) {
     // A freed texture takes its streaming-cache copy with it. Done before
     // this block is looked up: the nested free reorders the live list.
-    for (size_t k = 0; k < g_dxt_textures.size(); ++k)
-      if (g_dxt_textures[k].data == addr) {
-        const uint32_t cache = g_dxt_textures[k].cache;
-        if (cache) g_tex_cache_bytes -= uint64_t(g_dxt_textures[k].w) * g_dxt_textures[k].h;
-        if (g_dxt_textures[k].swap_off >= 0)
-          g_tex_swap_free_early.push_back({g_dxt_textures[k].swap_off, g_dxt_textures[k].w * g_dxt_textures[k].h});
-        g_dxt_textures.erase(g_dxt_textures.begin() + long(k));
-        if (cache) cc_texzone_free(cache);
-        break;
-      }
+    if (CcDxtTexture* tx = cc_dxt_lookup(addr)) {
+      const uint32_t cache = tx->cache;
+      if (cache) g_tex_cache_bytes -= uint64_t(tx->w) * tx->h;
+      if (tx->swap_off >= 0)
+        g_tex_swap_free_early.push_back({tx->swap_off, tx->w * tx->h});
+      cc_dxt_erase(addr);
+      if (cache) cc_texzone_free(cache);
+    }
     size_t li = 0;
     while (li < g_phys_live_blocks.size() && g_phys_live_blocks[li].addr != addr) ++li;
     if (li == g_phys_live_blocks.size()) return false;
@@ -5332,7 +5330,7 @@ static void cc_tex_stream_on_bind(Context& ctx, Machine& base, uint32_t record) 
   uint64_t data = 0;
   if (!record || base.memory.load_be(record + 36u, 4, data) != cc::xbox::MemoryError::ok) return;
   CcDxtTexture* t = nullptr;
-  for (auto& e : g_dxt_textures) if (e.data == uint32_t(data)) { t = &e; break; }
+  t = cc_dxt_lookup(uint32_t(data));
   if (!t) return;
   t->last_use = g_frame_delay_calls;
   if (t->cache) return;
@@ -5351,10 +5349,12 @@ static void cc_tex_stream_on_bind(Context& ctx, Machine& base, uint32_t record) 
   g_tex_alloc_keep = data_key;
   const uint32_t cache = cc_tex_rasterize(ctx, base, job, w, h, hash);
   cc_phys_free(base, job);
-  for (auto& e : g_dxt_textures) if (e.data == data_key) { e.cache = cache; break; }
+  if (CcDxtTexture* e = cc_dxt_lookup(data_key)) e->cache = cache;
   bool first = false;
-  for (auto& e : g_dxt_textures)
-    if (e.data == data_key) { first = !e.hashed; if (first) { e.hash = hash; e.hashed = true; } break; }
+  if (CcDxtTexture* e = cc_dxt_lookup(data_key)) {
+    first = !e->hashed;
+    if (first) { e->hash = hash; e->hashed = true; }
+  }
   if (first) { cc_tex_cache_trim(base, data_key); return; }
   ++g_tex_replays;
   if (hash != want) {
@@ -5394,7 +5394,7 @@ static void sub_820B1478(Context& ctx, Machine& base) {
     // Lazy: the pixels are produced on first bind. The exact rasterizer
     // only allocates and frees its own temporaries, so skipping it here
     // leaves no game-visible state behind.
-    g_dxt_textures.push_back(std::move(t));
+    cc_dxt_add(std::move(t));
     return;
   }
   g_tex_alloc_keep = t.data;
@@ -5402,7 +5402,7 @@ static void sub_820B1478(Context& ctx, Machine& base) {
   t.hashed = t.cache != 0;
   base.memory.store_be(obj + 564u, 4, t.data);
   t.last_use = g_frame_delay_calls;
-  if (t.cache) g_dxt_textures.push_back(std::move(t));
+  if (t.cache) cc_dxt_add(std::move(t));
   cc_tex_cache_trim(base, key);
 }
 #include "generated/sub_8208F930.inc"

@@ -13,6 +13,7 @@
 #include <hal/debug.h>
 #include <hal/video.h>
 #include <pbkit/pbkit.h>
+#include <pbkit/pbkit_print.h>
 #include <windows.h>
 #include <xboxkrnl/xboxkrnl.h>
 #include <cstdint>
@@ -245,6 +246,22 @@ void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t st
 // Frame boundary: wait for the GPU and present.
 void cc_xr_frame_end() {
   if (!g_in_frame) return;
+  // On-screen speed counter: frames per second and milliseconds per frame,
+  // averaged over each second of real time.
+  static DWORD window_start = 0;
+  static unsigned window_frames = 0, shown_fps = 0, shown_ms = 0;
+  const DWORD now = GetTickCount();
+  if (!window_start) window_start = now;
+  ++window_frames;
+  if (now - window_start >= 1000) {
+    shown_fps = window_frames * 1000u / (now - window_start);
+    shown_ms = (now - window_start) / window_frames;
+    window_start = now;
+    window_frames = 0;
+  }
+  pb_erase_text_screen();
+  pb_printat(0, 1, "%u fps  %u ms", shown_fps, shown_ms);
+  pb_draw_text_screen();
   while (pb_busy()) {}
   while (pb_finished()) {}
   if (!g_shown) { pb_show_front_screen(); g_shown = true; }
