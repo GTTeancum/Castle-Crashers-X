@@ -5,6 +5,7 @@
 #include "cc_log.h"
 #ifdef CC_XBOX_DRIVER
 #include <hal/video.h>
+void* cc_xr_alloc_gpu(uint32_t bytes);
 #include <windows.h>
 #endif
 #include <array>
@@ -617,8 +618,15 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   static std::vector<uint8_t> tex_stub_arena(0x00180000);  // high-water 1.07 MiB
   CHECK(m.map(0x1D000000u,uint32_t(tex_stub_arena.size()),tex_stub_arena.data(),3)==cc::xbox::MemoryError::ok);
   // Texture cache zone (buddy allocator, 6 MiB) for the DXT5 texture cache.
+#ifdef CC_XBOX_DRIVER
+  // The NV2A samples the cache directly: physically contiguous memory.
+  static uint8_t* tex_zone_arena = static_cast<uint8_t*>(cc_xr_alloc_gpu(0x00600000));
+  CHECK(tex_zone_arena != nullptr);
+  CHECK(m.map(0x1C000000u,0x00600000u,tex_zone_arena,3)==cc::xbox::MemoryError::ok);
+#else
   static std::vector<uint8_t> tex_zone_arena(0x00600000);
   CHECK(m.map(0x1C000000u,uint32_t(tex_zone_arena.size()),tex_zone_arena.data(),3)==cc::xbox::MemoryError::ok);
+#endif
 
   // Execute the exact CRT heap initialization (sub_820B7880 -> exact
   // sub_820B93B0) that original startup performs before any game code runs.

@@ -13,6 +13,10 @@
 #ifdef CC_XBOX_DRIVER
 // nxdk-checkpoint022/xbox_audio.cpp: AC97 output for the port mixer.
 void cc_xbox_audio_submit(const int16_t* frame, int samples);
+// nxdk-checkpoint022/xbox_render.cpp: NV2A renderer for the game's draw calls.
+void cc_xr_bind(uint32_t key, const void* data, uint32_t w, uint32_t h, int kind);
+void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t stride, uint32_t blend);
+void cc_xr_frame_end();
 #endif
 #include <map>
 #include <set>
@@ -902,7 +906,7 @@ static void cc_capture_on_function(const char* name, const Context& ctx,
     if (const CcDxtTexture* t = cc_find_dxt_texture(g_cap.cur_tex)) { g_cap.cur_fmt = 100u; g_cap.cur_src = t->cache; }
     return;
   }
-  if (!g_cap.enabled || !g_cap.active || std::strcmp(name, "sub_820C1980")) return;
+  if (!g_cap.enabled || !g_cap.active || std::strncmp(name, "sub_820C1980", 12)) return;
   CcCapDraw dr{};
   const uint32_t dev = ctx.r3.u32;
   dr.prim = ctx.r4.u32; dr.count = ctx.r5.u32; dr.stride = ctx.r7.u32;

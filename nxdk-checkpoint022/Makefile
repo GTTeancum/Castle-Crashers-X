@@ -3,6 +3,7 @@ GEN_XISO = CastleCrashersX-Checkpoint022.iso
 SRCS = \
   $(CURDIR)/xbox_shims.cpp \
   $(CURDIR)/xbox_audio.cpp \
+  $(CURDIR)/xbox_render.cpp \
   $(CURDIR)/../runtime007/numeric/fused.cpp \
   $(CURDIR)/../runtime007/numeric/target_fma.cpp \
   $(CURDIR)/../runtime021/update_boundary_tests.cpp \

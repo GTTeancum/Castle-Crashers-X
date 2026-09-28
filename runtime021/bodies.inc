@@ -1543,6 +1543,9 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     base.memory.store_be(0x02500110u, 4, uint32_t(t100ns / 10000ull));
   }
   cc_audio_frame();
+#ifdef CC_XBOX_DRIVER
+  ::cc_xr_frame_end();
+#endif
   cc_capture_end_frame(base.memory, g_frame_delay_calls + 1u);
 #ifndef CC_XBOX_DRIVER
   if (std::getenv("CC_WORKSET") && (g_frame_delay_calls + 1u) % 250u == 0u)
@@ -4707,17 +4710,35 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_820D46F0.inc"
 #include "generated/sub_820C14E8.inc"
 #include "generated/__savefpr_20.inc"
+#define sub_820C1980 sub_820C1980_exact
 #include "generated/sub_820C1980.inc"
+#undef sub_820C1980
+static void sub_820C1980(Context& ctx, Machine& base) {
+  // The game's final draw call (r3 device, r4 primitive, r5 vertex count,
+  // r6 vertices, r7 stride): the Xbox renderer draws it from here.
+#ifdef CC_XBOX_DRIVER
+  const uint32_t count = ctx.r5.u32, stride = ctx.r7.u32;
+  if (count && stride && count <= 65536u / stride) {
+    const uint8_t* v = base.memory.contiguous(ctx.r6.u32, size_t(count) * stride, 1);
+    uint64_t blend = 0;
+    base.memory.load_be(ctx.r3.u32 + 10552u, 4, blend);
+    if (v) ::cc_xr_draw(ctx.r4.u32, count, v, stride, uint32_t(blend));
+  }
+#endif
+  sub_820C1980_exact(ctx, base);
+}
 #include "generated/__restfpr_20.inc"
 #include "generated/sub_820A9308.inc"
 static void cc_tex_stream_on_bind(Context& ctx, Machine& base, uint32_t record);
 #define sub_820A89F8 sub_820A89F8_exact
 #include "generated/sub_820A89F8.inc"
 #undef sub_820A89F8
+static void cc_xr_on_bind(Machine& base, uint32_t record);
 static void sub_820A89F8(Context& ctx, Machine& base) {
   // Texture bind (r4 = the game's texture record): make sure a streamed
   // texture's pixels are resident before the exact bind runs.
   cc_tex_stream_on_bind(ctx, base, ctx.r4.u32);
+  cc_xr_on_bind(base, ctx.r4.u32);
   sub_820A89F8_exact(ctx, base);
 }
 #include "generated/sub_82086680.inc"
@@ -5276,6 +5297,26 @@ static uint32_t cc_tex_rasterize(Context& ctx, Machine& base, uint32_t job,
   hash = q ? cc_hash_bytes(q, size_t(w) * h) : 0u;
   g_tex_cache_bytes += uint64_t(w) * h;
   return cache;
+}
+// Hand the bound texture to the Xbox renderer: streamed DXT5 textures from
+// the texture cache zone, other formats (the A4R4G4B4 font atlas) from the
+// game's own block.
+static void cc_xr_on_bind([[maybe_unused]] Machine& base, [[maybe_unused]] uint32_t record) {
+#ifdef CC_XBOX_DRIVER
+  uint64_t data = 0, w = 0, h = 0, fmt = 0;
+  if (!record || base.memory.load_be(record + 36u, 4, data) != cc::xbox::MemoryError::ok) return;
+  base.memory.load_be(record + 16u, 4, w);
+  base.memory.load_be(record + 20u, 4, h);
+  base.memory.load_be(record + 24u, 4, fmt);
+  if (const CcDxtTexture* t = cc_find_dxt_texture(uint32_t(data))) {
+    const uint8_t* q = t->cache ? base.memory.contiguous(t->cache, size_t(t->w) * t->h, 1) : nullptr;
+    ::cc_xr_bind(uint32_t(data), q, t->w, t->h, 100);
+    return;
+  }
+  const uint32_t bpp = fmt == 1u ? 4u : (fmt == 5u ? 2u : 0u);
+  const uint8_t* q = bpp ? base.memory.contiguous(uint32_t(data), size_t(w) * h * bpp, 1) : nullptr;
+  ::cc_xr_bind(uint32_t(data), q, uint32_t(w), uint32_t(h), int(fmt));
+#endif
 }
 static void cc_tex_stream_on_bind(Context& ctx, Machine& base, uint32_t record) {
   uint64_t data = 0;
