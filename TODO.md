@@ -144,13 +144,23 @@ sound effects where possible; stream art wherever it can be streamed.
   level 1) on XEMU's retail 64 MB configuration. No renderer yet: the
   screen shows only the diagnostic log. Speed under XEMU: ~7 frames/s in
   the intro, ~3 in the menus.
-- [ ] Xbox renderer (pbkit/NV2A) from the game's draw calls.
-- [ ] No sound heard in XEMU. Check whether the mixer produces samples on
-      the Xbox and whether the AC97 path starts (log from xbox_audio.cpp).
+- [x] Xbox renderer (pbkit/NV2A) from the game's draw calls.
+- [x] Sound: music heard in XEMU at full speed (2026-09-28).
+- [x] Controller input (nxdk SDL); a real pad takes over from the script.
+- [x] Real-time game speed: the game steps by measured frame time (exact
+      main loop clamps dt to 1/60..1/10 s), so the play build feeds it a
+      real clock.
 - [ ] Z: scratch swap: never exercised natively (no eviction happened with
       the 6 MB zone); the first run's 4 MB zone reported it unavailable.
-- [ ] Performance: Machine::prologue compares every function name against
-      a list of strings (strcmp) on every call; costly on a 733 MHz CPU.
+- [ ] Performance toward a steady 30 FPS (33 ms). XEMU 2026-09-28 after
+      the 360 draw skip and inline memory path: menu ~57 ms (17 FPS), level
+      80-114 ms (update ~30, render ~56). Remaining cost is the game's own
+      scene code, spread thin; next levers are 64-bit register arithmetic
+      on the 32-bit CPU and x87 float rounding. XEMU speed is not real
+      hardware speed; measure on a console when possible.
+- [ ] Memory: Xbox code size matters (it shares the 64 MB). Inlining the
+      memory slow path once grew .text 12.2 -> 16.9 MB and the game failed
+      to boot; keep slow paths out of line. Now ~9.8 MB with SDL.
 - [x] The 4 MB texture zone thrashed the menus without the swap (menus draw
       ~4.5 MB per frame); zone raised to 6 MB.
 

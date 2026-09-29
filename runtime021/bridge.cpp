@@ -491,7 +491,7 @@ struct Machine {
   enum : uint32_t { kHookAny = 1u };
   struct HookSlot { const char* name; uint32_t flags; };
   HookSlot hook_slots[16384] = {};
-  uint32_t hook_flags(const char* name) {
+  __attribute__((noinline)) uint32_t hook_flags(const char* name) {
     uint32_t h = uint32_t(reinterpret_cast<uintptr_t>(name) >> 3) * 2654435761u;
     for (uint32_t i = 0;; ++i) {
       HookSlot& s = hook_slots[(h + i) & 16383u];
@@ -548,7 +548,7 @@ struct Machine {
     cc_elog("WORKERSTATE pend=%08x done=%08x busy=%s\n",uint32_t(pend),uint32_t(done),busy);
     fail(Error::capacity);
   }
-  void hooked_prologue(const char *name, const Context& ctx) {
+  __attribute__((noinline)) void hooked_prologue(const char *name, const Context& ctx) {
     if (!std::strcmp(name,"sub_8209CD08") || !std::strcmp(name,"sub_8209CC98")) validate_widget_list(ctx.r3.u32);
     if (!std::strcmp(name,"sub_8209DE50")) validate_widget_update(ctx.r3.u32);
     if (!std::strcmp(name,"sub_8209DF48")) validate_widget_owner(ctx.r3.u32);
@@ -1128,7 +1128,18 @@ using PPCRegister = Register;
 #define DEFINE_REX_FUNC(name)                                                  \
   static void name([[maybe_unused]] Context &ctx,                              \
                    [[maybe_unused]] Machine &base)
+#if defined(CC_FAST) && !defined(CC_OLD_PROLOGUE)
+// Play build: no trace/crash-report bookkeeping per call; each function
+// resolves its hook flag once (cached in a per-function byte) and only
+// hooked functions pay for a call.
+#define REX_FUNC_PROLOGUE() do { \
+    static uint8_t cc_hook = 2; \
+    if (cc_hook == 2) cc_hook = uint8_t(base.hook_flags(__func__) & Machine::kHookAny); \
+    if (cc_hook) base.hooked_prologue(__func__, ctx); \
+  } while (0)
+#else
 #define REX_FUNC_PROLOGUE() base.prologue(__func__,ctx)
+#endif
 #define REX_LOAD_U8(a) uint8_t(base.load(uint32_t(a), 1))
 #define REX_LOAD_U16(a) uint16_t(base.load(uint32_t(a), 2))
 #define REX_LOAD_U32(a) uint32_t(base.load(uint32_t(a), 4))
