@@ -29,6 +29,12 @@ int main() {
   auto check = [&](double a, double b, double c) {
     double expected = std::fma(a, b, c),
            actual = cc::numeric::fused_nearest(a, b, c);
+    // The shortcut must agree bit for bit wherever it applies.
+    if (double fast = 0; cc::numeric::fused_nearest_fast(a, b, c, fast) &&
+                         bits(fast) != bits(expected)) {
+      std::fprintf(stderr, "FAIL fast a=%a b=%a c=%a got=%a want=%a\n", a, b, c, fast, expected);
+      std::exit(1);
+    }
     ++cases;
     if ((std::isnan(expected) && std::isnan(actual)) ||
         bits(expected) == bits(actual))
@@ -68,6 +74,19 @@ int main() {
     double a = value(random_bits()), b = value(random_bits());
     double c = -(a * b);
     check(a, b, c);
+  }
+  // Shortcut domain: float operands (random, near-cancelling, tiny, huge).
+  auto rf = [&]() {
+    uint32_t w = uint32_t(random_bits());
+    if ((w & 0x7f800000u) == 0x7f800000u) w &= 0xbfffffffu;  // keep finite
+    float f; std::memcpy(&f, &w, 4); return double(f);
+  };
+  for (unsigned i = 0; i < 2000000; ++i) {
+    const double a = rf(), b = rf();
+    check(a, b, rf());
+    check(a, b, -(a * b));
+    check(a, b, value(random_bits() & 0x800fffffffffffffULL));  // subnormal z
+    check(a, b, -(a * b) + value(random_bits() & 0x001fffffffffffffULL));
   }
   std::printf("PASS fused-nearest cases=%u; bit-exact finite/inf/zero against "
               "host std::fma, NaN class only\n",

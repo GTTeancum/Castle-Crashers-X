@@ -21,6 +21,11 @@ CXXFLAGS += -std=c++20 -O2 -march=pentium3 -fno-exceptions -fno-rtti -ffp-contra
 CXXFLAGS += -DCC_XBOX_DRIVER
 # Play build: no verification counters (~16% faster; CHECKs report, not stop)
 CXXFLAGS += -DCC_FAST
+# On-screen sampling profiler: make PROFILE=1
+ifneq ($(PROFILE),)
+CXXFLAGS += -DCC_XBOX_PROFILE
+SRCS += $(CURDIR)/xbox_profile.cpp
+endif
 # The boundary harness keeps its guest stack/TLS arenas as C++ stack
 # arrays (up to 64 KiB each); give the XBE a 1 MiB thread stack.
 LDFLAGS += -stack:0x100000

@@ -26,6 +26,10 @@ void cc_xbox_sleep_100ns(uint64_t interval);
 // nxdk-checkpoint022/xbox_input.cpp: first connected controller, XINPUT terms.
 bool cc_xbox_pad(uint32_t* buttons, int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry,
                  uint8_t* lt, uint8_t* rt);
+// nxdk-checkpoint022/xbox_profile.cpp: on-target sampling profiler.
+extern volatile const char* g_xprof_fn;
+extern volatile uint32_t g_xprof_r1, g_xprof_lr;
+void cc_xprof_frame(bool (*read32)(uint32_t, uint32_t*));
 #endif
 #include <map>
 #include <set>
@@ -497,6 +501,25 @@ struct Machine {
       HookSlot& s = hook_slots[(h + i) & 16383u];
       if (s.name == name) return s.flags;
       if (!s.name) {
+#ifdef CC_FAST
+        // Play build: only the hooks the game needs (worker drain and the
+        // GPU writeback publishes); the id selects the handler directly.
+        // Host play-mode builds also keep frame capture and the screen log.
+        static const char* const fast_hooked[] = {
+          "sub_820B0F18", "sub_820BE9F0", "sub_820C5E50", "sub_820C5EE8",
+          "sub_820A89F8", "sub_820C1980", "sub_82077CE0"};
+#ifdef CC_XBOX_DRIVER
+        constexpr uint32_t kFastHooks = 4;
+#else
+        constexpr uint32_t kFastHooks = 7;
+#endif
+        uint32_t fid = 0;
+        for (uint32_t k = 0; k < kFastHooks; ++k)
+          if (!std::strncmp(name, fast_hooked[k], 12)) fid = k + 1;
+        s.name = name;
+        s.flags = fid;
+        return fid;
+#endif
         static const char* const hooked[] = {
           "sub_8209CD08", "sub_8209CC98", "sub_8209DE50", "sub_8209DF48", "sub_82091248",
           "sub_820B0F18", "sub_8208A7A0", "sub_820A1BF8", "sub_820FBF50", "sub_82104FD0",
@@ -599,7 +622,32 @@ struct Machine {
     // Writeback publishes below use the raw address space: they model the
     // GPU's own memory traffic, which never counts as guest CPU memory ops,
     // so the sealed startup/init measurements stay untouched.
-    if (!std::strcmp(name, "sub_820BE9F0")) {
+    if (!std::strcmp(name, "sub_820BE9F0")) publish_ring_fence();
+    if (!std::strcmp(name, "sub_820C5E50")) publish_read(ctx, true);
+    if (!std::strcmp(name, "sub_820C5EE8")) publish_read(ctx, false);
+  }
+  // Play-build hook dispatch by id (see hook_flags).
+  void hooked_fast(uint32_t id, const Context& ctx) {
+    switch (id) {
+      case 1:
+        if (g_drain_workers && !drain_active) {
+          drain_active = true;
+          g_drain_workers(*this, ctx.r13.u32);
+          drain_active = false;
+        }
+        break;
+      case 2: publish_ring_fence(); break;
+      case 3: publish_read(ctx, true); break;
+      case 4: publish_read(ctx, false); break;
+      case 5: case 6: case 7: {
+        static const char* const names[] = {"sub_820A89F8", "sub_820C1980", "sub_82077CE0"};
+        hooked_prologue(names[id - 5], ctx);
+        break;
+      }
+    }
+  }
+  void publish_ring_fence() {
+    {
       const uint32_t dev = 0x02000080u;
       uint64_t desc = 0, phase = 0, wb = 0;
       if (memory.load_be(dev + 10896u, 4, desc) == cc::xbox::MemoryError::ok &&
@@ -625,16 +673,18 @@ struct Machine {
     // r5, and sub_820C5EE8 waits until the read address [desc+60] leaves
     // the region starting at its r4. A parked, caught-up GPU reads at the
     // submission cursor, so both waits observe completion immediately.
-    if (!std::strcmp(name, "sub_820C5E50") ||
-        !std::strcmp(name, "sub_820C5EE8")) {
-      // Publish only when the exact wait would actually block; a waiter
-      // that already sees no conflict leaves every sealed init value alone.
+  }
+  // Publish only when the exact wait would actually block; a waiter that
+  // already sees no conflict leaves every sealed init value alone.
+  // cursor: sub_820C5E50, else sub_820C5EE8.
+  void publish_read(const Context& ctx, bool cursor) {
+    {
       const uint32_t dev = ctx.r3.u32;
       uint64_t desc = 0;
       if (dev == 0x02000080u &&
           memory.load_be(dev + 10896u, 4, desc) == cc::xbox::MemoryError::ok &&
           desc) {
-        if (name[10] == '5') {  // sub_820C5E50(dev, addr=r4, cursor=r5)
+        if (cursor) {  // sub_820C5E50(dev, addr=r4, cursor=r5)
           uint64_t cur = 0;
           if (memory.load_be(uint32_t(desc) + 4u, 4, cur) == cc::xbox::MemoryError::ok) {
             const uint32_t diff = (ctx.r5.u32 - uint32_t(cur)) & 3u;
@@ -1132,10 +1182,17 @@ using PPCRegister = Register;
 // Play build: no trace/crash-report bookkeeping per call; each function
 // resolves its hook flag once (cached in a per-function byte) and only
 // hooked functions pay for a call.
+#ifdef CC_XBOX_PROFILE
+#define CC_XPROF_NOTE() do { if (__func__[0] != 0x5F) { \
+    ::g_xprof_fn = __func__; ::g_xprof_r1 = ctx.r1.u32; ::g_xprof_lr = uint32_t(ctx.lr); } } while (0)
+#else
+#define CC_XPROF_NOTE() do {} while (0)
+#endif
 #define REX_FUNC_PROLOGUE() do { \
-    static uint8_t cc_hook = 2; \
-    if (cc_hook == 2) cc_hook = uint8_t(base.hook_flags(__func__) & Machine::kHookAny); \
-    if (cc_hook) base.hooked_prologue(__func__, ctx); \
+    CC_XPROF_NOTE(); \
+    static uint8_t cc_hook = 0xFF; \
+    if (cc_hook == 0xFF) cc_hook = uint8_t(base.hook_flags(__func__)); \
+    if (cc_hook) base.hooked_fast(cc_hook, ctx); \
   } while (0)
 #else
 #define REX_FUNC_PROLOGUE() base.prologue(__func__,ctx)
@@ -1327,6 +1384,9 @@ static void dispatch(uint32_t, Context &, Machine &);
 #define REX_CALL_INDIRECT_FUNC(a) dispatch(uint32_t(a), ctx, base)
 #include "decls.inc"
 #define sub_8208C5D8 sub_8208C5D8_unsupported008
+#ifdef CC_FAST
+#define CC_WRAP_82129A70 1
+#endif
 #include "../runtime008/bodies.inc"
 #undef sub_8208C5D8
 #include "../runtime010/bodies.inc"

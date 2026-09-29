@@ -191,10 +191,10 @@ const Texture* converted(uint32_t key, const uint8_t* src, uint32_t w, uint32_t 
 // Overlay rectangles are queued as untextured quads and drawn in one batch
 // (pbkit clears are very slow under XEMU).
 struct OverlayRect { float x, y, w, h; DWORD color; };
-OverlayRect g_rects[128];
+OverlayRect g_rects[2048];
 unsigned g_rect_count = 0;
 void pb_fill_quad(int x, int y, int w, int h, DWORD color) {
-  if (g_rect_count < 128) g_rects[g_rect_count++] = OverlayRect{float(x), float(y), float(w), float(h), color};
+  if (g_rect_count < 2048) g_rects[g_rect_count++] = OverlayRect{float(x), float(y), float(w), float(h), color};
 }
 void flush_overlay() {
   if (!g_rect_count || g_vb_used + g_rect_count * 4 > kMaxVertices) { g_rect_count = 0; return; }
@@ -244,6 +244,19 @@ uint64_t now_us() {
   return KeQueryPerformanceCounter() / freq;
 }
 uint64_t g_draw_us = 0;
+// Hexadecimal digit (0-15) in the same seven-segment style.
+void draw_hex_digit(int x, int y, unsigned d, DWORD color) {
+  static const uint8_t seg[16] = {0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07,
+                                   0x7F, 0x6F, 0x77, 0x7C, 0x39, 0x5E, 0x79, 0x71};
+  const uint8_t m = seg[d & 15];
+  if (m & 0x01) pb_fill_quad(x + 2, y, 8, 2, color);
+  if (m & 0x02) pb_fill_quad(x + 10, y + 2, 2, 7, color);
+  if (m & 0x04) pb_fill_quad(x + 10, y + 11, 2, 7, color);
+  if (m & 0x08) pb_fill_quad(x + 2, y + 18, 8, 2, color);
+  if (m & 0x10) pb_fill_quad(x, y + 11, 2, 7, color);
+  if (m & 0x20) pb_fill_quad(x, y + 2, 2, 7, color);
+  if (m & 0x40) pb_fill_quad(x + 2, y + 9, 8, 2, color);
+}
 void draw_number(int x, int y, unsigned v, DWORD color) {
   char buf[8];
   int n = 0;
@@ -251,6 +264,10 @@ void draw_number(int x, int y, unsigned v, DWORD color) {
   for (int i = 0; i < n; ++i) draw_digit(x + (n - 1 - i) * 15, y, unsigned(buf[i]), color);
 }
 }  // namespace
+
+#ifdef CC_XBOX_PROFILE
+bool cc_xprof_top(unsigned kind, unsigned i, uint32_t* addr, unsigned* permille);
+#endif
 
 // GPU-readable (physically contiguous) memory for guest regions the NV2A
 // samples directly (the DXT5 texture cache zone).
@@ -376,6 +393,21 @@ void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
     draw_number(80, 44, shown_render, 0xFFFFA040);    // render ms
     draw_number(160, 44, shown_draw, 0xFFC080FF);     // draw hand-off ms
     draw_number(232, 44, shown_wait, 0xFF80FFFF);     // GPU wait ms
+#ifdef CC_XBOX_PROFILE
+    // Profiler: last 20 s window. Left column self time, right column
+    // inclusive; each row: 6 hex digits of the address (0x82xxxxxx) and
+    // per mille of samples.
+    pb_fill_quad(8, 92, 400, 14 * 22 + 8, 0xFF202020);
+    for (unsigned kind = 0; kind < 2; ++kind)
+      for (unsigned i = 0; i < 14; ++i) {
+        uint32_t a = 0; unsigned pm = 0;
+        if (!cc_xprof_top(kind, i, &a, &pm)) break;
+        const int x = 16 + int(kind) * 200, y = 98 + int(i) * 22;
+        for (int k = 0; k < 6; ++k)
+          draw_hex_digit(x + k * 15, y, (a >> (20 - 4 * k)) & 15u, kind ? 0xFFFFA040 : 0xFFFFFFFF);
+        draw_number(x + 100, y, pm, 0xFF40FF40);
+      }
+#endif
     flush_overlay();
   }
   const uint64_t w0 = now_us();

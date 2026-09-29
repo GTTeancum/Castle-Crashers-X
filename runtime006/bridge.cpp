@@ -11,15 +11,14 @@ static_assert(sizeof(Register) == 8);
   std::abort();
   __builtin_trap();
 }
-void FPState::disableFlushMode() noexcept {
-  // Pentium III has FTZ but no DAZ; clearing either bit is safe. Never enable
-  // DAZ.
-  uint32_t mx;
-  asm volatile("stmxcsr %0" : "=m"(mx));
-  mx &= ~uint32_t(0x8040);
-  asm volatile("ldmxcsr %0" ::"m"(mx));
-  csr = mx;
-}
+// FPState::disableFlushMode is inline in bridge.h. Pentium III has FTZ but
+// no DAZ; clearing either bit is safe. Never enable DAZ on the Xbox: loading
+// MXCSR with an unsupported bit set faults there.
+#ifdef CC_XBOX_DRIVER
+static constexpr uint32_t kFlushBits = 0x8000u;
+#else
+static constexpr uint32_t kFlushBits = 0x8040u;
+#endif
 void FPState::disableFlushModeUnconditional() noexcept {
   uint32_t mx;
   asm volatile("stmxcsr %0" : "=m"(mx));
@@ -31,15 +30,15 @@ void FPState::enableFlushModeUnconditional() noexcept {
   // Match ReXGlue 0.10.0 x86 flush-mode ownership for vector FP helpers.
   uint32_t mx;
   asm volatile("stmxcsr %0" : "=m"(mx));
-  mx |= uint32_t(0x8040);
+  mx |= kFlushBits;
   asm volatile("ldmxcsr %0" ::"m"(mx));
   csr = mx;
 }
 void FPState::enableFlushMode() noexcept {
   uint32_t mx;
   asm volatile("stmxcsr %0" : "=m"(mx));
-  if ((mx & 0x8040u) != 0x8040u) {
-    mx |= 0x8040u;
+  if ((mx & kFlushBits) != kFlushBits) {
+    mx |= kFlushBits;
     asm volatile("ldmxcsr %0" ::"m"(mx));
   }
   csr = mx;

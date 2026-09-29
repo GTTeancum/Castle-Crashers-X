@@ -63,7 +63,18 @@ struct CR {
 };
 struct FPState {
   uint32_t csr{};
-  void disableFlushMode() noexcept;
+  // Inline: nearly every guest float op calls this, and the flush bits are
+  // almost always already clear, so the (serializing) ldmxcsr is skipped
+  // then. Same csr result as before.
+  void disableFlushMode() noexcept {
+    uint32_t mx;
+    asm volatile("stmxcsr %0" : "=m"(mx));
+    if (mx & 0x8040u) {
+      mx &= ~uint32_t(0x8040);
+      asm volatile("ldmxcsr %0" ::"m"(mx));
+    }
+    csr = mx;
+  }
   void disableFlushModeUnconditional() noexcept;
   void enableFlushModeUnconditional() noexcept;
   void enableFlushMode() noexcept;

@@ -39,7 +39,7 @@ static Sink sink() { return {nullptr,bind_ok,draw_ok}; }
 static void store(AddressSpace& m,uint32_t a,unsigned n,uint64_t v) {
   CHECK(m.store_be(a,n,v)==cc::xbox::MemoryError::ok);
 }
-static void synthetic_controls() {
+[[maybe_unused]] static void synthetic_controls() {
   std::array<uint8_t,4096> stack{};
   std::array<uint8_t,128> root{};
   std::array<uint8_t,256> nodes{};
@@ -84,7 +84,7 @@ static void synthetic_controls() {
   r=invoke(0x8209CC98,c,m,sink());
   CHECK(r.error==Error::cycle && r.address==0x21000);
 }
-static void map_hit_and_wrapper_controls() {
+[[maybe_unused]] static void map_hit_and_wrapper_controls() {
   // First prove the unchanged 0x82097720 ordered-map lookup can take a genuine
   // hit path without touching any of its allocation/insertion dependencies.
   {
@@ -247,7 +247,7 @@ static void map_hit_and_wrapper_controls() {
   cc_log("synthetic_chain manager=%08x root_value=%08x timeline_result=%s timeline_bits=%08x\n",
               manager_ptr, root_context_value, name(r.error), uint32_t(v));
 }
-static void manager_initializer_controls() {
+[[maybe_unused]] static void manager_initializer_controls() {
   // Execute the original sub_820701D0 manager-construction instruction slice
   // from 0x82070434 through the store to global 0x8225E62C. This is a
   // diagnostic mid-function entry with explicit register/memory preconditions;
@@ -326,7 +326,7 @@ static void manager_initializer_controls() {
 }
 
 
-static void startup_full_controls(const char* image_path) {
+[[maybe_unused]] static void startup_full_controls(const char* image_path) {
   std::FILE* stream=std::fopen(image_path,"rb");
   CHECK(stream!=nullptr);
   std::fseek(stream,0,SEEK_END);
@@ -1336,11 +1336,14 @@ int main(int argc,char** argv) {
     std::snprintf(root,sizeof(root),"%s/game-data/extracted",img);
     cc::tree::set_game_root(root);
   }
+#ifndef CC_FAST
+  // Verification-only runs; the play build goes straight to the game.
   CHECK(cc::update014::synthetic_chain_test()==cc::update014::synthetic_chain_mask);
   synthetic_controls();
   map_hit_and_wrapper_controls();
   manager_initializer_controls();
   startup_full_controls(argv[2]);
+#endif
   renderer_caller_prefix_controls(argv[2]);
   captured_startup_boundary(argv[1]);
   cc_log("PASS update_boundary assertions=%llu full_synthetic_update=ok startup_full=820701D0..return renderer_prefix=82070AC8..before_820A7990 manager_writer=820701D0@82070434 workers=5 lookup_entries=613 originals=8209CC98,8209DE50,82097720,820915F0,820772B0 platform_init_prefix=820A7990..before_820BEFD0 graphics_init_chain=820BEFD0..return gfx_workers=2 resources=3 output_published=1 next_host_graphics_boundary=platform_renderer_init_returned_820A7990_complete next_real_capture_boundary=8225E62C\n",

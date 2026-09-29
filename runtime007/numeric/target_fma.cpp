@@ -4,5 +4,5 @@
 // executable.
 #include "fused.h"
 extern "C" double fma(double x, double y, double z) noexcept {
-  return cc::numeric::fused_nearest(x, y, z);
+  return cc::numeric::fused_nearest_fastpath(x, y, z);
 }

@@ -98,7 +98,14 @@ static void sub_82129A70(Context&, Machine&);
 #include "generated/sub_82127A08.inc"
 #include "generated/sub_82127AE8.inc"
 #include "generated/sub_82129038.inc"
+// runtime021 play build wraps the guest memcpy (see runtime021/bodies.inc).
+#ifdef CC_WRAP_82129A70
+#define sub_82129A70 sub_82129A70_exact
+#endif
 #include "generated/sub_82129A70.inc"
+#ifdef CC_WRAP_82129A70
+#undef sub_82129A70
+#endif
 static void sub_82085C70(Context&, Machine& base) { base.fail(Error::unsupported, 0x82085C70u); }
 static void sub_8208C5D8(Context&, Machine& base) { base.fail(Error::unsupported, 0x8208C5D8u); }
 // WIP 023: sub_82127FB0 is now the exact generated body (runtime021).

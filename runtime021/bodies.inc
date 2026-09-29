@@ -1556,12 +1556,27 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   }
   cc_audio_frame();
 #ifdef CC_XBOX_DRIVER
+#ifdef CC_XBOX_PROFILE
+  {
+    static const cc::xbox::AddressSpace* mem = nullptr;
+    mem = &base.memory;
+    ::cc_xprof_frame([](uint32_t a, uint32_t* v) {
+      uint64_t x = 0;
+      if (!mem || mem->load_be(a, 4, x) != cc::xbox::MemoryError::ok) return false;
+      *v = uint32_t(x); return true;
+    });
+  }
+#endif
   ::cc_xr_frame_end(g_frame_update_us, g_frame_render_us);
   g_frame_update_us = g_frame_render_us = 0;
 #ifdef CC_FAST
   // Play build: honour the game's own frame pacing (it asks to sleep the
-  // rest of a 1/60 s frame when it finished early).
-  ::cc_xbox_sleep_100ns(uint64_t(0) - base.load(ctx.r5.u32, 8));
+  // rest of a 1/60 s frame when it finished early). A late frame still
+  // asks for its 2 ms minimum; skip that.
+  {
+    const uint64_t interval = uint64_t(0) - base.load(ctx.r5.u32, 8);
+    if (interval > 20000u) ::cc_xbox_sleep_100ns(interval);
+  }
 #endif
 #endif
   cc_capture_end_frame(base.memory, g_frame_delay_calls + 1u);
@@ -4749,6 +4764,27 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #define sub_820C1980 sub_820C1980_exact
 #include "generated/sub_820C1980.inc"
 #undef sub_820C1980
+#ifdef CC_WRAP_82129A70
+// Guest memcpy (exact sub_82129A70: dst r3, src r4, count r5; saves r3 at
+// r1-8 and returns it). Play build: non-overlapping copies within one
+// region each are done natively (guest bytes are stored in guest order, so
+// a byte copy is exact); anything else runs the exact body.
+static void sub_82129A70(Context& ctx, Machine& base) {
+  const uint32_t d = ctx.r3.u32, sr = ctx.r4.u32, n = ctx.r5.u32;
+  if (n && (uint64_t(d) + n <= sr || uint64_t(sr) + n <= d)) {
+    uint8_t* dp = base.memory.contiguous(d, n, 2);
+    const uint8_t* sp = base.memory.contiguous(sr, n, 1);
+    if (dp && sp) {
+      base.store(ctx.r1.u32 - 8u, 8, ctx.r3.u64);
+      uint32_t i = 0;
+      for (; i + 4u <= n; i += 4u) { uint32_t w; __builtin_memcpy(&w, sp + i, 4); __builtin_memcpy(dp + i, &w, 4); }
+      for (; i < n; ++i) dp[i] = sp[i];
+      return;
+    }
+  }
+  sub_82129A70_exact(ctx, base);
+}
+#endif
 static void sub_820C1980(Context& ctx, Machine& base) {
   // The game's final draw call (r3 device, r4 primitive, r5 vertex count,
   // r6 vertices, r7 stride): the Xbox renderer draws it from here.
