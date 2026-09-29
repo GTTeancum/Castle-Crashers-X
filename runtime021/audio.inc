@@ -43,9 +43,15 @@ struct Voice {
   int sound = -1;
   std::FILE* stream = nullptr;
   uint32_t rate = 0, channels = 1, samples = 0, data_start = 0;
-  double pos = 0.0;               // source sample position
+  uint64_t pos = 0;               // source sample position, 32.32 fixed point
+  // Decoded samples of blocks cached_block and cached_block + 1 per channel,
+  // so interpolation across a block edge never re-decodes.
   uint32_t cached_block = 0xFFFFFFFFu;
-  int16_t cache[2][kSpb] = {};
+  int16_t cache[2][2 * kSpb] = {};
+  // Songs: read-ahead of whole blocks from `stream` (sequential reads; a
+  // seek only on loop).
+  std::vector<uint8_t> ahead;
+  uint32_t ahead_first = 0, ahead_count = 0;
 };
 
 struct State {
@@ -218,31 +224,64 @@ static void decode_block(const uint8_t* blk, int16_t* out) {
   }
 }
 
-// Source sample `s` of channel `c`, decoding (and for songs reading) the
-// containing block on demand.
+// Raw bytes of block `block` (all channels), or nullptr past the data.
+static const uint8_t* block_bytes(Voice& v, uint32_t block) {
+  const size_t bytes = size_t(kBlock) * v.channels;
+  if (!v.music) {
+    const Sound& snd = g.sounds[size_t(v.sound)];
+    if ((size_t(block) + 1) * bytes > snd.data.size()) return nullptr;
+    return snd.data.data() + size_t(block) * bytes;
+  }
+  if (block - v.ahead_first >= v.ahead_count) {
+    constexpr uint32_t kAheadBlocks = 224;  // ~16 KB stereo, ~0.33 s
+    const uint32_t total = (v.samples + kSpb - 1) / kSpb;
+    if (!v.stream || block >= total) return nullptr;
+    const uint32_t want = total - block < kAheadBlocks ? total - block : kAheadBlocks;
+    v.ahead.resize(size_t(kAheadBlocks) * bytes);
+    // Sequential continuation needs no seek (the stream sits right after
+    // the previous read-ahead).
+    if (block != v.ahead_first + v.ahead_count || !v.ahead_count)
+      if (std::fseek(v.stream, long(v.data_start + size_t(block) * bytes), SEEK_SET)) return nullptr;
+    const size_t got = std::fread(v.ahead.data(), bytes, want, v.stream);
+    v.ahead_first = block;
+    v.ahead_count = uint32_t(got);
+    if (!got) return nullptr;
+  }
+  return v.ahead.data() + size_t(block - v.ahead_first) * bytes;
+}
+// Decode block `block` into cache half `half` (zeros past the data).
+static void decode_into(Voice& v, uint32_t block, uint32_t half) {
+  const uint8_t* raw = block_bytes(v, block);
+  for (uint32_t ch = 0; ch < v.channels; ++ch) {
+    if (raw) decode_block(raw + ch * kBlock, v.cache[ch] + half * kSpb);
+    else std::memset(v.cache[ch] + half * kSpb, 0, sizeof(int16_t) * kSpb);
+  }
+}
+// Make blocks b and b+1 resident in the cache, reusing b when advancing.
+static void cache_blocks(Voice& v, uint32_t b) {
+  if (b == v.cached_block) return;
+  if (v.cached_block != 0xFFFFFFFFu && b == v.cached_block + 1u) {
+    for (uint32_t ch = 0; ch < v.channels; ++ch)
+      std::memcpy(v.cache[ch], v.cache[ch] + kSpb, sizeof(int16_t) * kSpb);
+  } else {
+    decode_into(v, b, 0);
+  }
+  decode_into(v, b + 1u, 1);
+  v.cached_block = b;
+}
+// Source sample `s` of channel `c` (slow path: loop wrap-around only).
 static int sample_at(Voice& v, uint32_t s, uint32_t c) {
   if (s >= v.samples) return 0;
-  const uint32_t block = s / kSpb;
-  if (block != v.cached_block) {
-    uint8_t raw[2 * kBlock];
-    const size_t bytes = size_t(kBlock) * v.channels;
-    if (v.music) {
-      if (!v.stream || std::fseek(v.stream, long(v.data_start + block * bytes), SEEK_SET) ||
-          std::fread(raw, 1, bytes, v.stream) != bytes) return 0;
-    } else {
-      const Sound& snd = g.sounds[size_t(v.sound)];
-      if ((block + 1) * bytes > snd.data.size()) return 0;
-      std::memcpy(raw, snd.data.data() + block * bytes, bytes);
-    }
-    for (uint32_t ch = 0; ch < v.channels; ++ch) decode_block(raw + ch * kBlock, v.cache[ch]);
-    v.cached_block = block;
-  }
-  return v.cache[c][s % kSpb];
+  const uint32_t b = s / kSpb;
+  if (v.cached_block == 0xFFFFFFFFu || (b != v.cached_block && b != v.cached_block + 1u)) cache_blocks(v, b);
+  return v.cache[c][s - v.cached_block * kSpb];
 }
 
 static void stop_voice(Voice& v) {
   v.active = false;
   if (v.stream) { std::fclose(v.stream); v.stream = nullptr; }
+  std::vector<uint8_t>().swap(v.ahead);
+  v.ahead_count = 0;
 }
 
 static int free_entry(Machine& base, uint32_t table) {
@@ -275,20 +314,36 @@ static void render(int16_t* out, int n) {
   std::memset(acc, 0, sizeof(acc));
   for (Voice& v : g.voices) {
     if (!v.active) continue;
-    const double step = double(v.rate) / kOutRate;
+    // Fixed point throughout: 32.32 position, 15-bit interpolation weight,
+    // 4.12 gains.
+    const uint64_t step = (uint64_t(v.rate) << 32) / kOutRate;
+    const int32_t gl = int32_t(v.vol * v.left * 4096.0f), gr = int32_t(v.vol * v.right * 4096.0f);
+    const uint64_t end = uint64_t(v.samples) << 32;
+    const bool stereo = v.channels == 2;
     for (int i = 0; i < n; ++i) {
-      if (v.pos >= v.samples) {
-        if (v.loop && v.samples) v.pos -= v.samples;
+      if (v.pos >= end) {
+        if (v.loop && v.samples) v.pos -= end;
         else { stop_voice(v); break; }
       }
-      const uint32_t s0 = uint32_t(v.pos);
-      const double t = v.pos - s0;
-      for (uint32_t c = 0; c < 2; ++c) {
-        const uint32_t sc = v.channels == 2 ? c : 0;
-        const uint32_t s1 = s0 + 1 < v.samples ? s0 + 1 : (v.loop ? 0 : s0);
-        const double a = sample_at(v, s0, sc), b = sample_at(v, s1, sc);
-        acc[i * 2 + int(c)] += int32_t((a + (b - a) * t) * v.vol * (c ? v.right : v.left));
+      const uint32_t s0 = uint32_t(v.pos >> 32);
+      const int32_t t = int32_t(uint32_t(v.pos) >> 17);  // 15 bits: diff * t fits int32
+      const uint32_t b = s0 / kSpb;
+      if (b != v.cached_block) cache_blocks(v, b);
+      const uint32_t k = s0 - b * kSpb;
+      int32_t l0, l1, r0, r1;
+      if (s0 + 1 < v.samples) {
+        l0 = v.cache[0][k]; l1 = v.cache[0][k + 1];
+        r0 = stereo ? v.cache[1][k] : l0; r1 = stereo ? v.cache[1][k + 1] : l1;
+      } else {  // last sample: hold it, or interpolate toward the loop start
+        l0 = v.cache[0][k]; r0 = stereo ? v.cache[1][k] : l0;
+        l1 = v.loop ? sample_at(v, 0, 0) : l0;
+        r1 = v.loop ? (stereo ? sample_at(v, 0, 1) : l1) : r0;
+        if (v.loop) cache_blocks(v, b);
       }
+      const int32_t lv = l0 + (((l1 - l0) * t) >> 15);
+      const int32_t rv = r0 + (((r1 - r0) * t) >> 15);
+      acc[i * 2] += (lv * gl) >> 12;
+      acc[i * 2 + 1] += (rv * gr) >> 12;
       v.pos += step;
     }
   }
@@ -419,7 +474,7 @@ static void sub_8209F118(Context& ctx, Machine& base) {
   v.loop = (ctx.r7.u32 & 0xFFu) != 0;
   v.vol = float(ctx.f1.f64);
   const float pan = float(ctx.f2.f64);
-  if (pan != 0.0f) ccaudio::set_pan(v, pan);
+  ccaudio::set_pan(v, pan);
   const uint32_t e = table + 2304u + uint32_t(entry) * 12u;
   base.store(e, 4, ccaudio::kVoiceTag | uint32_t(entry));
   base.store(e + 4u, 4, obj);
@@ -495,7 +550,7 @@ static void sub_8209F400(Context& ctx, Machine& base) {
   if (ccaudio::Voice* v = ccaudio::port_voice(uint32_t(base.load(table + 2304u + uint32_t(idx) * 12u, 4)))) {
     v->vol = float(ctx.f1.f64);
     const float pan = float(ctx.f2.f64);
-    if (pan != 0.0f) ccaudio::set_pan(*v, pan);
+    ccaudio::set_pan(*v, pan);
   }
   ccaudio::result(base, out, 0u);
 }
