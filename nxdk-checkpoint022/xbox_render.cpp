@@ -237,6 +237,13 @@ void draw_digit(int x, int y, unsigned d, DWORD color) {
   if (m & 0x20) pb_fill_quad(x, y + 2, 2, 7, color);        // f
   if (m & 0x40) pb_fill_quad(x + 2, y + 9, 8, 2, color);    // g
 }
+// Microseconds from the CPU cycle counter, for the timing counters.
+uint64_t now_us() {
+  static uint64_t freq = 0;
+  if (!freq) freq = KeQueryPerformanceFrequency() / 1000000u;
+  return KeQueryPerformanceCounter() / freq;
+}
+uint64_t g_draw_us = 0;
 void draw_number(int x, int y, unsigned v, DWORD color) {
   char buf[8];
   int n = 0;
@@ -274,6 +281,8 @@ void cc_xr_bind(uint32_t key, const void* data, uint32_t w, uint32_t h, int kind
 // vertices are big-endian {x, y, z, u, v, argb} with the given stride.
 void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t stride, uint32_t blend) {
   if (!init() || !vertices || stride < 24 || !count) return;
+  const uint64_t t0 = now_us();
+  struct Tally { uint64_t t0; ~Tally() { g_draw_us += now_us() - t0; } } tally{t0};
   uint32_t op;
   if (prim == 13) op = NV097_SET_BEGIN_END_OP_QUADS;
   else if (prim == 4) op = NV097_SET_BEGIN_END_OP_TRIANGLES;
@@ -321,18 +330,30 @@ void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t st
 }
 
 // Frame boundary: wait for the GPU and present.
-void cc_xr_frame_end() {
+// update_us/render_us: time in the game's update and render this frame.
+void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
   if (!g_in_frame) return;
-  // On-screen speed counter: frames per second and milliseconds per frame,
-  // averaged over each second of real time.
+  // On-screen counters, averaged over each second of real time. Top row:
+  // frames per second, ms per frame, audio buffers mixed/s, silent/s.
+  // Bottom row, ms per frame: game update, game render (includes the
+  // draw hand-off), draw hand-off to the GPU, waiting for the GPU.
   static DWORD window_start = 0;
   static unsigned window_frames = 0, shown_fps = 0, shown_ms = 0;
+  static uint64_t sum_update = 0, sum_render = 0, sum_draw = 0, sum_wait = 0, last_wait = 0;
+  static unsigned shown_update = 0, shown_render = 0, shown_draw = 0, shown_wait = 0;
+  sum_update += update_us; sum_render += render_us; sum_draw += g_draw_us; sum_wait += last_wait;
+  g_draw_us = 0;
   const DWORD now = GetTickCount();
   if (!window_start) window_start = now;
   ++window_frames;
   if (now - window_start >= 1000) {
     shown_fps = window_frames * 1000u / (now - window_start);
     shown_ms = (now - window_start) / window_frames;
+    shown_update = unsigned(sum_update / window_frames / 1000u);
+    shown_render = unsigned(sum_render / window_frames / 1000u);
+    shown_draw = unsigned(sum_draw / window_frames / 1000u);
+    shown_wait = unsigned(sum_wait / window_frames / 1000u);
+    sum_update = sum_render = sum_draw = sum_wait = 0;
     window_start = now;
     window_frames = 0;
   }
@@ -346,15 +367,21 @@ void cc_xr_frame_end() {
       shown_mixed = fed - last_fed; shown_silent = ur - last_ur;
       last_fed = fed; last_ur = ur;
     }
-    pb_fill_quad(8, 8, 300, 52, 0xFF202020);
+    pb_fill_quad(8, 8, 300, 80, 0xFF202020);
     draw_number(16, 14, shown_fps, 0xFF40FF40);       // frames per second
     draw_number(80, 14, shown_ms, 0xFFFFFF40);        // ms per frame
     draw_number(160, 14, shown_mixed, 0xFF40C0FF);    // audio frames mixed/s
     draw_number(232, 14, shown_silent, 0xFFFF4040);   // silent buffers/s
+    draw_number(16, 44, shown_update, 0xFFFFFFFF);    // update ms
+    draw_number(80, 44, shown_render, 0xFFFFA040);    // render ms
+    draw_number(160, 44, shown_draw, 0xFFC080FF);     // draw hand-off ms
+    draw_number(232, 44, shown_wait, 0xFF80FFFF);     // GPU wait ms
     flush_overlay();
   }
+  const uint64_t w0 = now_us();
   while (pb_busy()) {}
   while (pb_finished()) {}
+  last_wait = now_us() - w0;
   if (!g_shown) { pb_show_front_screen(); g_shown = true; }
   g_in_frame = false;
   ++g_frames;

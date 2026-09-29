@@ -4,6 +4,7 @@ SRCS = \
   $(CURDIR)/xbox_shims.cpp \
   $(CURDIR)/xbox_audio.cpp \
   $(CURDIR)/xbox_render.cpp \
+  $(CURDIR)/xbox_input.cpp \
   $(CURDIR)/../runtime007/numeric/fused.cpp \
   $(CURDIR)/../runtime007/numeric/target_fma.cpp \
   $(CURDIR)/../runtime021/update_boundary_tests.cpp \
@@ -28,6 +29,8 @@ LDFLAGS += -stack:0x100000
 # level so nxdk's libc++ headers compile (build-infrastructure flag only).
 CXXFLAGS += -fms-compatibility-version=19.29
 CFLAGS += -fms-compatibility-version=19.29
+# Controller input (xbox_input.cpp) uses nxdk SDL game controllers.
+NXDK_SDL = y
 include $(NXDK_DIR)/Makefile
 
 $(CURDIR)/../runtime021/bridge.obj: $(CURDIR)/../runtime021/audio.inc $(CURDIR)/../runtime021/bodies.inc $(CURDIR)/../runtime021/decls.inc $(CURDIR)/../runtime021/dispatch.inc $(wildcard $(CURDIR)/../runtime021/generated/*.inc) $(CURDIR)/../runtime021/cc_log.h

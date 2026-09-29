@@ -84,3 +84,20 @@ void cc_xbox_audio_stats(unsigned* started, unsigned* submitted, unsigned* callb
   *submitted = g_mixed; *callbacks = g_provided;
   *underruns = g_underruns; *dropped = g_dropped;
 }
+
+// Real clock for the play build's guest timebase, in ticks of `hz`.
+uint64_t cc_xbox_clock(uint64_t hz) {
+  static uint64_t freq = 0, start = 0;
+  if (!freq) { freq = KeQueryPerformanceFrequency(); start = KeQueryPerformanceCounter(); }
+  const uint64_t c = KeQueryPerformanceCounter() - start;
+  return (c / freq) * hz + (c % freq) * hz / freq;
+}
+
+// Sleep for a relative interval in 100 ns units (the game's frame pacing),
+// keeping the audio queue fed across the wait.
+void cc_xbox_sleep_100ns(uint64_t interval) {
+  if (interval == 0 || interval > 1000000u) return;  // ignore > 100 ms
+  LARGE_INTEGER t;
+  t.QuadPart = -static_cast<LONGLONG>(interval);
+  KeDelayExecutionThread(KernelMode, FALSE, &t);
+}

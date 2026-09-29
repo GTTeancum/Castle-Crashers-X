@@ -67,3 +67,6 @@ castle-crashers-port/reference/default.image.bin
 *.cct
 *.ccr
 logs/frames_bake/
+logs/frames_*/
+logs/xemu_*/
+logs/run_*.txt

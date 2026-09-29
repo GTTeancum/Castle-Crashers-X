@@ -111,6 +111,8 @@ static uint32_t g_tex_replays = 0, g_tex_replay_mismatches = 0, g_tex_evictions 
 static double g_raster_seconds = 0.0;
 static uint32_t g_raster_count = 0;
 static double g_update_seconds, g_render_seconds;
+#else
+static uint32_t g_frame_update_us, g_frame_render_us;
 #endif
 static uint32_t g_tex_swap_ins = 0, g_tex_swap_outs = 0;
 static uint32_t g_bake_hits = 0, g_bake_misses = 0;
@@ -1530,6 +1532,8 @@ static uint32_t frame_budget() {
     return n ? uint32_t(n) : k_frame_budget_default;
   }();
   return v;
+#elif defined(CC_FAST)
+  return 0xFFFFFFFFu;  // play build: the game runs until switched off
 #else
   return k_frame_budget_default;
 #endif
@@ -1552,7 +1556,13 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   }
   cc_audio_frame();
 #ifdef CC_XBOX_DRIVER
-  ::cc_xr_frame_end();
+  ::cc_xr_frame_end(g_frame_update_us, g_frame_render_us);
+  g_frame_update_us = g_frame_render_us = 0;
+#ifdef CC_FAST
+  // Play build: honour the game's own frame pacing (it asks to sleep the
+  // rest of a 1/60 s frame when it finished early).
+  ::cc_xbox_sleep_100ns(uint64_t(0) - base.load(ctx.r5.u32, 8));
+#endif
 #endif
   cc_capture_end_frame(base.memory, g_frame_delay_calls + 1u);
 #ifndef CC_XBOX_DRIVER
@@ -4751,7 +4761,17 @@ static void sub_820C1980(Context& ctx, Machine& base) {
     if (v) ::cc_xr_draw(ctx.r4.u32, count, v, stride, uint32_t(blend));
   }
 #endif
+  // The exact body only builds the Xbox 360 GPU's command packets (state
+  // flush into the ring, then a copy of the vertices); nothing reads them
+  // back. The play build skips it (a quarter of a menu frame); the host can
+  // do the same with CC_SKIP_360_DRAW=1 to check the game is unaffected.
+#if defined(CC_XBOX_DRIVER) && defined(CC_FAST)
+  return;
+#else
+  static const bool skip = std::getenv("CC_SKIP_360_DRAW") != nullptr;
+  if (skip) { cc_capture_on_function("sub_820C1980", ctx, base.memory); return; }
   sub_820C1980_exact(ctx, base);
+#endif
 }
 #include "generated/__restfpr_20.inc"
 #include "generated/sub_820A9308.inc"
@@ -6001,10 +6021,29 @@ static void __imp__XamInputGetState(Context& ctx, Machine& base) {
       last_buttons = buttons;
     }
   }
+  uint32_t triggers = 0u, rthumbs = 0u;
+#ifdef CC_XBOX_DRIVER
+  // A real pad takes over from the script at its first press (or a stick
+  // or trigger pushed well past centre) and keeps control from then on.
+  {
+    static bool pad_live = false;
+    uint32_t pb = 0; int16_t lx = 0, ly = 0, rx = 0, ry = 0; uint8_t lt = 0, rt = 0;
+    if (::cc_xbox_pad(&pb, &lx, &ly, &rx, &ry, &lt, &rt)) {
+      auto pushed = [](int16_t v) { return v > 16000 || v < -16000; };
+      if (pb || pushed(lx) || pushed(ly) || pushed(rx) || pushed(ry) || lt > 64 || rt > 64) pad_live = true;
+      if (pad_live) {
+        buttons = pb;
+        thumbs = (uint32_t(uint16_t(lx)) << 16) | uint16_t(ly);
+        rthumbs = (uint32_t(uint16_t(rx)) << 16) | uint16_t(ry);
+        triggers = (uint32_t(lt) << 8) | rt;
+      }
+    }
+  }
+#endif
   base.store(state + 0, 4, g_input_packet_number); // dwPacketNumber
-  base.store(state + 4, 4, buttons << 16);         // wButtons | triggers
+  base.store(state + 4, 4, buttons << 16 | triggers);  // wButtons | triggers
   base.store(state + 8, 4, thumbs);                // sThumbLX | sThumbLY
-  base.store(state + 12, 4, 0u);                   // sThumbRX | sThumbRY
+  base.store(state + 12, 4, rthumbs);              // sThumbRX | sThumbRY
   ctx.r3.u64 = 0u;                                 // ERROR_SUCCESS
 }
 static void __imp__XamInputSetState(Context& ctx, [[maybe_unused]] Machine& base) {
@@ -6695,16 +6734,26 @@ static void sub_82053C70(Context& ctx, Machine& base) {
 // WIP 022: remaining sub_82070AC8 tail (sub_82075C88 game-manager, sub_820759A8, sub_82070908)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-function"
-#ifndef CC_XBOX_DRIVER
-// Host timing split (CC_WORKSET): the game's per-frame update and render.
+// Timing split of the game's per-frame update and render: host CC_WORKSET
+// report, and the Xbox on-screen counters.
 #define sub_82075C88 sub_82075C88_exact
 #define sub_820759A8 sub_820759A8_exact
-#endif
 #include "generated/sub_82075C88.inc"
 #include "generated/sub_820759A8.inc"
-#ifndef CC_XBOX_DRIVER
 #undef sub_82075C88
 #undef sub_820759A8
+#ifdef CC_XBOX_DRIVER
+static void sub_82075C88(Context& ctx, Machine& base) {
+  const uint64_t t0 = ::cc_xbox_clock(1000000u);
+  sub_82075C88_exact(ctx, base);
+  g_frame_update_us += uint32_t(::cc_xbox_clock(1000000u) - t0);
+}
+static void sub_820759A8(Context& ctx, Machine& base) {
+  const uint64_t t0 = ::cc_xbox_clock(1000000u);
+  sub_820759A8_exact(ctx, base);
+  g_frame_render_us += uint32_t(::cc_xbox_clock(1000000u) - t0);
+}
+#else
 static void sub_82075C88(Context& ctx, Machine& base) {
   const auto t0 = std::chrono::steady_clock::now();
   sub_82075C88_exact(ctx, base);

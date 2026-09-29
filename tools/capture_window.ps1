@@ -2,7 +2,8 @@
 # Usage: powershell -File capture_window.ps1 -Process xemu -Out shot.png
 param(
   [Parameter(Mandatory=$true)][string]$Process,
-  [Parameter(Mandatory=$true)][string]$Out
+  [Parameter(Mandatory=$true)][string]$Out,
+  [int]$ProcessId = 0
 )
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -14,7 +15,8 @@ public class Win32Cap {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
 }
 "@
-$p = Get-Process -Name $Process -ErrorAction Stop | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+if ($ProcessId -ne 0) { $p = Get-Process -Id $ProcessId -ErrorAction Stop } else {
+$p = Get-Process -Name $Process -ErrorAction Stop | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1 }
 if (-not $p) { throw "no window for process $Process" }
 $h = $p.MainWindowHandle
 $r = New-Object Win32Cap+RECT

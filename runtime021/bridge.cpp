@@ -19,7 +19,13 @@ void cc_xbox_audio_stats(unsigned* started, unsigned* submitted, unsigned* callb
 // nxdk-checkpoint022/xbox_render.cpp: NV2A renderer for the game's draw calls.
 void cc_xr_bind(uint32_t key, const void* data, uint32_t w, uint32_t h, int kind);
 void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t stride, uint32_t blend);
-void cc_xr_frame_end();
+void cc_xr_frame_end(uint32_t update_us, uint32_t render_us);
+// nxdk-checkpoint022/xbox_audio.cpp: real clock for the play build.
+uint64_t cc_xbox_clock(uint64_t hz);
+void cc_xbox_sleep_100ns(uint64_t interval);
+// nxdk-checkpoint022/xbox_input.cpp: first connected controller, XINPUT terms.
+bool cc_xbox_pad(uint32_t* buttons, int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry,
+                 uint8_t* lt, uint8_t* rt);
 #endif
 #include <map>
 #include <set>
@@ -35,12 +41,18 @@ void cc_xr_frame_end();
 // granularity; port-side work shows up under the guest function that called it.
 static std::atomic<const char*> g_sample_fn{nullptr};
 static std::atomic<bool> g_sample_on{true};  // CC_SAMPLE_FROM/CC_SAMPLE_TO frame window
+// Guest call stack at the most recent function entry (r1 and lr), walked by
+// the sampler through the PowerPC back chain for inclusive (callee-inclusive)
+// counts per return address. Racy by design: a sampled stack can be torn.
+static std::atomic<uint32_t> g_sample_r1{0}, g_sample_lr{0};
+static std::atomic<const cc::xbox::AddressSpace*> g_sample_mem{nullptr};
 namespace {
 struct CcSampler {
   std::atomic<bool> stop{false};
   std::thread worker;
   std::unordered_map<const char*, unsigned> counts;
-  unsigned total = 0;
+  std::unordered_map<uint32_t, unsigned> inclusive;
+  unsigned total = 0, stacks = 0;
   CcSampler() {
     if (!std::getenv("CC_SAMPLE")) return;
     worker = std::thread([this] {
@@ -48,6 +60,28 @@ struct CcSampler {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
         if (!g_sample_on.load(std::memory_order_relaxed)) continue;
         if (const char* f = g_sample_fn.load(std::memory_order_relaxed)) { ++counts[f]; ++total; }
+        if (const cc::xbox::AddressSpace* mem = g_sample_mem.load(std::memory_order_relaxed)) {
+          auto g_sample_read32 = [mem](uint32_t a, uint32_t& v) {
+            uint64_t x = 0;
+            if (mem->load_be(a, 4, x) != cc::xbox::MemoryError::ok) return false;
+            v = uint32_t(x); return true;
+          };
+          uint32_t seen[48]; unsigned n = 0;
+          seen[n++] = g_sample_lr.load(std::memory_order_relaxed);
+          uint32_t sp = g_sample_r1.load(std::memory_order_relaxed), v = 0;
+          while (n < 48 && sp && g_sample_read32(sp, v) && v > sp && v - sp < 0x100000u) {
+            uint32_t ra = 0;
+            if (!g_sample_read32(v - 8u, ra)) break;
+            seen[n++] = ra;
+            sp = v;
+          }
+          for (unsigned i = 0; i < n; ++i) {
+            bool dup = false;
+            for (unsigned k = 0; k < i; ++k) dup |= seen[k] == seen[i];
+            if (!dup && (seen[i] >> 24) == 0x82u) ++inclusive[seen[i]];
+          }
+          ++stacks;
+        }
       }
     });
   }
@@ -61,6 +95,12 @@ struct CcSampler {
     std::fprintf(stderr, "SAMPLE total=%u\n", total);
     for (size_t i = 0; i < v.size() && i < 30; ++i)
       std::fprintf(stderr, "SAMPLE %5.1f%% %s\n", 100.0 * v[i].first / (total ? total : 1), v[i].second);
+    std::vector<std::pair<unsigned, uint32_t>> w;
+    for (const auto& [a, c] : inclusive) w.push_back({c, a});
+    std::sort(w.begin(), w.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    std::fprintf(stderr, "STACK total=%u\n", stacks);
+    for (size_t i = 0; i < w.size() && i < 400; ++i)
+      std::fprintf(stderr, "STACK %5.1f%% ret=%08X\n", 100.0 * w[i].first / (stacks ? stacks : 1), w[i].second);
   }
 };
 CcSampler g_sampler;
@@ -396,7 +436,28 @@ struct Machine {
   // the eventual product presentation layer, never in this harness.
   uint64_t timebase_virtual_ticks = 0;
   uint64_t query_timebase() noexcept {
+#if defined(CC_XBOX_DRIVER) && defined(CC_FAST)
+    // Play build: the game's main loop steps by the measured frame time
+    // (clamped by exact code to 1/60..1/10 s), so a real clock makes the
+    // game run at real speed whatever the frame rate.
+    timebase_virtual_ticks = ::cc_xbox_clock(timebase_hz);
+#else
+#ifndef CC_XBOX_DRIVER
+    // Host probe of the play build's real clock: CC_REAL_CLOCK=<scale> runs
+    // a steady clock <scale> times fast (to mimic a slower machine).
+    static const double real_scale = [] {
+      const char* e = std::getenv("CC_REAL_CLOCK");
+      return e ? std::strtod(e, nullptr) : 0.0;
+    }();
+    if (real_scale > 0.0) {
+      static const auto t0 = std::chrono::steady_clock::now();
+      const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      timebase_virtual_ticks = uint64_t(s * real_scale * double(timebase_hz));
+      return timebase_virtual_ticks;
+    }
+#endif
     timebase_virtual_ticks += timebase_hz / 1000ull;  // 1 ms per read
+#endif
     return timebase_virtual_ticks;
   }
   const Context* last_ctx{};
@@ -455,7 +516,12 @@ struct Machine {
   void prologue(const char *name, const Context& ctx) {
     last_function = name;
 #ifndef CC_XBOX_DRIVER
-    if (name[0] != '_') g_sample_fn.store(name, std::memory_order_relaxed);  // skip register save/restore helpers
+    if (name[0] != '_') {  // skip register save/restore helpers
+      g_sample_fn.store(name, std::memory_order_relaxed);
+      g_sample_r1.store(ctx.r1.u32, std::memory_order_relaxed);
+      g_sample_lr.store(uint32_t(ctx.lr), std::memory_order_relaxed);
+      g_sample_mem.store(&memory, std::memory_order_relaxed);
+    }
 #endif
     last_ctx = &ctx;
     recent_functions[recent_pos & 31u] = name;
@@ -707,44 +773,50 @@ struct Machine {
     return nullptr;
   }
   // Hot path: the last region read from and the last written to (mostly the
-  // stack) are checked inline with one comparison; everything else takes
-  // the cached/checked path, which also refreshes the hot entry.
-  struct HotRegion { uint32_t lo = 0, span = 0; uint8_t* host = nullptr; };
+  // stack) are checked inline with one comparison (any access starting at
+  // most 8 bytes before the region's end); everything else takes the
+  // out-of-line cached/checked path, which also refreshes the hot entry.
+  // An empty hot entry matches only 0xFFFFFFF8, which no region maps.
+  struct HotRegion { uint32_t lo = 0xFFFFFFF8u, limit = 0; uint8_t* host = nullptr; };
   HotRegion hot_read, hot_write;
   static uint64_t get_be(const uint8_t* p, unsigned n) {
     switch (n) {
       case 1: return p[0];
-      case 2: { uint16_t x; std::memcpy(&x, p, 2); return __builtin_bswap16(x); }
-      case 4: { uint32_t x; std::memcpy(&x, p, 4); return __builtin_bswap32(x); }
-      default: { uint64_t x; std::memcpy(&x, p, 8); return __builtin_bswap64(x); }
+      // __builtin_memcpy: nxdk builds freestanding (-fno-builtin), where
+      // std::memcpy would be a library call on every guest access.
+      case 2: { uint16_t x; __builtin_memcpy(&x, p, 2); return __builtin_bswap16(x); }
+      case 4: { uint32_t x; __builtin_memcpy(&x, p, 4); return __builtin_bswap32(x); }
+      default: { uint64_t x; __builtin_memcpy(&x, p, 8); return __builtin_bswap64(x); }
     }
   }
   static void put_be(uint8_t* p, unsigned n, uint64_t v) {
     switch (n) {
       case 1: p[0] = uint8_t(v); return;
-      case 2: { const uint16_t x = __builtin_bswap16(uint16_t(v)); std::memcpy(p, &x, 2); return; }
-      case 4: { const uint32_t x = __builtin_bswap32(uint32_t(v)); std::memcpy(p, &x, 4); return; }
-      default: { const uint64_t x = __builtin_bswap64(v); std::memcpy(p, &x, 8); return; }
+      case 2: { const uint16_t x = __builtin_bswap16(uint16_t(v)); __builtin_memcpy(p, &x, 2); return; }
+      case 4: { const uint32_t x = __builtin_bswap32(uint32_t(v)); __builtin_memcpy(p, &x, 4); return; }
+      default: { const uint64_t x = __builtin_bswap64(v); __builtin_memcpy(p, &x, 8); return; }
     }
   }
   void refresh_hot(HotRegion& h) {
+    const uint32_t span = region_cache[0].hi - region_cache[0].lo;
+    if (span < 8u) { h = HotRegion(); return; }
     h.lo = region_cache[0].lo;
-    h.span = region_cache[0].hi - region_cache[0].lo;
+    h.limit = span - 8u;
     h.host = region_cache[0].host;
   }
   uint64_t load(uint32_t a, unsigned n) {
     tick(a);
     const uint32_t off = a - hot_read.lo;
-    if (off < hot_read.span && hot_read.span - off >= n) return get_be(hot_read.host + off, n);
+    if (off <= hot_read.limit) return get_be(hot_read.host + off, n);
     return load_slow(a, n);
   }
   void store(uint32_t a, unsigned n, uint64_t v) {
     tick(a);
     const uint32_t off = a - hot_write.lo;
-    if (off < hot_write.span && hot_write.span - off >= n) { put_be(hot_write.host + off, n, v); return; }
+    if (off <= hot_write.limit) { put_be(hot_write.host + off, n, v); return; }
     store_slow(a, n, v);
   }
-  uint64_t load_slow(uint32_t a, unsigned n) {
+  __attribute__((noinline)) uint64_t load_slow(uint32_t a, unsigned n) {
     if (const uint8_t* p = fast_host(a, n, 1u)) {
       refresh_hot(hot_read);
       return get_be(p, n);
@@ -754,7 +826,7 @@ struct Machine {
       fail(Error::memory, a);
     return v;
   }
-  void store_slow(uint32_t a, unsigned n, uint64_t v) {
+  __attribute__((noinline)) void store_slow(uint32_t a, unsigned n, uint64_t v) {
     if (uint8_t* p = fast_host(a, n, 2u)) {
       refresh_hot(hot_write);
       put_be(p, n, v);
