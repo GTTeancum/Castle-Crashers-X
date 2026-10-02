@@ -25,6 +25,10 @@ CXXFLAGS += -DCC_FAST
 ifeq ($(SCRIPT),quit)
 CXXFLAGS += -DCC_SCRIPT_QUIT
 endif
+# Bisect switch: software fma only: make NOFMAFAST=1
+ifneq ($(NOFMAFAST),)
+CXXFLAGS += -DCC_NO_FMA_FAST
+endif
 # On-screen sampling profiler: make PROFILE=1
 ifneq ($(PROFILE),)
 CXXFLAGS += -DCC_XBOX_PROFILE

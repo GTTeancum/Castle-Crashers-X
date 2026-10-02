@@ -5602,11 +5602,14 @@ static uint32_t cc_bake_read(Machine& base, int32_t entry, uint32_t w, uint32_t 
   ++g_bake_hits;
   return cache;
 }
-// Resolve a texture's pack entry once; a packed texture drops its job.
-static void cc_bake_resolve(Machine& base, CcDxtTexture& t) {
+// Resolve a texture's pack entry; a packed texture drops its job. At
+// registration a miss is not final (text shapes are written after their
+// texture is registered), so the first bind looks again.
+static void cc_bake_resolve(Machine& base, CcDxtTexture& t, bool final_lookup) {
   if (t.bake != -2) return;
-  t.bake = t.job.size() == 596u ? cc_bake_find(base, t.job.data(), t.w, t.h) : -1;
-  if (t.bake >= 0) std::vector<uint8_t>().swap(t.job);
+  const int32_t e = t.job.size() == 596u ? cc_bake_find(base, t.job.data(), t.w, t.h) : -1;
+  if (e >= 0) { t.bake = e; std::vector<uint8_t>().swap(t.job); }
+  else if (final_lookup) t.bake = -1;
 }
 #ifndef CC_XBOX_DRIVER
 // Bake mode: remember each first rasterization; written at exit.
@@ -5665,7 +5668,7 @@ static void cc_tex_stream_on_bind(Context& ctx, Machine& base, uint32_t record) 
     return;
   }
   // A baked copy replaces the rasterization when the pack has it.
-  cc_bake_resolve(base, *t);
+  cc_bake_resolve(base, *t, true);
   if (t->bake >= 0) {
     const uint32_t baked = cc_bake_read(base, t->bake, t->w, t->h, t->data);
     if (!baked) return;  // pack read failed: draw untextured rather than stop
@@ -5744,7 +5747,7 @@ static void sub_820B1478(Context& ctx, Machine& base) {
     // only allocates and frees its own temporaries, so skipping it here
     // leaves no game-visible state behind. Packed textures are identified
     // now, while the shape stream is in memory, and keep no job snapshot.
-    cc_bake_resolve(base, t);
+    cc_bake_resolve(base, t, false);
     cc_dxt_add(std::move(t));
     return;
   }

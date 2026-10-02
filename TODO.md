@@ -183,9 +183,18 @@ sound effects where possible; stream art wherever it can be streamed.
       ("Return to Arcade" at 0x8201545C) to "Quit". Quit ->
       __imp__XamLoaderLaunchTitle -> cc_xbox_return_to_dashboard()
       (XLaunchXBE C:\xboxdash.xbe, else HalReturnToFirmware). Verified
-      on the host play-mode build (frame 2000 capture); Quit itself needs an
-      XEMU check. The five dropped item objects are left allocated (~300 B
-      per menu build).
+      on the host play-mode build (frame 2000 capture) and in XEMU (menu,
+      book, character select, level 1). Quit itself still needs an XEMU
+      check (make SCRIPT=quit). The five dropped item objects are left
+      allocated (~300 B per menu build).
+- [x] 2026-10-02 XEMU text went nearly invisible after the pack-aware
+      texture change: text textures are registered before their shapes are
+      written, so the registration-time pack lookup missed and the Xbox
+      rasterized them itself. Fixed by retrying the lookup at first bind.
+      Also: linear (A8R8G8B8/A4R4G4B4) textures such as the font atlas are
+      now re-sampled on every bind (every 61st byte) and reconverted when
+      they change, since the game draws new glyphs into the atlas after
+      the renderer's first copy.
 - [ ] Starting a story game shows "Sign in to Xbox LIVE to post your score
       to the leaderboards" (A continues). Remove it on the original Xbox.
 - [ ] The main menu still lists Xbox LIVE Game, Leaderboards,

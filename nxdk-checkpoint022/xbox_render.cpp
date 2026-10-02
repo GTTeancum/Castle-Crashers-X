@@ -34,6 +34,7 @@ struct Texture {
   uint32_t key = 0, w = 0, h = 0, format = 0, pitch = 0;
   const void* gpu = nullptr;
   bool normalized = false;  // swizzled/compressed textures take 0..1 UVs
+  uint32_t sig = 0;         // converted copies: sample hash of the source
 };
 
 bool g_init = false, g_failed = false, g_in_frame = false, g_shown = false;
@@ -162,14 +163,16 @@ uint32_t blend_factor(uint32_t x) {
 }
 
 // Linear little-endian copy of a big-endian A8R8G8B8 (kind 1) or A4R4G4B4
-// (kind 5) texture, made once per texture pointer.
-const Texture* converted(uint32_t key, const uint8_t* src, uint32_t w, uint32_t h, int kind) {
-  for (const Texture& t : g_converted) if (t.key == key && t.w == w && t.h == h) return &t;
-  const uint32_t bpp = kind == 1 ? 4u : 2u;
-  const uint32_t bytes = w * h * bpp;
-  uint8_t* dst = static_cast<uint8_t*>(MmAllocateContiguousMemoryEx(
-      bytes, 0, kMaxGpuAddress, 0, PAGE_READWRITE | PAGE_WRITECOMBINE));
-  if (!dst) return nullptr;
+// (kind 5) texture. The game draws into some of these after the first bind
+// (the font atlas gains glyphs as text appears) and reuses freed blocks for
+// new textures, so each bind samples the source (every 61st byte, ~2 KB for
+// a 128 KB atlas) and reconverts in place when the sample changes.
+uint32_t sample_sig(const uint8_t* src, uint32_t bytes) {
+  uint32_t h = 2166136261u;
+  for (uint32_t i = 0; i < bytes; i += 61u) { h ^= src[i]; h *= 16777619u; }
+  return h ^ bytes;
+}
+void convert_into(uint8_t* dst, const uint8_t* src, uint32_t w, uint32_t h, int kind) {
   if (kind == 1) {
     for (uint32_t i = 0; i < w * h; ++i) {  // A R G B -> B G R A
       dst[i * 4 + 0] = src[i * 4 + 3]; dst[i * 4 + 1] = src[i * 4 + 2];
@@ -178,8 +181,25 @@ const Texture* converted(uint32_t key, const uint8_t* src, uint32_t w, uint32_t 
   } else {
     for (uint32_t i = 0; i < w * h; ++i) { dst[i * 2 + 0] = src[i * 2 + 1]; dst[i * 2 + 1] = src[i * 2 + 0]; }
   }
+}
+const Texture* converted(uint32_t key, const uint8_t* src, uint32_t w, uint32_t h, int kind) {
+  const uint32_t bpp = kind == 1 ? 4u : 2u;
+  const uint32_t bytes = w * h * bpp;
+  const uint32_t sig = sample_sig(src, bytes);
+  for (Texture& t : g_converted)
+    if (t.key == key && t.w == w && t.h == h && t.pitch == w * bpp) {
+      if (t.sig != sig) {
+        convert_into(static_cast<uint8_t*>(const_cast<void*>(t.gpu)), src, w, h, kind);
+        t.sig = sig;
+      }
+      return &t;
+    }
+  uint8_t* dst = static_cast<uint8_t*>(MmAllocateContiguousMemoryEx(
+      bytes, 0, kMaxGpuAddress, 0, PAGE_READWRITE | PAGE_WRITECOMBINE));
+  if (!dst) return nullptr;
+  convert_into(dst, src, w, h, kind);
   Texture t;
-  t.key = key; t.w = w; t.h = h; t.gpu = dst; t.pitch = w * bpp; t.normalized = false;
+  t.key = key; t.w = w; t.h = h; t.gpu = dst; t.pitch = w * bpp; t.normalized = false; t.sig = sig;
   t.format = 0x0000002Au |
              ((kind == 1 ? NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A8R8G8B8
                          : NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A4R4G4B4) << 8) |

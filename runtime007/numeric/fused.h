@@ -23,7 +23,11 @@ inline bool fused_nearest_fast(double x, double y, double z, double& out) noexce
   return true;
 }
 inline double fused_nearest_fastpath(double x, double y, double z) noexcept {
+#ifdef CC_NO_FMA_FAST  // bisect switch: software path only
+  return fused_nearest(x, y, z);
+#else
   double r;
   return fused_nearest_fast(x, y, z, r) ? r : fused_nearest(x, y, z);
+#endif
 }
 } // namespace cc::numeric
