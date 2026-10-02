@@ -90,7 +90,35 @@ static void sub_82129A70(Context&, Machine&);
 #include "generated/sub_820A8038.inc"
 #include "generated/sub_820A8100.inc"
 #include "generated/sub_820A86B0.inc"
+#ifdef CC_FAST
+#define sub_820A8DD8 sub_820A8DD8_exact
+#endif
 #include "generated/sub_820A8DD8.inc"
+#ifdef CC_FAST
+#undef sub_820A8DD8
+// Sprite cull test (renderer r3, four points r4..r7 as {x, y, z} floats,
+// mode r8). Mode 4 means the points are already in screen space; the exact
+// code then returns 1 (skip) when all four x are beyond one side or all four
+// y beyond one side of the viewport constants at 0x82042598.. (rx 9648,
+// lx 9644, by 9640, ty 9644 again, read as the exact code does). Other
+// modes transform first and stay exact. Comparisons mirror the PPC fcmpu:
+// a NaN fails every test, so the sprite is drawn.
+static void sub_820A8DD8(Context& ctx, Machine& base) {
+#ifdef CC_CULL_EXACT_BUILD
+  if (true) { sub_820A8DD8_exact(ctx, base); return; }
+#endif
+  if (ctx.r8.u32 != 4u) { sub_820A8DD8_exact(ctx, base); return; }
+  const uint32_t pts[4] = {ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32};
+  auto f32 = [&](uint32_t a) { uint32_t b = uint32_t(base.load(a, 4)); float f; std::memcpy(&f, &b, 4); return double(f); };
+  double x[4], y[4];
+  for (int i = 0; i < 4; ++i) { x[i] = f32(pts[i]); y[i] = f32(pts[i] + 4u); }
+  const double right = f32(0x82040000u + 9648u), left = f32(0x82040000u + 9644u), bottom = f32(0x82040000u + 9640u);
+  auto all_gt = [](const double* v, double c) { return v[0] > c && v[1] > c && v[2] > c && v[3] > c; };
+  auto all_lt = [](const double* v, double c) { return v[0] < c && v[1] < c && v[2] < c && v[3] < c; };
+  const bool out = all_gt(x, right) || all_lt(x, left) || all_gt(y, bottom) || all_lt(y, left);
+  ctx.r3.u64 = out ? 1u : 0u;
+}
+#endif
 #include "generated/sub_820A8FF8.inc"
 #include "generated/sub_820A9068.inc"
 #include "generated/sub_820A9D78.inc"

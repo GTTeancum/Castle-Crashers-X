@@ -28,7 +28,14 @@ CXXFLAGS += -DCC_FAST
 ifeq ($(SCRIPT),quit)
 CXXFLAGS += -DCC_SCRIPT_QUIT
 endif
-# Bisect switch: software fma only: make NOFMAFAST=1
+# Bisect switches: make BINDEXACT=1 (run the exact per-sprite bind),
+# CULLEXACT=1 (exact sprite cull), NOFMAFAST=1 (software fma only)
+ifneq ($(BINDEXACT),)
+CXXFLAGS += -DCC_BIND_EXACT_BUILD
+endif
+ifneq ($(CULLEXACT),)
+CXXFLAGS += -DCC_CULL_EXACT_BUILD
+endif
 ifneq ($(NOFMAFAST),)
 CXXFLAGS += -DCC_NO_FMA_FAST
 endif

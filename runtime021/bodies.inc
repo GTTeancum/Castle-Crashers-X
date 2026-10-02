@@ -116,6 +116,11 @@ static uint32_t g_frame_update_us, g_frame_render_us;
 #endif
 static uint32_t g_tex_swap_ins = 0, g_tex_swap_outs = 0;
 static uint32_t g_bake_hits = 0, g_bake_misses = 0;
+#ifndef CC_XBOX_DRIVER
+static long g_quadlog_left = -1;  // host quad probe (CC_QUADLOG), see sub_820A9308
+static bool g_quadlog_left_draw = false;  // a logged native quad is being drawn
+static bool g_quadlog_from_ok();
+#endif
 static bool cc_audio_set_volume(uint32_t voice, float vol);
 static bool cc_audio_stop(uint32_t voice);
 static void cc_audio_frame();
@@ -2520,6 +2525,14 @@ static void __imp__NtWaitForSingleObjectEx(Context& ctx, Machine& base) {
     }
     if (zero_timeout) { ctx.r3.u64 = 0x102u; return; }
   }
+#ifdef CC_FAST
+  // Play build, main thread only: a wait on any other object (the main
+  // menu's Quit path waits for its threads and I/O on the way out) returns
+  // at once as signalled; nothing could wake it on this single-threaded
+  // port. A newly started system thread must still park here (the block
+  // point below abandons it), or its wait loop would run forever.
+  if (!g_in_thread_run) { ctx.r3.u64 = 0u; return; }
+#endif
   cc_thread_block_point();
   cc_elog("WAIT would block handle=%08x mode=%u alertable=%u timeout_ptr=%08x lr=%08x\n",
           ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, uint32_t(ctx.lr));
@@ -4832,6 +4845,19 @@ static void sub_820C1980(Context& ctx, Machine& base) {
     if (v) ::cc_xr_draw(ctx.r4.u32, count, v, stride, uint32_t(blend));
   }
 #endif
+#ifndef CC_XBOX_DRIVER
+  if (g_quadlog_left > 0 && (g_quadlog_left_draw || g_quadlog_from_ok())) {
+    --g_quadlog_left;
+    const uint32_t count = ctx.r5.u32, stride = ctx.r7.u32;
+    cc_log("QUADOUT prim=%u count=%u stride=%u", ctx.r4.u32, count, stride);
+    for (uint32_t i = 0; i < count && i < 8u; ++i) {
+      const uint32_t v = ctx.r6.u32 + i * stride;
+      auto f32 = [&](uint32_t a) { uint32_t b = uint32_t(base.load(a, 4)); float f; std::memcpy(&f, &b, 4); return f; };
+      cc_log(" v%u=(%g,%g,%g,%g,%g,%08x)", i, f32(v), f32(v + 4u), f32(v + 8u), f32(v + 12u), f32(v + 16u), uint32_t(base.load(v + 20u, 4)));
+    }
+    cc_log("\n");
+  }
+#endif
   // The exact body only builds the Xbox 360 GPU's command packets (state
   // flush into the ring, then a copy of the vertices); nothing reads them
   // back. The play build skips it (a quarter of a menu frame); the host can
@@ -4845,7 +4871,138 @@ static void sub_820C1980(Context& ctx, Machine& base) {
 #endif
 }
 #include "generated/__restfpr_20.inc"
+#if !defined(CC_XBOX_DRIVER) || defined(CC_FAST)
+#define sub_820A9308 sub_820A9308_exact
+#endif
 #include "generated/sub_820A9308.inc"
+#if !defined(CC_XBOX_DRIVER) || defined(CC_FAST)
+#undef sub_820A9308
+#endif
+#ifdef CC_FAST
+// Native quad emitter (play build), derived from the exact sub_820A9308
+// (renderer r3, points r4..r7 {x,y,z}, uv pointers r8..r10 and [r1+84],
+// colour [r1+92] as bytes [R G B A], count [r1+100]). The exact body does
+// nothing when the renderer's draw flag (+28715) is clear or the vertex
+// ring (count at 0x8228A7C4) holds 6000; for count != 4 it maps each point
+// to screen pixels, x' = w * (x + 0.5), y' = h * (y + 0.5), with w and h
+// the integer viewport size at [renderer + 24*idx + 28748 / 28752],
+// idx = [renderer + 29124], and 0.5 the constant at 0x82014748; it reads
+// the blend mode 0..16 of the current material
+// ([[renderer + ([renderer+30208] + 7544) * 4]]) and, on the common modes,
+// writes four 24-byte vertices {x, y, z = 100.0 (0x8201473C), u, v,
+// premultiplied ARGB colour} at 0x822673D8 + 24*count, adds 4 to the count
+// and calls sub_820C1980(device [renderer+4], 13, 4, vertices, 24).
+// Modes 4, 13 and > 16 draw nothing; modes 2, 6, 10, 11, 14 and 15 (other
+// vertex layouts) keep the exact body. Float steps repeat the exact body's
+// operations, so the vertices are bit-identical (host: CC_QUAD_EXACT=1
+// runs the exact body instead).
+static uint32_t cc_quad_colour(uint32_t c) {
+  const uint32_t a = c & 255u, r = c >> 24, g = (c >> 16) & 255u, b = (c >> 8) & 255u;
+  return (a << 24) | ((r * a >> 8) << 16) | ((g * a >> 8) << 8) | (b * a >> 8);
+}
+static bool cc_quad_native(Context& ctx, Machine& base) {
+  const uint32_t renderer = ctx.r3.u32;
+  if (REX_LOAD_U8(renderer + 28715u) == 0u) return true;
+  const uint32_t ring = REX_LOAD_U32(0x82290000u - 22588u);  // vertex ring count (0x8228A7C4)
+  if (int32_t(ring) >= 6000) return true;
+  const uint32_t slot = REX_LOAD_U32(renderer + (REX_LOAD_U32(renderer + 30208u) + 7544u) * 4u);
+  switch (REX_LOAD_U32(slot)) {
+    case 0: case 1: case 3: case 5: case 7: case 8: case 9: case 12: case 16: break;
+    case 2: case 6: case 10: case 11: case 14: case 15: return false;
+    default: return true;
+  }
+  const uint32_t pts[4] = {ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32};
+  const uint32_t uvs[4] = {ctx.r8.u32, ctx.r9.u32, ctx.r10.u32, REX_LOAD_U32(ctx.r1.u32 + 84)};
+  const uint32_t colour = cc_quad_colour(REX_LOAD_U32(ctx.r1.u32 + 92));
+  const uint32_t count = REX_LOAD_U32(ctx.r1.u32 + 100);
+  uint32_t xy[4][2];
+  for (uint32_t i = 0; i < 4; ++i) { xy[i][0] = REX_LOAD_U32(pts[i] + 0u); xy[i][1] = REX_LOAD_U32(pts[i] + 4u); }
+  if (count != 4u) {
+    ctx.fpscr.disableFlushMode();
+    auto f32 = [](uint32_t b) { float f; __builtin_memcpy(&f, &b, 4); return f; };
+    auto bits = [](float f) { uint32_t b; __builtin_memcpy(&b, &f, 4); return b; };
+    const uint32_t idx = REX_LOAD_U32(renderer + 29124u);
+    const double c = f32(REX_LOAD_U32(0x82014748u));
+    const double w = double(float(double(int64_t(uint64_t(REX_LOAD_U32(renderer + idx * 24u + 28748u))))));
+    const double h = double(float(double(int64_t(uint64_t(REX_LOAD_U32(renderer + idx * 24u + 28752u))))));
+    for (uint32_t i = 0; i < 4; ++i) {
+      xy[i][0] = bits(float(w * double(float(double(f32(xy[i][0])) + c))));
+      xy[i][1] = bits(float(h * double(float(double(f32(xy[i][1])) + c))));
+    }
+  }
+  const uint32_t z = REX_LOAD_U32(0x8201473Cu);
+  const uint32_t verts = 0x822673D8u + ring * 24u;
+  for (uint32_t i = 0; i < 4; ++i) {
+    const uint32_t v = verts + i * 24u;
+    REX_STORE_U32(v + 0u, xy[i][0]);
+    REX_STORE_U32(v + 4u, xy[i][1]);
+    REX_STORE_U32(v + 8u, z);
+    REX_STORE_U32(v + 12u, REX_LOAD_U32(uvs[i] + 0u));
+    REX_STORE_U32(v + 16u, REX_LOAD_U32(uvs[i] + 4u));
+    REX_STORE_U32(v + 20u, colour);
+  }
+  REX_STORE_U32(0x82290000u - 22588u, ring + 4u);
+  const auto lr = ctx.lr;
+  ctx.r3.u64 = REX_LOAD_U32(renderer + 4u);
+  ctx.r4.u64 = 13; ctx.r5.u64 = 4; ctx.r6.u64 = verts; ctx.r7.u64 = 24;
+  ctx.lr = 0x820A9AD0u;
+  sub_820C1980(ctx, base);
+  ctx.lr = lr;
+  return true;
+}
+#endif
+#ifndef CC_XBOX_DRIVER
+static bool g_quadlog_from_ok() {
+  static long from = -1;
+  if (from < 0) { const char* e = std::getenv("CC_QUADLOG_FROM"); from = e ? std::strtol(e, nullptr, 10) : 0; }
+  return long(g_frame_delay_calls) >= from;
+}
+// Host probe (CC_QUADLOG=<count>): log the quad emitter's inputs (renderer
+// r3, points r4..r7, uv pointers r8..r10 and [r1+84], colour [r1+92], count
+// [r1+100]) before the exact body runs; sub_820C1980's wrapper logs the
+// vertices it produced. Together they define the native emitter.
+static void sub_820A9308(Context& ctx, Machine& base) {
+  // CC_QUADLOG=<n> logs n quads, starting at frame CC_QUADLOG_FROM (default 0).
+  static long from = -1;
+  if (from < 0) { const char* e = std::getenv("CC_QUADLOG_FROM"); from = e ? std::strtol(e, nullptr, 10) : 0; }
+  if (g_quadlog_left < 0) { const char* e = std::getenv("CC_QUADLOG"); g_quadlog_left = e ? std::strtol(e, nullptr, 10) : 0; }
+  const bool logging = g_quadlog_left > 0 && long(g_frame_delay_calls) >= from;
+#ifdef CC_FAST
+  static const bool native = std::getenv("CC_QUAD_EXACT") == nullptr;
+  if (native) {
+    if (logging) {
+      // Log the inputs even on the native path so both paths can be diffed.
+      auto f32 = [&](uint32_t a) { uint32_t b = uint32_t(base.load(a, 4)); float f; std::memcpy(&f, &b, 4); return f; };
+      const uint32_t p[4] = {ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32};
+      cc_log("QUADIN frame=%u count=%u colour=%08x", g_frame_delay_calls, uint32_t(base.load(ctx.r1.u32 + 100u, 4)), uint32_t(base.load(ctx.r1.u32 + 92u, 4)));
+      for (int i = 0; i < 4; ++i) cc_log(" p%d=(%g,%g,%g)", i, f32(p[i]), f32(p[i] + 4u), f32(p[i] + 8u));
+      cc_log(" ring=%u\n", uint32_t(base.load(0x82290000u - 22588u, 4)));
+      cc_log("QUADNAT idx=%u w=%08x h=%08x c=%08x z=%08x\n", uint32_t(base.load(ctx.r3.u32 + 29124u, 4)), uint32_t(base.load(ctx.r3.u32 + uint32_t(base.load(ctx.r3.u32 + 29124u, 4)) * 24u + 28748u, 4)), uint32_t(base.load(ctx.r3.u32 + uint32_t(base.load(ctx.r3.u32 + 29124u, 4)) * 24u + 28752u, 4)), uint32_t(base.load(0x82014748u, 4)), uint32_t(base.load(0x8201473Cu, 4)));
+      g_quadlog_left_draw = true;
+    }
+    if (cc_quad_native(ctx, base)) { g_quadlog_left_draw = false; return; }
+    g_quadlog_left_draw = false;
+  }
+#endif
+  if (logging) {
+    auto f32 = [&](uint32_t a) { uint32_t b = uint32_t(base.load(a, 4)); float f; std::memcpy(&f, &b, 4); return f; };
+    const uint32_t p[4] = {ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32};
+    const uint32_t uv[4] = {ctx.r8.u32, ctx.r9.u32, ctx.r10.u32, uint32_t(base.load(ctx.r1.u32 + 84u, 4))};
+    cc_log("QUADIN frame=%u count=%u colour=%08x", g_frame_delay_calls, uint32_t(base.load(ctx.r1.u32 + 100u, 4)), uint32_t(base.load(ctx.r1.u32 + 92u, 4)));
+    for (int i = 0; i < 4; ++i) cc_log(" p%d=(%g,%g,%g)", i, f32(p[i]), f32(p[i] + 4u), f32(p[i] + 8u));
+    for (int i = 0; i < 4; ++i) cc_log(" uv%d=(%g,%g)", i, f32(uv[i]), f32(uv[i] + 4u));
+    cc_log(" ring=%u\n", uint32_t(base.load(0x82290000u - 22588u, 4)));
+  }
+  sub_820A9308_exact(ctx, base);
+}
+#else
+#ifdef CC_FAST
+static void sub_820A9308(Context& ctx, Machine& base) {
+  if (cc_quad_native(ctx, base)) return;
+  sub_820A9308_exact(ctx, base);
+}
+#endif
+#endif
 static void cc_tex_stream_on_bind(Context& ctx, Machine& base, uint32_t record);
 #define sub_820A89F8 sub_820A89F8_exact
 #include "generated/sub_820A89F8.inc"
@@ -4856,7 +5013,19 @@ static void sub_820A89F8(Context& ctx, Machine& base) {
   // texture's pixels are resident before the exact bind runs.
   cc_tex_stream_on_bind(ctx, base, ctx.r4.u32);
   cc_xr_on_bind(base, ctx.r4.u32);
+  // The exact bind programs the Xbox 360's device per sprite (vertex and
+  // pixel shader, vertex declaration, render states, sampler registers)
+  // for a draw path the play build no longer runs (sub_820C1980's body is
+  // skipped there); the Xbox renderer binds from cc_xr_on_bind instead.
+#if !defined(CC_FAST) || defined(CC_BIND_EXACT_BUILD)
   sub_820A89F8_exact(ctx, base);
+#elif defined(CC_XBOX_DRIVER)
+  static_cast<void>(&sub_820A89F8_exact);
+#else
+  static const bool exact_bind = std::getenv("CC_BIND_EXACT") != nullptr;  // host A/B switch
+  if (exact_bind) sub_820A89F8_exact(ctx, base);
+  else cc_capture_on_function("sub_820A89F8", ctx, base.memory);  // frame capture reads the texture record here
+#endif
 }
 #include "generated/sub_82086680.inc"
 #include "generated/sub_82086778.inc"
@@ -5990,7 +6159,14 @@ static void __imp__NtClose(Context& ctx, Machine& base) {
   base.fail(Error::unsupported, 0x8214A584u);
 #endif
 }
-static void __imp__NtFlushBuffersFile([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A564u); }
+static void __imp__NtFlushBuffersFile([[maybe_unused]] Context& ctx, Machine& base) {
+#ifdef CC_FAST
+  if (ctx.r4.u32) { base.store(ctx.r4.u32, 4, 0u); base.store(ctx.r4.u32 + 4u, 4, 0u); }
+  ctx.r3.u64 = 0u;  // nothing buffered
+#else
+  base.fail(Error::unsupported, 0x8214A564u);
+#endif
+}
 static void __imp__NtOpenFile([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A524u); }
 static void __imp__NtQueryInformationFile([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A624u); }
 static void __imp__NtQueryVolumeInformationFile([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A634u); }
@@ -6111,7 +6287,17 @@ static void __imp__XamUserGetName(Context& ctx, Machine& base) {
   if (ctx.r4.u32 && ctx.r5.u32) base.store(ctx.r4.u32, 1, 0u);
   ctx.r3.u64 = 0x4DDu;
 }
-static void __imp__NtWriteFile([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AD14u); }
+// NtWriteFile(handle r3, event r4, apc r5, ctx r6, iosb r7, buffer r8, length
+// r9, offset r10). The port opens no writable files; the play build reports
+// an invalid handle so the game's own error path runs (saves are TODO).
+static void __imp__NtWriteFile([[maybe_unused]] Context& ctx, Machine& base) {
+#ifdef CC_FAST
+  if (ctx.r7.u32) { base.store(ctx.r7.u32, 4, 0xC0000008u); base.store(ctx.r7.u32 + 4u, 4, 0u); }
+  ctx.r3.u64 = 0xC0000008u;  // STATUS_INVALID_HANDLE
+#else
+  base.fail(Error::unsupported, 0x8214AD14u);
+#endif
+}
 // WIP 023 input fixture: exactly one standard gamepad on port 0, idle
 // (no buttons, centered sticks, released triggers). Ports 1-3 report
 // ERROR_DEVICE_NOT_CONNECTED (0x48F), matching a console with one pad.
@@ -6341,7 +6527,13 @@ static void __imp__NetDll_XNetStartup(Context& ctx, Machine& base) {
 static void __imp__NetDll_XNetUnregisterInAddr([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AA04u); }
 static void __imp__NetDll_closesocket([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AB04u); }
 static void __imp__NtDuplicateObject([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A674u); }
-static void __imp__XMsgCancelIORequest([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A3C4u); }
+static void __imp__XMsgCancelIORequest([[maybe_unused]] Context& ctx, [[maybe_unused]] Machine& base) {
+#ifdef CC_FAST
+  ctx.r3.u64 = 0u;  // no request is ever pending (XMsgStartIORequest completes at once)
+#else
+  base.fail(Error::unsupported, 0x8214A3C4u);
+#endif
+}
 // PORT POLICY (Live stubbed at the network layer, nobody signs in): every
 // Xbox Live user/session/stats request - app 0xFB, message area 0x000B
 // (XUserSetContext, achievements, stats, sessions...) - fails at once with
@@ -7287,8 +7479,12 @@ static void __imp__NtAllocateVirtualMemory(Context& ctx, Machine& base) {
     want_base, want_size, uint32_t(ctx.lr));
   base.fail(Error::unsupported, 0x8214A6B4u);
 }
-static void __imp__NtFreeVirtualMemory([[maybe_unused]] Context& ctx, Machine& base) {
+static void __imp__NtFreeVirtualMemory([[maybe_unused]] Context& ctx, [[maybe_unused]] Machine& base) {
+#ifdef CC_FAST
+  ctx.r3.u64 = 0u;  // play build: releases on the way out are accepted (nothing reuses the range)
+#else
   base.fail(Error::unsupported, 0x8214A9B4u);
+#endif
 }
 
 // RtlRaiseException is a terminal failure path for the exact heap; reaching

@@ -2,6 +2,54 @@
 
 Deferred until the port is fully playable.
 
+## Rewrite plan (direction set 2026-10-02)
+
+The port must be an original Xbox game at its core; the recompiled Xbox 360
+code is the oracle that native code is checked against, then replaced.
+
+**What the game is** (call-graph and string survey of the image, 2026-10-02;
+map in `logs/` is not kept, re-derive from `runtime*/generated` if needed):
+gameplay is ActionScript bytecode inside the SWF assets (packed in the .pak
+files), run by a native Flash-style VM: ~350 functions / 65k translated
+lines at 0x8207B000-0x82096FFF (ActionScript ops `sub_82088CF0`,
+`sub_82087F70`; built-in method table `sub_820906A8`; parser; MovieClip
+display list with the sprite leaf `sub_820855D8`). The scripts call ~105
+native functions registered by `sub_8206FDB8` (f_BSP*, waypoints, quit,
+f_ChangeLevel, ...) and `sub_82070F68` (ChangeMovie, GetFlashGlobal,
+WriteSaveGame, UnlockAchievement, session calls), dispatched by
+`sub_82071280`. Native game code around the VM: main loop / game manager
+(0x8206E000-0x8207AFFF, `sub_82070AC8` init+loop, `sub_82075C88` update,
+`sub_820759A8` render), BSP collision (`sub_8206F988`), scene graph + pak
+loader + game heap (0x82097000-0x8209DFFF, `sub_8209A728`, `sub_8209C550`,
+`sub_8209BDD8`/`sub_8209BF18`), vector-shape rasterizer (0x820B0000-
+0x820B4FFF), front-end menus (0x82054000-0x8206DFFF), audio manager
+(0x8209E000). About 60% of the 3,614 functions (2,550 / 352k lines) are
+Xbox 360 glue: D3D/Xenos device layer (465 functions), XAudio/XMA (426),
+Live/network middleware (719), XAM/voice (271), CRT (522), zlib (30).
+
+**Order of native replacement** (each step oracle-checked on the host:
+bit-identical outputs for pure functions, pixel-identical captured frames
+for drawing, identical verification counts for everything else):
+1. Drawing tail (in progress): exact bind skipped; native cull
+   `sub_820A8DD8`; native quad emitter `sub_820A9308`; next the sprite
+   corners `sub_82085110`, matrix push `sub_82086090` / multiply
+   `sub_82085AD8`, colour `sub_82084100`. Then the sprite leaf itself and
+   the display-list walk that calls it.
+2. Platform glue replaced outright by the Xbox side (already: renderer,
+   audio mixer, pad, clock, files; remaining: whatever the game still calls
+   in the D3D/XAudio/XAM/Live clusters, which should be stubbed or routed,
+   never translated).
+3. Scene graph, pak loader and game heap natively (the game's data in plain
+   Xbox memory, no address lookup).
+4. The Flash VM: ActionScript interpreter, MovieClip display list, timeline,
+   parser, vector rasterizer. This is the core of the rewrite; the
+   recompiled VM stays as the oracle for script behaviour (same SWF bytes
+   in, same display list out).
+5. Main loop, menus, BSP collision, audio manager.
+
+Dropped as translation-layer tuning: flat page table, exact-body trims,
+30 Hz update, GPU vertex transform.
+
 ## Memory budget (biggest known porting constraint)
 
 **Decision (2026-09-28): retail 64 MB consoles only.** No 128 MB
@@ -164,6 +212,29 @@ sound effects where possible; stream art wherever it can be streamed.
       scene code, spread thin; next levers are 64-bit register arithmetic
       on the 32-bit CPU and x87 float rounding. XEMU speed is not real
       hardware speed; measure on a console when possible.
+- [ ] Direction (user, 2026-10-02): this is a rewrite. The port must be an
+      original Xbox game at its core, not a 360 program behind a translation
+      layer; the recompiled 360 code is the oracle that native code is
+      checked against (bit-identical outputs, pixel-identical frames on the
+      host), then replaced. Reviews of 2026-10-02: level frame 45 ms, 4 of 5
+      instructions are translation overhead (memory path 32%, register file
+      25%, FP glue 10%, calls 8%), so tuning the layer gives 1-2 FPS a step.
+      Native replacement order: (1) per-sprite drawing tail: [x] exact bind
+      sub_820A89F8 skipped (360 device state), pixel-identical at frames
+      7500/9362; [x] native cull sub_820A8DD8; [x] native quad emitter
+      sub_820A9308 (both pixel-identical at frames 7500 and 9362 together
+      with the bind skip, 2026-10-02; the host capture now records the
+      texture from the bind wrapper itself, since it used to read it in the
+      exact bind's prologue hook; written from the exact
+      body: count != 4 maps points to pixels x' = w(x+0.5), y' = h(y+0.5);
+      colour bytes [R G B A] -> premultiplied ARGB (x*a>>8); z = 100; ring
+      at 0x822673D8; modes 2/6/10/11/14/15 stay exact; host probe
+      CC_QUADLOG confirmed the colour rule and uv order on 24 quads);
+      (2) native sprite math sub_82085AD8/sub_82085110/sub_82084100/
+      sub_82086090 with host bit-identity checks; (3) the sprite/scene
+      objects themselves in plain Xbox memory (no address lookup); (4) the
+      main loop. Dropped as translation-layer tuning: flat page table,
+      exact-body trims, 30 Hz update, GPU vertex transform.
 - [ ] Memory: Xbox code size matters (it shares the 64 MB). Inlining the
       memory slow path once grew .text 12.2 -> 16.9 MB and the game failed
       to boot; keep slow paths out of line. Now ~9.8 MB with SDL.
@@ -192,9 +263,16 @@ sound effects where possible; stream art wherever it can be streamed.
       __imp__XamLoaderLaunchTitle -> cc_xbox_return_to_dashboard()
       (XLaunchXBE C:\xboxdash.xbe, else HalReturnToFirmware). Verified
       on the host play-mode build (frame 2000 capture) and in XEMU (menu,
-      book, character select, level 1). Quit itself still needs an XEMU
-      check (make SCRIPT=quit). The five dropped item objects are left
-      allocated (~300 B per menu build).
+      book, character select, level 1). Quit verified in XEMU 2026-10-02
+      (SCRIPT=quit disc: the game leaves to the dashboard; XEMU without a
+      dashboard shows "Please insert an Xbox disc"). On the way out the play
+      build needed: NtClose accepting non-file handles, main-thread waits on
+      unknown objects returning signalled (NtWaitForSingleObjectEx; started
+      worker threads must still park there or they spin forever: that was
+      the black screen of the first Quit disc), NtWriteFile /
+      NtFlushBuffersFile / XMsgCancelIORequest / NtFreeVirtualMemory
+      tolerant stubs. The five dropped item objects are left allocated
+      (~300 B per menu build).
 - [x] 2026-10-02 XEMU text went nearly invisible after the pack-aware
       texture change: text textures are registered before their shapes are
       written, so the registration-time pack lookup missed and the Xbox
