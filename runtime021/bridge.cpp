@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT (adapter; includes are unchanged user-game code)
 #include "../runtime008/bridge.h"
+#include "../runtime007/numeric/fused.h"
 #include <climits>
 #include <array>
 #include <algorithm>
@@ -950,10 +951,10 @@ struct SimdI021 { uint8_t u8[16]; };
 struct SimdF021 { float f32[4]; };
 using simde__m128i = SimdI021;
 using simde__m128 = SimdF021;
-static simde__m128i simde_mm_load_si128(const simde__m128i* p) { simde__m128i v{}; std::memcpy(&v,p,16); return v; }
-static void simde_mm_store_si128(simde__m128i* p, simde__m128i v) { std::memcpy(p,&v,16); }
-static simde__m128 simde_mm_load_ps(const float* p) { simde__m128 v{}; std::memcpy(v.f32,p,16); return v; }
-static void simde_mm_store_ps(float* p, simde__m128 v) { std::memcpy(p,v.f32,16); }
+static simde__m128i simde_mm_load_si128(const simde__m128i* p) { simde__m128i v{}; __builtin_memcpy(&v,p,16); return v; }
+static void simde_mm_store_si128(simde__m128i* p, simde__m128i v) { __builtin_memcpy(p,&v,16); }
+static simde__m128 simde_mm_load_ps(const float* p) { simde__m128 v{}; __builtin_memcpy(v.f32,p,16); return v; }
+static void simde_mm_store_ps(float* p, simde__m128 v) { __builtin_memcpy(p,v.f32,16); }
 static simde__m128 simde_mm_permute_ps(simde__m128 a, int imm) {
   simde__m128 r{}; for(int i=0;i<4;++i) r.f32[i]=a.f32[(imm>>(i*2))&3]; return r;
 }
@@ -971,42 +972,42 @@ static simde__m128 simde_mm_max_ps(simde__m128 a, simde__m128 b) {
 static simde__m128 simde_mm_min_ps(simde__m128 a, simde__m128 b) {
   simde__m128 r{}; for(int i=0;i<4;++i) r.f32[i]=(std::isnan(a.f32[i])||std::isnan(b.f32[i]))?b.f32[i]:(a.f32[i]<b.f32[i]?a.f32[i]:b.f32[i]); return r;
 }
-static simde__m128i simde_mm_set1_epi32(int v) { simde__m128i r{}; for(int i=0;i<4;++i) std::memcpy(r.u8+i*4,&v,4); return r; }
+static simde__m128i simde_mm_set1_epi32(int v) { simde__m128i r{}; for(int i=0;i<4;++i) __builtin_memcpy(r.u8+i*4,&v,4); return r; }
 static simde__m128i simde_mm_set1_epi8(char v) { simde__m128i r{}; for(int i=0;i<16;++i) r.u8[i]=uint8_t(v); return r; }
 static simde__m128i simde_mm_and_si128(simde__m128i a, simde__m128i b) { simde__m128i r{}; for(int i=0;i<16;++i) r.u8[i]=uint8_t(a.u8[i]&b.u8[i]); return r; }
 static simde__m128i simde_mm_andnot_si128(simde__m128i a, simde__m128i b) { simde__m128i r{}; for(int i=0;i<16;++i) r.u8[i]=uint8_t((~a.u8[i])&b.u8[i]); return r; }
 static simde__m128i simde_mm_or_si128(simde__m128i a, simde__m128i b) { simde__m128i r{}; for(int i=0;i<16;++i) r.u8[i]=uint8_t(a.u8[i]|b.u8[i]); return r; }
 static simde__m128i simde_mm_add_epi32(simde__m128i a, simde__m128i b) {
-  simde__m128i r{}; uint32_t av[4]{},bv[4]{},rv[4]{}; std::memcpy(av,a.u8,16); std::memcpy(bv,b.u8,16);
-  for(int i=0;i<4;++i) rv[i]=av[i]+bv[i]; std::memcpy(r.u8,rv,16); return r;
+  simde__m128i r{}; uint32_t av[4]{},bv[4]{},rv[4]{}; __builtin_memcpy(av,a.u8,16); __builtin_memcpy(bv,b.u8,16);
+  for(int i=0;i<4;++i) rv[i]=av[i]+bv[i]; __builtin_memcpy(r.u8,rv,16); return r;
 }
 static simde__m128i simde_mm_max_epi32(simde__m128i a, simde__m128i b) {
   // vmaxsw: per-lane signed 32-bit maximum.
-  simde__m128i r{}; int32_t av[4]{},bv[4]{},rv[4]{}; std::memcpy(av,a.u8,16); std::memcpy(bv,b.u8,16);
-  for(int i=0;i<4;++i) rv[i]=av[i]>bv[i]?av[i]:bv[i]; std::memcpy(r.u8,rv,16); return r;
+  simde__m128i r{}; int32_t av[4]{},bv[4]{},rv[4]{}; __builtin_memcpy(av,a.u8,16); __builtin_memcpy(bv,b.u8,16);
+  for(int i=0;i<4;++i) rv[i]=av[i]>bv[i]?av[i]:bv[i]; __builtin_memcpy(r.u8,rv,16); return r;
 }
 static simde__m128i simde_mm_slli_epi32(simde__m128i a, int n) {
-  simde__m128i r{}; uint32_t av[4]{},rv[4]{}; std::memcpy(av,a.u8,16);
-  for(int i=0;i<4;++i) rv[i]=(n>=32)?0u:(av[i]<<n); std::memcpy(r.u8,rv,16); return r;
+  simde__m128i r{}; uint32_t av[4]{},rv[4]{}; __builtin_memcpy(av,a.u8,16);
+  for(int i=0;i<4;++i) rv[i]=(n>=32)?0u:(av[i]<<n); __builtin_memcpy(r.u8,rv,16); return r;
 }
 static simde__m128i simde_mm_sllv_epi32(simde__m128i a, simde__m128i b) {
-  simde__m128i r{}; uint32_t av[4]{},bv[4]{},rv[4]{}; std::memcpy(av,a.u8,16); std::memcpy(bv,b.u8,16);
-  for(int i=0;i<4;++i) rv[i]=(bv[i]>=32u)?0u:(av[i]<<bv[i]); std::memcpy(r.u8,rv,16); return r;
+  simde__m128i r{}; uint32_t av[4]{},bv[4]{},rv[4]{}; __builtin_memcpy(av,a.u8,16); __builtin_memcpy(bv,b.u8,16);
+  for(int i=0;i<4;++i) rv[i]=(bv[i]>=32u)?0u:(av[i]<<bv[i]); __builtin_memcpy(r.u8,rv,16); return r;
 }
-static simde__m128 simde_mm_castsi128_ps(simde__m128i a) { simde__m128 r{}; std::memcpy(r.f32,a.u8,16); return r; }
+static simde__m128 simde_mm_castsi128_ps(simde__m128i a) { simde__m128 r{}; __builtin_memcpy(r.f32,a.u8,16); return r; }
 static simde__m128i simde_mm_cvttps_epi32(simde__m128 a) {
   simde__m128i r{}; int32_t out[4]{};
   for(int i=0;i<4;++i) { const float x=a.f32[i]; if(!std::isfinite(x)||x < -2147483648.0f || x >= 2147483648.0f) out[i]=INT32_MIN; else out[i]=static_cast<int32_t>(std::trunc(x)); }
-  std::memcpy(r.u8,out,16); return r;
+  __builtin_memcpy(r.u8,out,16); return r;
 }
 static simde__m128i simde_mm_shuffle_epi32(simde__m128i a, int imm) {
-  simde__m128i r{}; uint32_t lanes[4]{}; std::memcpy(lanes,a.u8,16); uint32_t out[4]{};
-  for(int i=0;i<4;++i) out[i]=lanes[(imm>>(i*2))&3]; std::memcpy(r.u8,out,16); return r;
+  simde__m128i r{}; uint32_t lanes[4]{}; __builtin_memcpy(lanes,a.u8,16); uint32_t out[4]{};
+  for(int i=0;i<4;++i) out[i]=lanes[(imm>>(i*2))&3]; __builtin_memcpy(r.u8,out,16); return r;
 }
 static simde__m128i simde_mm_xor_si128(simde__m128i a, simde__m128i b) { simde__m128i r{}; for(int i=0;i<16;++i) r.u8[i]=a.u8[i]^b.u8[i]; return r; }
-static simde__m128 simde_mm_xor_ps(simde__m128 a, simde__m128 b) { simde__m128 r{}; uint32_t av[4]{},bv[4]{},rv[4]{}; std::memcpy(av,a.f32,16); std::memcpy(bv,b.f32,16); for(int i=0;i<4;++i) rv[i]=av[i]^bv[i]; std::memcpy(r.f32,rv,16); return r; }
-static simde__m128 simde_mm_cmpeq_ps(simde__m128 a, simde__m128 b) { simde__m128 r{}; uint32_t bits[4]{}; for(int i=0;i<4;++i) bits[i]=(!std::isnan(a.f32[i])&&!std::isnan(b.f32[i])&&a.f32[i]==b.f32[i])?0xffffffffu:0u; std::memcpy(r.f32,bits,16); return r; }
-static simde__m128 simde_mm_cmpgt_ps(simde__m128 a, simde__m128 b) { simde__m128 r{}; uint32_t bits[4]{}; for(int i=0;i<4;++i) bits[i]=(!std::isnan(a.f32[i])&&!std::isnan(b.f32[i])&&a.f32[i]>b.f32[i])?0xffffffffu:0u; std::memcpy(r.f32,bits,16); return r; }
+static simde__m128 simde_mm_xor_ps(simde__m128 a, simde__m128 b) { simde__m128 r{}; uint32_t av[4]{},bv[4]{},rv[4]{}; __builtin_memcpy(av,a.f32,16); __builtin_memcpy(bv,b.f32,16); for(int i=0;i<4;++i) rv[i]=av[i]^bv[i]; __builtin_memcpy(r.f32,rv,16); return r; }
+static simde__m128 simde_mm_cmpeq_ps(simde__m128 a, simde__m128 b) { simde__m128 r{}; uint32_t bits[4]{}; for(int i=0;i<4;++i) bits[i]=(!std::isnan(a.f32[i])&&!std::isnan(b.f32[i])&&a.f32[i]==b.f32[i])?0xffffffffu:0u; __builtin_memcpy(r.f32,bits,16); return r; }
+static simde__m128 simde_mm_cmpgt_ps(simde__m128 a, simde__m128 b) { simde__m128 r{}; uint32_t bits[4]{}; for(int i=0;i<4;++i) bits[i]=(!std::isnan(a.f32[i])&&!std::isnan(b.f32[i])&&a.f32[i]>b.f32[i])?0xffffffffu:0u; __builtin_memcpy(r.f32,bits,16); return r; }
 static constexpr int SIMDE_MM_FROUND_TO_NEAREST_INT=0x00;
 static constexpr int SIMDE_MM_FROUND_TO_NEG_INF=0x01;
 static constexpr int SIMDE_MM_FROUND_TO_ZERO=0x03;
@@ -1062,9 +1063,9 @@ static simde__m128i simde_mm_perm_epi8_(simde__m128i a, simde__m128i b, simde__m
 }
 static simde__m128i simde_mm_adds_epu32(simde__m128i a, simde__m128i b) {
   // vadduws: per-lane unsigned 32-bit saturating add.
-  simde__m128i r{}; uint32_t av[4]{},bv[4]{},rv[4]{}; std::memcpy(av,a.u8,16); std::memcpy(bv,b.u8,16);
+  simde__m128i r{}; uint32_t av[4]{},bv[4]{},rv[4]{}; __builtin_memcpy(av,a.u8,16); __builtin_memcpy(bv,b.u8,16);
   for(int i=0;i<4;++i) { const uint64_t s=uint64_t(av[i])+bv[i]; rv[i]=s>0xFFFFFFFFull?0xFFFFFFFFu:uint32_t(s); }
-  std::memcpy(r.u8,rv,16); return r;
+  __builtin_memcpy(r.u8,rv,16); return r;
 }
 static simde__m128i simde_mm_vctsxs(simde__m128 a) {
   simde__m128i r{}; int32_t out[4]{};
@@ -1075,11 +1076,11 @@ static simde__m128i simde_mm_vctsxs(simde__m128 a) {
     else if (x<=float(INT32_MIN)) out[i]=INT32_MIN;
     else out[i]=static_cast<int32_t>(std::trunc(x));
   }
-  std::memcpy(r.u8,out,16); return r;
+  __builtin_memcpy(r.u8,out,16); return r;
 }
 // vcuxwfp128 source conversion: per-lane unsigned 32-bit to float.
 static simde__m128 simde_mm_cvtepu32_ps_(simde__m128i a) {
-  simde__m128 r{}; uint32_t v[4]{}; std::memcpy(v,a.u8,16);
+  simde__m128 r{}; uint32_t v[4]{}; __builtin_memcpy(v,a.u8,16);
   for(int i=0;i<4;++i) r.f32[i]=float(v[i]);
   return r;
 }
@@ -1102,9 +1103,9 @@ static simde__m128i simde_mm_avg_epi8(simde__m128i a, simde__m128i b) {
   return r;
 }
 static simde__m128i simde_mm_avg_epi16(simde__m128i a, simde__m128i b) {
-  simde__m128i r{}; int16_t av[8]{},bv[8]{},rv[8]{}; std::memcpy(av,a.u8,16); std::memcpy(bv,b.u8,16);
+  simde__m128i r{}; int16_t av[8]{},bv[8]{},rv[8]{}; __builtin_memcpy(av,a.u8,16); __builtin_memcpy(bv,b.u8,16);
   for (int i=0;i<8;++i) rv[i]=int16_t((int(av[i])+int(bv[i])+1)>>1);
-  std::memcpy(r.u8,rv,16); return r;
+  __builtin_memcpy(r.u8,rv,16); return r;
 }
 }
 // SSE-semantics helpers on host lanes (the generated code maps AltiVec to
@@ -1118,7 +1119,7 @@ static simde__m128 simde_mm_dp_ps(simde__m128 a, simde__m128 b, int imm) {
   return r;
 }
 static simde__m128 simde_mm_cvtepi32_ps(simde__m128i a) {
-  simde__m128 r{}; int32_t v[4]{}; std::memcpy(v,a.u8,16);
+  simde__m128 r{}; int32_t v[4]{}; __builtin_memcpy(v,a.u8,16);
   for (int i=0;i<4;++i) r.f32[i]=float(v[i]);
   return r;
 }
@@ -1126,28 +1127,28 @@ static simde__m128i simde_mm_add_epi8(simde__m128i a, simde__m128i b) {
   simde__m128i r{}; for (int i=0;i<16;++i) r.u8[i]=uint8_t(a.u8[i]+b.u8[i]); return r;
 }
 static simde__m128i simde_mm_cvtepi16_epi32(simde__m128i a) {
-  simde__m128i r{}; int16_t v[8]{}; int32_t o[4]{}; std::memcpy(v,a.u8,16);
+  simde__m128i r{}; int16_t v[8]{}; int32_t o[4]{}; __builtin_memcpy(v,a.u8,16);
   for (int i=0;i<4;++i) o[i]=v[i];
-  std::memcpy(r.u8,o,16); return r;
+  __builtin_memcpy(r.u8,o,16); return r;
 }
 static simde__m128i simde_mm_cvtepi8_epi16(simde__m128i a) {
   simde__m128i r{}; int16_t o[8]{};
   for (int i=0;i<8;++i) o[i]=int8_t(a.u8[i]);
-  std::memcpy(r.u8,o,16); return r;
+  __builtin_memcpy(r.u8,o,16); return r;
 }
 static simde__m128i simde_mm_packs_epi32(simde__m128i a, simde__m128i b) {
   simde__m128i r{}; int32_t av[4]{},bv[4]{}; int16_t o[8]{};
-  std::memcpy(av,a.u8,16); std::memcpy(bv,b.u8,16);
+  __builtin_memcpy(av,a.u8,16); __builtin_memcpy(bv,b.u8,16);
   auto sat=[](int32_t x){ return int16_t(x>32767?32767:(x<-32768?-32768:x)); };
   for (int i=0;i<4;++i) { o[i]=sat(av[i]); o[4+i]=sat(bv[i]); }
-  std::memcpy(r.u8,o,16); return r;
+  __builtin_memcpy(r.u8,o,16); return r;
 }
 template <int W>
 static simde__m128i cc_unpack(simde__m128i a, simde__m128i b, bool high) {
   simde__m128i r{}; const int n=16/W/2, base=high?8:0;
   for (int i=0;i<n;++i) {
-    std::memcpy(r.u8+(2*i)*W,a.u8+base+i*W,W);
-    std::memcpy(r.u8+(2*i+1)*W,b.u8+base+i*W,W);
+    __builtin_memcpy(r.u8+(2*i)*W,a.u8+base+i*W,W);
+    __builtin_memcpy(r.u8+(2*i+1)*W,b.u8+base+i*W,W);
   }
   return r;
 }
@@ -1159,7 +1160,7 @@ static simde__m128i simde_mm_unpacklo_epi32(simde__m128i a, simde__m128i b) { re
 static simde__m128i simde_mm_unpackhi_epi32(simde__m128i a, simde__m128i b) { return cc_unpack<4>(a,b,true); }
 static simde__m128i simde_mm_unpackhi_epi64(simde__m128i a, simde__m128i b) { return cc_unpack<8>(a,b,true); }
 static simde__m128i simde_mm_shuffle_epi8(simde__m128i a, simde__m128i m) { simde__m128i r{}; for(int i=0;i<16;++i) r.u8[i]=(m.u8[i]&0x80u)?0u:a.u8[m.u8[i]&15u]; return r; }
-static simde__m128i simde_mm_alignr_epi8(simde__m128i a, simde__m128i b, int n) { simde__m128i r{}; uint8_t c[32]; std::memcpy(c,b.u8,16); std::memcpy(c+16,a.u8,16); for(int i=0;i<16;++i) r.u8[i]=(n+i<32)?c[n+i]:0u; return r; }
+static simde__m128i simde_mm_alignr_epi8(simde__m128i a, simde__m128i b, int n) { simde__m128i r{}; uint8_t c[32]; __builtin_memcpy(c,b.u8,16); __builtin_memcpy(c+16,a.u8,16); for(int i=0;i<16;++i) r.u8[i]=(n+i<32)?c[n+i]:0u; return r; }
 static constexpr uint8_t VectorMaskL[256] = {
   0x0F,0x0E,0x0D,0x0C,0x0B,0x0A,0x09,0x08,0x07,0x06,0x05,0x04,0x03,0x02,0x01,0x00,
   0xFF,0x0F,0x0E,0x0D,0x0C,0x0B,0x0A,0x09,0x08,0x07,0x06,0x05,0x04,0x03,0x02,0x01,
@@ -1417,6 +1418,26 @@ static void cc_capture_end_frame(cc::xbox::AddressSpace&, uint32_t) {}
 #endif
 static void dispatch(uint32_t, Context &, Machine &);
 #define REX_CALL_INDIRECT_FUNC(a) dispatch(uint32_t(a), ctx, base)
+#ifdef CC_FAST
+// Play build: the generated bodies' std:: calls resolve to cheaper exact
+// equivalents (qualified lookup finds these declarations before the
+// using-directive). Only between here and the matching #undef below; no
+// system header is included in that range.
+//  - atomic_thread_fence: the guest runs on one host thread, so PPC
+//    sync/lwsync only need to stop compiler reordering (no lock or).
+//  - isnan: compiler builtin instead of nxdk's out-of-line __fpclassify.
+//  - fma: the exact float shortcut inline, software fused_nearest otherwise.
+namespace cc_std {
+using namespace ::std;
+inline void atomic_thread_fence(::std::memory_order) noexcept { asm volatile("" ::: "memory"); }
+inline bool isnan(double x) noexcept { return __builtin_isnan(x); }
+inline bool isnan(float x) noexcept { return __builtin_isnan(x); }
+inline double fma(double x, double y, double z) noexcept {
+  return cc::numeric::fused_nearest_fastpath(x, y, z);
+}
+}  // namespace cc_std
+#define std cc_std
+#endif
 #include "decls.inc"
 #define sub_8208C5D8 sub_8208C5D8_unsupported008
 #ifdef CC_FAST
@@ -1427,6 +1448,9 @@ static void dispatch(uint32_t, Context &, Machine &);
 #include "../runtime010/bodies.inc"
 #include "../runtime011/bodies.inc"
 #include "bodies.inc"
+#ifdef CC_FAST
+#undef std
+#endif
 static bool submit(void *ptr, const Draw &d) {
   auto &m = *static_cast<Machine *>(ptr);
   if (!m.sink.submit || !m.sink.submit(m.sink.user, d))
@@ -1435,12 +1459,15 @@ static bool submit(void *ptr, const Draw &d) {
   return true;
 }
 static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
+#ifndef CC_FAST
+  // Verification only: counted dispatches and the tree/owner walks.
   if (++base.result.dispatches > 2000000000u)
     base.fail(Error::capacity, address);
   if (address == 0x82091248)
     base.validate_owner(ctx.r3.u32);
   if (address == 0x8208a7a0)
     base.validate_list(ctx.r3.u32);
+#endif
   switch (address) {
 #include "../runtime008/dispatch.inc"
 #include "../runtime010/dispatch.inc"

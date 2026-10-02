@@ -35,7 +35,7 @@ add_test(NAME visibility_properties COMMAND cc_visibility_tests)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_executable(cc_update_boundary_tests ../runtime021/update_boundary_tests.cpp)
-target_link_libraries(cc_update_boundary_tests PRIVATE cc_tree)
+target_link_libraries(cc_update_boundary_tests PRIVATE cc_tree cc_scene_fused)
 add_test(NAME update_boundary COMMAND cc_update_boundary_tests ${CMAKE_CURRENT_SOURCE_DIR}/../renderer011/startup.cct ${CMAKE_CURRENT_SOURCE_DIR}/../castle-crashers-port/reference/default.image.bin)
 add_test(NAME update_provenance COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../runtime021/verify_provenance.py)
 add_test(NAME vtable_provenance COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../runtime021/verify_vtable_provenance.py)
