@@ -822,13 +822,14 @@ struct Machine {
     }
     return nullptr;
   }
-  // Hot path: the last region read from and the last written to (mostly the
-  // stack) are checked inline with one comparison (any access starting at
-  // most 8 bytes before the region's end); everything else takes the
-  // out-of-line cached/checked path, which also refreshes the hot entry.
-  // An empty hot entry matches only 0xFFFFFFF8, which no region maps.
-  struct HotRegion { uint32_t lo = 0xFFFFFFF8u, limit = 0; uint8_t* host = nullptr; };
-  HotRegion hot_read, hot_write;
+  // Hot path: the last region read from, the last written to, and (for
+  // accesses addressed off r1, chosen at compile time by the REX_ macros)
+  // the stack are each checked inline with one comparison (any access
+  // starting at least 8 bytes before the region's end); everything else
+  // takes the out-of-line cached/checked path, which refreshes the entry.
+  // limit = span - 7, so an empty entry (limit 0) never matches.
+  struct HotRegion { uint32_t lo = 0, limit = 0; uint8_t* host = nullptr; };
+  HotRegion hot_read, hot_write, hot_stack;
   static uint64_t get_be(const uint8_t* p, unsigned n) {
     switch (n) {
       case 1: return p[0];
@@ -851,19 +852,48 @@ struct Machine {
     const uint32_t span = region_cache[0].hi - region_cache[0].lo;
     if (span < 8u) { h = HotRegion(); return; }
     h.lo = region_cache[0].lo;
-    h.limit = span - 8u;
+    h.limit = span - 7u;
     h.host = region_cache[0].host;
   }
   uint64_t load(uint32_t a, unsigned n) {
     tick(a);
     const uint32_t off = a - hot_read.lo;
-    if (off <= hot_read.limit) return get_be(hot_read.host + off, n);
+    if (off < hot_read.limit) return get_be(hot_read.host + off, n);
     return load_slow(a, n);
   }
   void store(uint32_t a, unsigned n, uint64_t v) {
     tick(a);
     const uint32_t off = a - hot_write.lo;
-    if (off <= hot_write.limit) { put_be(hot_write.host + off, n, v); return; }
+    if (off < hot_write.limit) { put_be(hot_write.host + off, n, v); return; }
+    store_slow(a, n, v);
+  }
+  // r1-addressed accesses: their own hot entry (a read/write region), so
+  // interleaved stack and heap accesses do not evict each other.
+  uint64_t load_stack(uint32_t a, unsigned n) {
+    tick(a);
+    const uint32_t off = a - hot_stack.lo;
+    if (off < hot_stack.limit) return get_be(hot_stack.host + off, n);
+    return stack_load_slow(a, n);
+  }
+  void store_stack(uint32_t a, unsigned n, uint64_t v) {
+    tick(a);
+    const uint32_t off = a - hot_stack.lo;
+    if (off < hot_stack.limit) { put_be(hot_stack.host + off, n, v); return; }
+    stack_store_slow(a, n, v);
+  }
+  __attribute__((noinline)) uint64_t stack_load_slow(uint32_t a, unsigned n) {
+    if (const uint8_t* p = fast_host(a, n, 3u)) {
+      refresh_hot(hot_stack);
+      return get_be(p, n);
+    }
+    return load_slow(a, n);
+  }
+  __attribute__((noinline)) void stack_store_slow(uint32_t a, unsigned n, uint64_t v) {
+    if (uint8_t* p = fast_host(a, n, 3u)) {
+      refresh_hot(hot_stack);
+      put_be(p, n, v);
+      return;
+    }
     store_slow(a, n, v);
   }
   __attribute__((noinline)) uint64_t load_slow(uint32_t a, unsigned n) {
@@ -1197,14 +1227,19 @@ using PPCRegister = Register;
 #else
 #define REX_FUNC_PROLOGUE() base.prologue(__func__,ctx)
 #endif
-#define REX_LOAD_U8(a) uint8_t(base.load(uint32_t(a), 1))
-#define REX_LOAD_U16(a) uint16_t(base.load(uint32_t(a), 2))
-#define REX_LOAD_U32(a) uint32_t(base.load(uint32_t(a), 4))
-#define REX_LOAD_U64(a) base.load(uint32_t(a), 8)
-#define REX_STORE_U8(a, v) base.store(uint32_t(a), 1, v)
-#define REX_STORE_U16(a, v) base.store(uint32_t(a), 2, v)
-#define REX_STORE_U32(a, v) base.store(uint32_t(a), 4, v)
-#define REX_STORE_U64(a, v) base.store(uint32_t(a), 8, v)
+// Addresses written as "ctx.r1.u32 ..." (stack accesses) are recognised from
+// the argument's spelling at compile time and use the stack hot entry.
+#define CC_R1_ADDR(a) (sizeof(#a) > 7 && (#a)[4] == 'r' && (#a)[5] == '1' && (#a)[6] == '.')
+#define CC_GLOAD(a, n) (CC_R1_ADDR(a) ? base.load_stack(uint32_t(a), n) : base.load(uint32_t(a), n))
+#define CC_GSTORE(a, n, v) (CC_R1_ADDR(a) ? base.store_stack(uint32_t(a), n, v) : base.store(uint32_t(a), n, v))
+#define REX_LOAD_U8(a) uint8_t(CC_GLOAD(a, 1))
+#define REX_LOAD_U16(a) uint16_t(CC_GLOAD(a, 2))
+#define REX_LOAD_U32(a) uint32_t(CC_GLOAD(a, 4))
+#define REX_LOAD_U64(a) CC_GLOAD(a, 8)
+#define REX_STORE_U8(a, v) CC_GSTORE(a, 1, v)
+#define REX_STORE_U16(a, v) CC_GSTORE(a, 2, v)
+#define REX_STORE_U32(a, v) CC_GSTORE(a, 4, v)
+#define REX_STORE_U64(a, v) CC_GSTORE(a, 8, v)
 // ---- Host-only frame capture -------------------------------------------
 // Records, for selected frames, every draw the game submits through its
 // final draw call (exact sub_820C1980: device, primitive, count, vertex
