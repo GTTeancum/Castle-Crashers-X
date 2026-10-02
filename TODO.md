@@ -147,6 +147,9 @@ sound effects where possible; stream art wherever it can be streamed.
 - [x] Xbox renderer (pbkit/NV2A) from the game's draw calls.
 - [x] Sound: music heard in XEMU at full speed (2026-09-28).
 - [x] Controller input (nxdk SDL); a real pad takes over from the script.
+      In XEMU, set Machine > Input to an Xbox controller first; the game
+      picks it up at the first press (2026-10-01: played through level 1
+      by hand, no gameplay bugs seen, only low FPS).
 - [x] Real-time game speed: the game steps by measured frame time (exact
       main loop clamps dt to 1/60..1/10 s), so the play build feeds it a
       real clock.

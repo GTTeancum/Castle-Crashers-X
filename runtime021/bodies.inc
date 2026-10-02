@@ -5296,7 +5296,7 @@ static void cc_tex_swap_release(CcDxtTexture& t) {
 }
 // Write an evicted texture's pixels to the swap (once; they never change).
 static void cc_tex_swap_out(Machine& base, CcDxtTexture& t) {
-  if (t.swap_off >= 0 || !t.hashed) return;
+  if (t.swap_off >= 0 || !t.hashed || t.bake >= 0) return;
   std::FILE* f = cc_tex_swap();
   const uint8_t* q = base.memory.contiguous(t.cache, size_t(t.w) * t.h, 1);
   if (!f || !q) return;
@@ -5323,8 +5323,11 @@ static uint32_t cc_tex_swap_in(Machine& base, CcDxtTexture& t) {
   const uint32_t bytes = t.w * t.h;
   const uint32_t cache = cc_texzone_alloc(base, bytes, t.data);
   uint8_t* q = base.memory.contiguous(cache, bytes, 3);
-  if (!q || std::fseek(f, long(t.swap_off), SEEK_SET) != 0 || std::fread(q, 1, bytes, f) != bytes ||
-      cc_hash_bytes(q, bytes) != t.hash) {
+  if (!q || std::fseek(f, long(t.swap_off), SEEK_SET) != 0 || std::fread(q, 1, bytes, f) != bytes
+#ifndef CC_XBOX_DRIVER
+      || cc_hash_bytes(q, bytes) != t.hash  // diagnostic; the Xbox skips the GPU-memory read-back
+#endif
+      ) {
     cc_texzone_free(cache);
     cc_tex_swap_release(t);
     return 0;
@@ -5470,14 +5473,14 @@ static void cc_bake_load() {
   g_bake_file = f;
   cc_log("TEXBAKE pack %s: %u textures%c", path, count, 10);
 }
-// Look the job up in the pack; on a hit, read its DXT5 pixels into a new
-// cache block and return it (0 on a miss).
-static uint32_t cc_bake_fetch(Machine& base, const uint8_t* job, uint32_t w, uint32_t h, uint32_t keep) {
+// Look the job up in the pack (the shape stream must be resident, so this
+// is done when the texture is registered): the entry index, or -1.
+static int32_t cc_bake_find(Machine& base, const uint8_t* job, uint32_t w, uint32_t h) {
   cc_bake_load();
-  if (!g_bake_file || g_bake_index.empty()) return 0;
+  if (!g_bake_file || g_bake_index.empty()) return -1;
   const uint32_t sp = cc_bake_stream_ptr(job);
   const uint8_t* s64 = base.memory.contiguous(sp, 64u, 1);
-  if (!s64) return 0;
+  if (!s64) return -1;
   const uint32_t fields = cc_bake_fields(job);
   const uint32_t key0 = cc_fnv(fields, s64, 64);
   size_t lo = 0, hi = g_bake_index.size();
@@ -5487,19 +5490,31 @@ static uint32_t cc_bake_fetch(Machine& base, const uint8_t* job, uint32_t w, uin
     if (e.w != w || e.h != h) continue;
     const uint8_t* s = base.memory.contiguous(sp, e.len, 1);
     if (!s || cc_fnv(fields, s, e.len) != e.full) continue;
-    const uint32_t cache = cc_texzone_alloc(base, w * h, keep);
-    uint8_t* q = base.memory.contiguous(cache, size_t(w) * h, 3);
-    if (!q || std::fseek(g_bake_file, long(e.offset), SEEK_SET) != 0 ||
-        std::fread(q, 1, size_t(w) * h, g_bake_file) != size_t(w) * h) {
-      cc_texzone_free(cache);
-      return 0;
-    }
-    g_tex_cache_bytes += uint64_t(w) * h;
-    ++g_bake_hits;
-    return cache;
+    return int32_t(i);
   }
-  ++g_bake_misses;
-  return 0;
+  return -1;
+}
+// Read a pack entry's DXT5 pixels into a new cache block (0 on failure).
+static uint32_t cc_bake_read(Machine& base, int32_t entry, uint32_t w, uint32_t h, uint32_t keep) {
+  if (entry < 0 || size_t(entry) >= g_bake_index.size() || !g_bake_file) { ++g_bake_misses; return 0; }
+  const CcBakeEntry& e = g_bake_index[size_t(entry)];
+  const uint32_t cache = cc_texzone_alloc(base, w * h, keep);
+  uint8_t* q = base.memory.contiguous(cache, size_t(w) * h, 3);
+  if (!q || std::fseek(g_bake_file, long(e.offset), SEEK_SET) != 0 ||
+      std::fread(q, 1, size_t(w) * h, g_bake_file) != size_t(w) * h) {
+    cc_texzone_free(cache);
+    ++g_bake_misses;
+    return 0;
+  }
+  g_tex_cache_bytes += uint64_t(w) * h;
+  ++g_bake_hits;
+  return cache;
+}
+// Resolve a texture's pack entry once; a packed texture drops its job.
+static void cc_bake_resolve(Machine& base, CcDxtTexture& t) {
+  if (t.bake != -2) return;
+  t.bake = t.job.size() == 596u ? cc_bake_find(base, t.job.data(), t.w, t.h) : -1;
+  if (t.bake >= 0) std::vector<uint8_t>().swap(t.job);
 }
 #ifndef CC_XBOX_DRIVER
 // Bake mode: remember each first rasterization; written at exit.
@@ -5558,7 +5573,11 @@ static void cc_tex_stream_on_bind(Context& ctx, Machine& base, uint32_t record) 
     return;
   }
   // A baked copy replaces the rasterization when the pack has it.
-  if (const uint32_t baked = cc_bake_fetch(base, t->job.data(), t->w, t->h, t->data)) {
+  cc_bake_resolve(base, *t);
+  if (t->bake >= 0) {
+    const uint32_t baked = cc_bake_read(base, t->bake, t->w, t->h, t->data);
+    if (!baked) return;  // pack read failed: draw untextured rather than stop
+#ifndef CC_XBOX_DRIVER
     const uint8_t* q = base.memory.contiguous(baked, size_t(t->w) * t->h, 1);
     const uint32_t hash = q ? cc_hash_bytes(q, size_t(t->w) * t->h) : 0u;
     if (!t->hashed) { t->hash = hash; t->hashed = true; }
@@ -5566,10 +5585,14 @@ static void cc_tex_stream_on_bind(Context& ctx, Machine& base, uint32_t record) 
       ++g_tex_replay_mismatches;
       cc_elog("TEXBAKE mismatch data=%08x %ux%u\n", t->data, t->w, t->h);
     }
+#else
+    t->hashed = true;
+#endif
     t->cache = baked;
     cc_tex_cache_trim(base, t->data);
     return;
   }
+  if (t->job.size() != 596u) return;  // nothing to regenerate from
   // Regenerate from the snapshot in a guest job block.
   const uint32_t job = cc_phys_alloc(base, 596u, 16u);
   uint8_t* jp = base.memory.contiguous(job, 596u, 3);
@@ -5627,7 +5650,9 @@ static void sub_820B1478(Context& ctx, Machine& base) {
   if (!cc_tex_eager()) {
     // Lazy: the pixels are produced on first bind. The exact rasterizer
     // only allocates and frees its own temporaries, so skipping it here
-    // leaves no game-visible state behind.
+    // leaves no game-visible state behind. Packed textures are identified
+    // now, while the shape stream is in memory, and keep no job snapshot.
+    cc_bake_resolve(base, t);
     cc_dxt_add(std::move(t));
     return;
   }

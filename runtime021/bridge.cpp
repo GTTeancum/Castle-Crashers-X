@@ -163,6 +163,10 @@ struct CcDxtTexture {
   uint32_t data = 0, w = 0, h = 0, cache = 0, last_use = 0, hash = 0;
   bool hashed = false;  // hash holds the first compression's hash
   int64_t swap_off = -1;  // copy of the DXT5 pixels in the scratch swap file
+  // Baked pack entry: -2 not looked up yet, -1 not in the pack, else the
+  // index into the pack's table. A packed texture keeps no job snapshot
+  // (its pixels are re-read from the pack instead of swapped or redrawn).
+  int32_t bake = -2;
   std::vector<uint8_t> job;
 };
 static std::vector<CcDxtTexture> g_dxt_textures;
