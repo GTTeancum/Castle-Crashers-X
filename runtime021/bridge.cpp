@@ -1808,8 +1808,16 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
   case 0x8214a584: {
     // NtClose ??? bounded to the single open shader-file fixture handle.
     auto* fsl=base.find_file(ctx.r3.u32);
-    if (!fsl)
+    if (!fsl) {
+#ifdef CC_FAST
+      // Play build: the main menu's Quit closes event handles on its way
+      // to the dashboard; accept them (see __imp__NtClose).
+      ctx.r3.u64=0;
+      return;
+#else
       base.fail(Error::unsupported, address);
+#endif
+    }
     fsl->open=false;
     fsl->handle=0;
     fsl->pos=0;

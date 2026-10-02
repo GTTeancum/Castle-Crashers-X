@@ -5973,7 +5973,23 @@ static void __imp__KeWaitForSingleObject([[maybe_unused]] Context& ctx, Machine&
 static void __imp__NetDll_WSAGetOverlappedResult([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AB54u); }
 static void __imp__NetDll_WSARecvFrom([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AB74u); }
 static void __imp__NetDll_ioctlsocket([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AB14u); }
-static void __imp__NtClose([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A584u); }
+// NtClose(handle r3) called directly (the indirect form is the dispatch
+// case): an open game file handle is closed; the main menu's Quit path
+// closes other handles (events) on its way out, which the play build
+// accepts; the verification build stays fail-closed for those.
+static void __imp__NtClose(Context& ctx, Machine& base) {
+  if (auto* f = base.find_file(ctx.r3.u32)) {
+    if (f->fp) { std::fclose(f->fp); f->fp = nullptr; }
+    f->open = false; f->handle = 0; f->pos = 0; f->size = 0;
+    ctx.r3.u64 = 0u;  // STATUS_SUCCESS
+    return;
+  }
+#ifdef CC_FAST
+  ctx.r3.u64 = 0u;
+#else
+  base.fail(Error::unsupported, 0x8214A584u);
+#endif
+}
 static void __imp__NtFlushBuffersFile([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A564u); }
 static void __imp__NtOpenFile([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A524u); }
 static void __imp__NtQueryInformationFile([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A624u); }

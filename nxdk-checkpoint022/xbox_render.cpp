@@ -374,6 +374,22 @@ void cc_xr_gpu_idle() {
   while (pb_busy()) {}
 }
 
+// Harness failure on the Xbox: show the error code and guest address as
+// digits (the debug text console is hidden behind the pbkit display) and
+// present that frame, so a stopped game reports why on screen.
+void cc_xr_show_fail(uint32_t code, uint32_t addr) {
+  if (!init()) return;
+  if (!g_in_frame) begin_frame();
+  pb_fill_quad(8, 300, 400, 40, 0xFF400000);
+  draw_number(16, 310, code, 0xFFFFFFFF);
+  for (int k = 0; k < 8; ++k) draw_hex_digit(80 + k * 15, 310, (addr >> (28 - 4 * k)) & 15u, 0xFFFFFF40);
+  flush_overlay();
+  while (pb_busy()) {}
+  while (pb_finished()) {}
+  if (!g_shown) { pb_show_front_screen(); g_shown = true; }
+  g_in_frame = false;
+}
+
 // Frame boundary: wait for the GPU and present.
 // update_us/render_us: time in the game's update and render this frame.
 void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {

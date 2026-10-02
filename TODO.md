@@ -170,6 +170,14 @@ sound effects where possible; stream art wherever it can be streamed.
 - [x] The 4 MB texture zone thrashed the menus without the swap (menus draw
       ~4.5 MB per frame); zone raised to 6 MB.
 
+## Diagnostics on the Xbox
+
+- The play build shows a harness stop on screen: a dark red bar with the
+  error code (Error enum: 8 capacity, 9 unsupported, 3 memory, ...) and the
+  guest address in hex (cc_xr_show_fail). 2026-10-02: Quit stopped at
+  9 @ 0x8214A584 = the direct NtClose import, which was fail-closed; the
+  play build now closes file handles and accepts other handles there.
+
 ## Xbox 360 leftovers in the menus
 
 - [x] Main menu (user, 2026-10-01): Local Game, Player Statistics, Help &

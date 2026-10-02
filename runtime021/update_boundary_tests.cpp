@@ -20,6 +20,7 @@ namespace cc { namespace tree { void set_exact_texture_bind(bool) noexcept; } }
 using namespace cc::tree;
 static uint64_t assertions = 0;
 #ifdef CC_XBOX_DRIVER
+void cc_xr_show_fail(uint32_t code, uint32_t addr);  // nxdk-checkpoint022/xbox_render.cpp
 [[noreturn]] [[maybe_unused]] static void cc_fail_exit() { for(;;) { Sleep(1000); } } // keep failure text on screen
 #else
 [[noreturn]] [[maybe_unused]] static void cc_fail_exit() { std::exit(1); }
@@ -1209,6 +1210,9 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   cc_log("caller_post_init result=%s@%08x funcs=%u memops=%u r1=%08x lr=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r11=%08x\n",
               name(pi.error),pi.address,pi.functions,pi.memory_ops,c.r1.u32,uint32_t(c.lr),
               c.r3.u32,c.r4.u32,c.r5.u32,c.r6.u32,c.r7.u32,c.r11.u32);
+#if defined(CC_XBOX_DRIVER) && defined(CC_FAST)
+  if (pi.error != Error::capacity) ::cc_xr_show_fail(uint32_t(pi.error), pi.address);
+#endif
   CHECK(pi.error==Error::capacity);
   // WIP 023d: the run no longer stops at a platform boundary - the game
   // reaches the main menu (LOGO/LOADING/PAUSE/LEGAL/ATTRACT/MENU paks and

@@ -123,12 +123,13 @@ void __basic_string_common<true>::__throw_out_of_range() const {
 }  // namespace __1
 }  // namespace std
 
-// Main menu "Quit": hand control back to the dashboard. XLaunchXBE only
-// returns on failure; then fall back to a warm reboot into the dashboard.
+// Main menu "Quit": hand control back to the dashboard. A null path asks
+// the kernel to launch the dashboard (the port mounts no C: drive, so a
+// path would not resolve); if that returns, reboot to it.
 #include <hal/xbox.h>
 #include <xboxkrnl/xboxkrnl.h>
 [[noreturn]] void cc_xbox_return_to_dashboard() {
-  XLaunchXBE("C:\\xboxdash.xbe");
-  HalReturnToFirmware(HalQuickRebootRoutine);
+  XLaunchXBEEx(nullptr, nullptr);
+  HalReturnToFirmware(HalRebootRoutine);
   for (;;) Sleep(1000);
 }
