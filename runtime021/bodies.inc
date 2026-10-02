@@ -146,7 +146,41 @@ static std::set<uint32_t> g_committed_pages;
 #include "generated/sub_820A1AC0.inc"
 #include "generated/sub_82088A08.inc"
 #include "generated/sub_8208A228.inc"
+#ifdef CC_FAST
+#define sub_8208AE78 sub_8208AE78_exact
+#endif
 #include "generated/sub_8208AE78.inc"
+#ifdef CC_FAST
+#undef sub_8208AE78
+// Display-list refresh (exact sub_8208AE78: node r3). If bit 5 of byte +140
+// is set it is cleared and sub_82084EE0(node + 104) runs; then every child
+// in the list at +104 (linked through +88) that answers slot 44 is refreshed
+// the same way, depth first.
+static void sub_8208AE78(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
+  if (walk_exact) { sub_8208AE78_exact(ctx, base); return; }
+#else
+  static_cast<void>(&sub_8208AE78_exact);
+#endif
+  const uint32_t node = ctx.r3.u32;
+  CcFrame frame(ctx, base, 96u);
+  const uint32_t flags = REX_LOAD_U8(node + 140u);
+  if (flags & 0x20u) {
+    REX_STORE_U8(node + 140u, uint8_t(flags & ~0x20u));
+    ctx.r3.u64 = node + 104u;
+    ctx.lr = 0x8208AEB0u;
+    sub_82084EE0(ctx, base);
+  }
+  for (uint32_t ch = REX_LOAD_U32(node + 104u); ch; ch = REX_LOAD_U32(ch + 88u)) {
+    if ((cc_vcall(ctx, base, ch, 44u, 0x8208AED0u) & 0xFFu) != 0u) {
+      ctx.r3.u64 = ch;
+      ctx.lr = 0x8208AEE4u;
+      sub_8208AE78(ctx, base);
+    }
+  }
+}
+#endif
 #include "generated/sub_820915F0.inc"
 #include "generated/sub_8209DE50.inc"
 
@@ -5040,7 +5074,34 @@ static void sub_820A89F8(Context& ctx, Machine& base) {
 #include "generated/sub_820867D0.inc"
 #include "generated/sub_82085FA8.inc"
 #include "generated/sub_82089C00.inc"
+#ifdef CC_FAST
+#define sub_82085078 sub_82085078_exact
+#endif
 #include "generated/sub_82085078.inc"
+#ifdef CC_FAST
+#undef sub_82085078
+// Display-list lookup (exact sub_82085078: list r3, id r4): the first node
+// in the list at [r3] (linked through +88) that answers slot 52 and whose
+// slot 72 value matches id in the low 16 bits; 0 when none does.
+static void sub_82085078(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
+  if (walk_exact) { sub_82085078_exact(ctx, base); return; }
+#else
+  static_cast<void>(&sub_82085078_exact);
+#endif
+  const uint32_t id = ctx.r4.u32 & 0xFFFFu;
+  CcFrame frame(ctx, base, 112u);
+  for (uint32_t n = REX_LOAD_U32(ctx.r3.u32); n; n = REX_LOAD_U32(n + 88u)) {
+    if ((cc_vcall(ctx, base, n, 52u, 0x820850B0u) & 0xFFu) != 0u &&
+        (cc_vcall(ctx, base, n, 72u, 0x820850D0u) & 0xFFFFu) == id) {
+      ctx.r3.u64 = n;
+      return;
+    }
+  }
+  ctx.r3.u64 = 0u;
+}
+#endif
 #include "generated/sub_8208B438.inc"
 #include "generated/sub_8207A908.inc"
 #include "generated/sub_82081C08.inc"

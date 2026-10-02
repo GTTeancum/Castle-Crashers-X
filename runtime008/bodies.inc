@@ -69,15 +69,321 @@ static void sub_82129A70(Context&, Machine&);
 #include "generated/sub_82053A98.inc"
 #include "generated/sub_820619E8.inc"
 #include "generated/sub_820836E0.inc"
+#ifdef CC_FAST
+#define sub_82084100 sub_82084100_exact
+#endif
 #include "generated/sub_82084100.inc"
+#ifdef CC_FAST
+#undef sub_82084100
+static void cc_oracle_mismatch(const char* fn, int slot, uint32_t exact, uint32_t native);
+// Sprite colour (exact sub_82084100: out r3 = 4 floats, record r4 with
+// int16 multipliers at +28, +30, +32, +40 and offsets at +34, +36, +38,
+// +42, input r5 = 4 floats). out[i] = mul[i]/255 * in[i] + off[i], then
+// clamped to [0, 255] (a NaN becomes 255). Rounding as compiled: the
+// multiplier scaled by 1/255 (0x8204257C) is rounded to float, the
+// multiply-add is fused, the result rounded to float.
+static void cc_colour_native(Machine& base, Context& ctx, uint32_t out[4]) {
+  ctx.fpscr.disableFlushMode();
+  auto f32 = [](uint32_t b) { float f; __builtin_memcpy(&f, &b, 4); return double(f); };
+  auto bits = [](double v) { const float f = float(v); uint32_t b; __builtin_memcpy(&b, &f, 4); return b; };
+  auto r = [](double v) { return double(float(v)); };
+  const uint32_t rec = ctx.r4.u32, in = ctx.r5.u32;
+  const double inv = f32(REX_LOAD_U32(0x8204257Cu)), top = f32(REX_LOAD_U32(0x82042548u)), zero = f32(REX_LOAD_U32(0x82042540u));
+  auto h = [&](uint32_t a) { return double(float(double(int16_t(REX_LOAD_U16(a))))); };
+  const uint32_t mo[4] = {28u, 30u, 32u, 40u}, oo[4] = {34u, 36u, 38u, 42u};
+  for (int i = 0; i < 4; ++i) {
+    double v = r(std::fma(r(h(rec + mo[i]) * inv), f32(REX_LOAD_U32(in + 4u * uint32_t(i))), h(rec + oo[i])));
+    v = (v < top) ? v : top;
+    v = (v > zero) ? v : zero;
+    out[i] = bits(v);
+  }
+}
+static void sub_82084100(Context& ctx, Machine& base) {
+  uint32_t out[4];
+  cc_colour_native(base, ctx, out);
+  const uint32_t o = ctx.r3.u32;
+#ifndef CC_XBOX_DRIVER
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr;
+  if (oracle) {
+    sub_82084100_exact(ctx, base);
+    for (int k = 0; k < 4; ++k) {
+      const uint32_t e = REX_LOAD_U32(o + 4u * uint32_t(k));
+      if (e != out[k]) cc_oracle_mismatch("sub_82084100", k, e, out[k]);
+    }
+    return;
+  }
+#else
+  static_cast<void>(&sub_82084100_exact);
+#endif
+  for (int k = 0; k < 4; ++k) REX_STORE_U32(o + 4u * uint32_t(k), out[k]);
+}
+// Oracle checks (host play build, CC_ORACLE=1): a native routine runs first,
+// then the exact body; any difference in the outputs is logged. The exact
+// result stays in effect, so an oracle run is also a normal run.
+#ifndef CC_XBOX_DRIVER
+static uint32_t g_oracle_mismatches = 0;
+static void cc_oracle_mismatch(const char* fn, int slot, uint32_t exact, uint32_t native) {
+  ++g_oracle_mismatches;
+  if (g_oracle_mismatches <= 20u || (g_oracle_mismatches % 1000u) == 0u)
+    cc_log("ORACLE %s slot=%d exact=%08x native=%08x total=%u\n", fn, slot, exact, native, g_oracle_mismatches);
+}
+#endif
+#define sub_82085110 sub_82085110_exact
+#endif
 #include "generated/sub_82085110.inc"
+#ifdef CC_FAST
+#undef sub_82085110
+// Sprite corners (exact sub_82085110: sprite r3 with its rectangle as int32
+// left +96, right +100, top +104, bottom +108 in 1/20 pixel; matrix r4 with
+// floats a +16, b +20, c +24, d +28, tx +32, ty +36; out points r5..r8 as
+// {x, y, z}). Each corner of the rectangle scaled by 0.05 is mapped with
+// the matrix entries pre-scaled by 0.01 (a, b) and 0.05 (c, d, tx, ty);
+// z = 2000. The compiled original rounds the two products in a different
+// order per corner; the same order is kept here so the results are
+// bit-identical (constants 0x82042564 = 0.05, 0x82042574 = 0.01,
+// 0x82042578 = 2000).
+static void cc_corners_native(Context& ctx, Machine& base, uint32_t out[4][3]) {
+  ctx.fpscr.disableFlushMode();
+  auto f32 = [](uint32_t b) { float f; __builtin_memcpy(&f, &b, 4); return double(f); };
+  auto bits = [](double v) { const float f = float(v); uint32_t b; __builtin_memcpy(&b, &f, 4); return b; };
+  auto r = [](double v) { return double(float(v)); };
+  const uint32_t s = ctx.r3.u32, m = ctx.r4.u32;
+  const double c05 = f32(REX_LOAD_U32(0x82042564u)), c01 = f32(REX_LOAD_U32(0x82042574u));
+  const uint32_t zb = REX_LOAD_U32(0x82042578u);
+  auto cv = [&](uint32_t a) { return double(float(double(int32_t(REX_LOAD_U32(a))))); };
+  const double x0 = r(cv(s + 96u) * c05), x1 = r(cv(s + 100u) * c05);
+  const double y0 = r(cv(s + 104u) * c05), y1 = r(cv(s + 108u) * c05);
+  const double a = f32(REX_LOAD_U32(m + 16u)), b = f32(REX_LOAD_U32(m + 20u)), c = f32(REX_LOAD_U32(m + 24u)),
+               d = f32(REX_LOAD_U32(m + 28u)), tx = f32(REX_LOAD_U32(m + 32u)), ty = f32(REX_LOAD_U32(m + 36u));
+  const double a01 = r(a * c01), b01 = r(b * c01), c05x = r(c * c05), d05 = r(d * c05);
+  out[0][0] = bits(std::fma(tx, c05, r(std::fma(d05, y0, r(a01 * x0)))));   // p0 (x0, y0)
+  out[0][1] = bits(std::fma(ty, c05, r(std::fma(c05x, x0, r(b01 * y0)))));
+  out[1][0] = bits(std::fma(tx, c05, r(std::fma(a01, x1, r(d05 * y0)))));   // p1 (x1, y0)
+  out[1][1] = bits(std::fma(ty, c05, r(std::fma(c05x, x1, r(b01 * y0)))));
+  out[2][0] = bits(std::fma(tx, c05, r(std::fma(a01, x1, r(d05 * y1)))));   // p2 (x1, y1)
+  out[2][1] = bits(std::fma(ty, c05, r(std::fma(c05x, x1, r(b01 * y1)))));
+  out[3][0] = bits(std::fma(tx, c05, r(std::fma(a01, x0, r(d05 * y1)))));   // p3 (x0, y1)
+  out[3][1] = bits(std::fma(ty, c05, r(std::fma(c05x, x0, r(b01 * y1)))));
+  for (int i = 0; i < 4; ++i) out[i][2] = zb;
+}
+static void sub_82085110(Context& ctx, Machine& base) {
+  uint32_t out[4][3];
+  cc_corners_native(ctx, base, out);
+  const uint32_t dst[4] = {ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32};
+#ifndef CC_XBOX_DRIVER
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr;
+  if (oracle) {
+    sub_82085110_exact(ctx, base);
+    for (int i = 0; i < 4; ++i)
+      for (int k = 0; k < 3; ++k) {
+        const uint32_t e = REX_LOAD_U32(dst[i] + 4u * uint32_t(k));
+        if (e != out[i][k]) cc_oracle_mismatch("sub_82085110", i * 3 + k, e, out[i][k]);
+      }
+    return;
+  }
+#else
+  static_cast<void>(&sub_82085110_exact);
+#endif
+  for (int i = 0; i < 4; ++i)
+    for (int k = 0; k < 3; ++k) REX_STORE_U32(dst[i] + 4u * uint32_t(k), out[i][k]);
+}
+#endif
 #include "generated/sub_820855D8.inc"
+#ifdef CC_FAST
+#define sub_82085AD8 sub_82085AD8_exact
+#endif
 #include "generated/sub_82085AD8.inc"
+#ifdef CC_FAST
+#undef sub_82085AD8
+// Sprite matrix multiply (exact sub_82085AD8: out r3, A r4, B r5; matrices
+// hold floats a +16, b +20, c +24, d +28, tx +32, ty +36 in the game's
+// fixed scales). out = {100, 100, 0, bytes 12..14 = 0, then
+//   a' = 100 * (b24*0.05 * a28*0.05 + b16*0.01 * a16*0.01)
+//   b' = 100 * (b28*0.05 * a24*0.05 + b20*0.01 * a20*0.01)
+//   c' =  20 * (b16*0.01 * a24*0.05 + b24*0.05 * a20*0.01)
+//   d' =  20 * (b20*0.01 * a28*0.05 + b28*0.05 * a16*0.01)
+//   tx' = 20 * (a32*0.05 + a28*0.05 * b36*0.05 + a16*0.01 * b32*0.05)
+//   ty' = 20 * (a36*0.05 + a24*0.05 * b32*0.05 + a20*0.01 * b36*0.05)}
+// with the compiled original's rounding (each scaled entry rounded to
+// float, the second product fused, the sum rounded). The byte at
+// 0x8228A7B4 selects an extra fix-up call (sub_82085C70) that the harness
+// never runs; that path keeps the exact body. Returns out in r3.
+static void cc_matmul_native(Machine& base, Context& ctx, uint32_t out[6]) {
+  ctx.fpscr.disableFlushMode();
+  auto f32 = [](uint32_t b) { float f; __builtin_memcpy(&f, &b, 4); return double(f); };
+  auto bits = [](double v) { const float f = float(v); uint32_t b; __builtin_memcpy(&b, &f, 4); return b; };
+  auto r = [](double v) { return double(float(v)); };
+  const uint32_t A = ctx.r4.u32, B = ctx.r5.u32;
+  const double c05 = f32(REX_LOAD_U32(0x82042564u)), c01 = f32(REX_LOAD_U32(0x82042574u));
+  const double k20 = f32(REX_LOAD_U32(0x82042568u)), k100 = f32(REX_LOAD_U32(0x8201473Cu));
+  auto ld = [&](uint32_t a) { return f32(REX_LOAD_U32(a)); };
+  const double a16c = r(ld(A + 16u) * c01), a20c = r(ld(A + 20u) * c01), a24c = r(ld(A + 24u) * c05), a28c = r(ld(A + 28u) * c05);
+  const double a32 = ld(A + 32u), a36 = ld(A + 36u);
+  const double b16c = r(ld(B + 16u) * c01), b20c = r(ld(B + 20u) * c01), b24c = r(ld(B + 24u) * c05), b28c = r(ld(B + 28u) * c05);
+  const double b32c = r(ld(B + 32u) * c05), b36c = r(ld(B + 36u) * c05);
+  const double f6 = r(std::fma(a28c, b36c, r(a16c * b32c)));
+  const double f4 = r(std::fma(a24c, b32c, r(a20c * b36c)));
+  const double f2 = r(std::fma(b24c, a28c, r(b16c * a16c)));
+  const double f12 = r(std::fma(b28c, a24c, r(b20c * a20c)));
+  const double f11 = r(std::fma(b16c, a24c, r(b24c * a20c)));
+  const double f10 = r(std::fma(b20c, a28c, r(b28c * a16c)));
+  const double f9 = r(std::fma(a32, c05, f6));
+  const double f8 = r(std::fma(a36, c05, f4));
+  out[0] = bits(f2 * k100); out[1] = bits(f12 * k100);
+  out[2] = bits(f11 * k20); out[3] = bits(f10 * k20);
+  out[4] = bits(f9 * k20); out[5] = bits(f8 * k20);
+}
+static void sub_82085AD8(Context& ctx, Machine& base) {
+  if (REX_LOAD_U8(0x8228A7B4u) != 0u) { sub_82085AD8_exact(ctx, base); return; }
+  uint32_t out[6];
+  cc_matmul_native(base, ctx, out);
+  const uint32_t o = ctx.r3.u32;
+#ifndef CC_XBOX_DRIVER
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr;
+  if (oracle) {
+    sub_82085AD8_exact(ctx, base);
+    for (int k = 0; k < 6; ++k) {
+      const uint32_t e = REX_LOAD_U32(o + 16u + 4u * uint32_t(k));
+      if (e != out[k]) cc_oracle_mismatch("sub_82085AD8", k, e, out[k]);
+    }
+    return;
+  }
+#endif
+  const uint32_t k100 = REX_LOAD_U32(0x8201473Cu);
+  REX_STORE_U32(o + 0u, k100); REX_STORE_U32(o + 4u, k100); REX_STORE_U32(o + 8u, 0u);
+  REX_STORE_U8(o + 12u, 0u); REX_STORE_U8(o + 13u, 0u); REX_STORE_U8(o + 14u, 0u);
+  for (int k = 0; k < 6; ++k) REX_STORE_U32(o + 16u + 4u * uint32_t(k), out[k]);
+}
+#endif
+#ifdef CC_FAST
+#define sub_82086090 sub_82086090_exact
+#endif
 #include "generated/sub_82086090.inc"
+#ifdef CC_FAST
+#undef sub_82086090
+// Matrix stack push (exact sub_82086090: stack r3, matrix r4, combine flag
+// r5 byte). depth = ++[r3+9532]; the 40-byte entry at r3 + 8252 + 40*depth
+// becomes (flag ? previous entry x matrix : matrix): floats +0, +4, +8,
+// bytes +12..14, floats +16..36 (byte 15 untouched). The combined form is
+// sub_82085AD8's result ({100, 100, 0}, zero bytes, product).
+static void sub_82086090(Context& ctx, Machine& base) {
+  const uint32_t st = ctx.r3.u32, m = ctx.r4.u32;
+  const bool combine = (ctx.r5.u32 & 0xFFu) != 0u;
+  if (combine && REX_LOAD_U8(0x8228A7B4u) != 0u) { sub_82086090_exact(ctx, base); return; }
+#ifndef CC_XBOX_DRIVER
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr;
+#else
+  constexpr bool oracle = false;
+  static_cast<void>(&sub_82086090_exact);
+#endif
+  const uint32_t depth = REX_LOAD_U32(st + 9532u) + 1u;
+  const uint32_t e = st + 8252u + depth * 40u;
+  uint32_t v[10]; uint8_t by[3];
+  if (combine) {
+    Context c = ctx; c.r4.u64 = e - 40u; c.r5.u64 = m;
+    uint32_t prod[6];
+    cc_matmul_native(base, c, prod);
+    ctx.fpscr = c.fpscr;
+    const uint32_t k100 = REX_LOAD_U32(0x8201473Cu);
+    v[0] = k100; v[1] = k100; v[2] = 0u; by[0] = by[1] = by[2] = 0u;
+    for (int k = 0; k < 6; ++k) v[4 + k] = prod[k];
+  } else {
+    v[0] = REX_LOAD_U32(m + 0u); v[1] = REX_LOAD_U32(m + 4u); v[2] = REX_LOAD_U32(m + 8u);
+    by[0] = REX_LOAD_U8(m + 12u); by[1] = REX_LOAD_U8(m + 13u); by[2] = REX_LOAD_U8(m + 14u);
+    for (int k = 0; k < 6; ++k) v[4 + k] = REX_LOAD_U32(m + 16u + 4u * uint32_t(k));
+  }
+#ifndef CC_XBOX_DRIVER
+  if (oracle) {
+    sub_82086090_exact(ctx, base);
+    const int slots[9] = {0, 1, 2, 4, 5, 6, 7, 8, 9};
+    for (int k : slots) {
+      const uint32_t x = REX_LOAD_U32(e + 4u * uint32_t(k));
+      if (x != v[k]) cc_oracle_mismatch("sub_82086090", k, x, v[k]);
+    }
+    for (int k = 0; k < 3; ++k) {
+      const uint32_t x = REX_LOAD_U8(e + 12u + uint32_t(k));
+      if (x != by[k]) cc_oracle_mismatch("sub_82086090", 10 + k, x, by[k]);
+    }
+    if (REX_LOAD_U32(st + 9532u) != depth) cc_oracle_mismatch("sub_82086090", 20, REX_LOAD_U32(st + 9532u), depth);
+    return;
+  }
+#endif
+  REX_STORE_U32(st + 9532u, depth);
+  REX_STORE_U32(e + 0u, v[0]); REX_STORE_U32(e + 4u, v[1]); REX_STORE_U32(e + 8u, v[2]);
+  REX_STORE_U8(e + 12u, by[0]); REX_STORE_U8(e + 13u, by[1]); REX_STORE_U8(e + 14u, by[2]);
+  for (int k = 0; k < 6; ++k) REX_STORE_U32(e + 16u + 4u * uint32_t(k), v[4 + k]);
+}
+#endif
 #include "generated/sub_82086278.inc"
 #include "generated/sub_820868D0.inc"
 #include "generated/sub_8208A7A0.inc"
+#ifdef CC_FAST
+// Native virtual call for the display-list walkers. The Flash display-list
+// classes answer most per-node questions with one-instruction methods; the
+// walkers call them millions of times per minute. A method known to be one
+// of those leaves is answered directly (same result, and the leaves only
+// write r3 and volatile scratch registers); anything else goes through the
+// normal indirect call with r3 = object and the original return address.
+static inline bool cc_leaf_method(Machine& base, uint32_t fn, uint32_t obj, uint32_t& r3) {
+  switch (fn) {
+    case 0x820619E8u: r3 = 1u; return true;                                     // li r3,1
+    case 0x82053A98u: r3 = 0u; return true;                                     // li r3,0
+    case 0x820868A8u: r3 = 1024u; return true;                                  // li r3,1024
+    case 0x820868D0u: r3 = REX_LOAD_U32(obj + 96u); return true;                // lwz r3,96(r3)
+    case 0x820867D0u: r3 = REX_LOAD_U16(obj + 100u) != 0u ? 1u : 0u; return true;  // u16 +100 != 0
+    case 0x82086818u: r3 = (REX_LOAD_U8(obj + 140u) >> 2) & 1u; return true;    // bit 2 of byte +140
+    default: return false;
+  }
+}
+static inline uint32_t cc_vcall(Context& ctx, Machine& base, uint32_t obj, uint32_t slot, uint32_t lr) {
+  const uint32_t fn = REX_LOAD_U32(REX_LOAD_U32(obj) + slot);
+  uint32_t r3 = 0;
+  if (cc_leaf_method(base, fn, obj, r3)) { ctx.r3.u64 = r3; return r3; }
+  ctx.r3.u64 = obj;
+  ctx.lr = lr;
+  REX_CALL_INDIRECT_FUNC(fn);
+  return ctx.r3.u32;
+}
+// Native frame for a walker: the exact walkers open a stack frame before
+// their calls; callees then use the stack below it.
+struct CcFrame {
+  Context& c; uint32_t saved;
+  CcFrame(Context& ctx, Machine& base, uint32_t size) : c(ctx), saved(ctx.r1.u32) {
+    const uint32_t nr1 = saved - size;
+    REX_STORE_U32(nr1, saved);
+    ctx.r1.u64 = nr1;
+  }
+  ~CcFrame() { c.r1.u64 = saved; }
+};
+#define sub_8208AF08 sub_8208AF08_exact
+#endif
 #include "generated/sub_8208AF08.inc"
+#ifdef CC_FAST
+#undef sub_8208AF08
+// Display-list query (exact sub_8208AF08: node r3). Walks the children via
+// the node's iterator method (slot 156 on the node, then on each child);
+// returns 0 as soon as a child that is "active" (slot 44) has bit 0 of byte
+// +140 clear, else bit 0 of the node's own byte +140.
+static void sub_8208AF08(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
+  if (walk_exact) { sub_8208AF08_exact(ctx, base); return; }
+#else
+  static_cast<void>(&sub_8208AF08_exact);
+#endif
+  const uint32_t node = ctx.r3.u32;
+  CcFrame frame(ctx, base, 112u);
+  uint32_t ch = cc_vcall(ctx, base, node, 156u, 0x8208AF30u);
+  while (ch) {
+    if ((cc_vcall(ctx, base, ch, 44u, 0x8208AF50u) & 0xFFu) != 0u && (REX_LOAD_U8(ch + 140u) & 1u) == 0u) {
+      ctx.r3.u64 = 0u;
+      return;
+    }
+    ch = cc_vcall(ctx, base, ch, 156u, 0x8208AF80u);
+  }
+  ctx.r3.u64 = REX_LOAD_U8(node + 140u) & 1u;
+}
+#endif
 #include "generated/sub_82094FE8.inc"
 #include "generated/sub_8209D028.inc"
 #include "generated/sub_8209D118.inc"

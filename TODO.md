@@ -223,7 +223,11 @@ sound effects where possible; stream art wherever it can be streamed.
       sub_820A89F8 skipped (360 device state), pixel-identical at frames
       7500/9362; [x] native cull sub_820A8DD8; [x] native quad emitter
       sub_820A9308 (both pixel-identical at frames 7500 and 9362 together
-      with the bind skip, 2026-10-02; the host capture now records the
+      with the bind skip, 2026-10-02; clean XEMU run of CC-H7-native.iso:
+      level 1 tavern 24 FPS (update 21 ms, draw 17 ms), castle hall 31-34
+      FPS (update 12-16 ms, draw 15-16 ms), busiest fight 16-20 FPS with
+      update 25-35 ms; menus 40-57 FPS. Drawing is no longer the larger
+      half; the game update is. The host capture now records the
       texture from the bind wrapper itself, since it used to read it in the
       exact bind's prologue hook; written from the exact
       body: count != 4 maps points to pixels x' = w(x+0.5), y' = h(y+0.5);

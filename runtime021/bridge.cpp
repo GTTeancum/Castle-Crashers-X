@@ -524,6 +524,14 @@ struct Machine {
         uint32_t fid = 0;
         for (uint32_t k = 0; k < kFastHooks; ++k)
           if (!std::strncmp(name, fast_hooked[k], 12)) fid = k + 1;
+#ifndef CC_XBOX_DRIVER
+        // Host call-site census: CC_CALLERS=sub_X,sub_Y counts each call of
+        // the listed functions by return address (printed at exit).
+        if (!fid) {
+          static const char* const callers = std::getenv("CC_CALLERS");
+          if (callers && name[0] == 's' && std::strstr(callers, name)) fid = 8;
+        }
+#endif
         s.name = name;
         s.flags = fid;
         return fid;
@@ -672,8 +680,29 @@ struct Machine {
         hooked_prologue(names[id - 5], ctx);
         break;
       }
+#ifndef CC_XBOX_DRIVER
+      case 8: cc_census_note(uint32_t(ctx.lr)); break;
+#endif
     }
   }
+#ifndef CC_XBOX_DRIVER
+  static void cc_census_note(uint32_t lr) {
+    static std::map<uint32_t, uint64_t>* sites = nullptr;
+    if (!sites) {
+      sites = new std::map<uint32_t, uint64_t>();
+      std::atexit([] {
+        std::vector<std::pair<uint64_t, uint32_t>> v;
+        uint64_t total = 0;
+        for (const auto& kv : *sites) { v.push_back({kv.second, kv.first}); total += kv.second; }
+        std::sort(v.rbegin(), v.rend());
+        std::fprintf(stderr, "CENSUS total=%llu sites=%zu\n", (unsigned long long)total, v.size());
+        for (size_t i = 0; i < v.size() && i < 25; ++i)
+          std::fprintf(stderr, "CENSUS lr=%08x calls=%llu\n", v[i].second, (unsigned long long)v[i].first);
+      });
+    }
+    ++(*sites)[lr];
+  }
+#endif
   void publish_ring_fence() {
     {
       const uint32_t dev = 0x02000080u;
