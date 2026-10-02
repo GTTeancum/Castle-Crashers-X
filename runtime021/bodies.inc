@@ -1613,6 +1613,9 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   // scheduling point is modeled.
   cc_drain_workers(base, ctx.r13.u32);
   base.trace_one_frame = false;
+#ifndef CC_FAST
+  // Diagnostics only: on the Xbox cc_log scrolls the framebuffer text,
+  // a visible hitch every 500 frames.
   base.frame_probe_log = (g_frame_delay_calls % 500u == 0u);
   if (g_frame_delay_calls % 500u == 0u) {
     // Frame-state probe: the main loop's quit check reads the object at
@@ -1639,6 +1642,7 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     }
 #endif
   }
+#endif
   ctx.r3.u64 = 0u;  // STATUS_SUCCESS
 }
 static void __imp__KfReleaseSpinLock([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported,0x8214A744u); }
