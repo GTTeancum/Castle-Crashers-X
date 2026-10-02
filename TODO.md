@@ -153,6 +153,9 @@ sound effects where possible; stream art wherever it can be streamed.
 - [x] Real-time game speed: the game steps by measured frame time (exact
       main loop clamps dt to 1/60..1/10 s), so the play build feeds it a
       real clock.
+- [ ] Built-in input script is live in the play build until the first pad
+      press (useful for unattended XEMU A/B runs; must be a build switch, off
+      by default, before a playable release).
 - [ ] Z: scratch swap: never exercised natively (no eviction happened with
       the 6 MB zone); the first run's 4 MB zone reported it unavailable.
 - [ ] Performance toward a steady 30 FPS (33 ms). XEMU 2026-09-28 after
