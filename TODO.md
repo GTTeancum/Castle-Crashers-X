@@ -172,6 +172,21 @@ sound effects where possible; stream art wherever it can be streamed.
 
 ## Xbox 360 leftovers in the menus
 
+- [ ] Main menu (user, 2026-10-01): keep only Local Game, Player Statistics,
+      Help & Options, and "Quit" (was Return to Arcade; must exit to the
+      dashboard), bottom-aligned where Return to Arcade sits now. Findings:
+      the menu labels are localized string records in the image, table at
+      0x8222D58C, 10 pointers per record (slot 0 English); record ids:
+      Local Game 0, Xbox LIVE Game 10, Leaderboards 2110, Achievements 2120,
+      Help & Options 2130, Unlock Full Game 2140, Download Content 2150,
+      Return to Arcade 2160 (ids = pointer index; the English string
+      "Return to Arcade" is at 0x8201545C, UTF-16 BE). "Return to Arcade"
+      ends in exact sub_820B6908 (XLaunchNewImage) -> __imp__XamLoaderLaunchTitle
+      (bodies.inc, fail-closed today): on the Xbox make it return to the
+      dashboard (XLaunchXBE("C:\xboxdash.xbe"), else HalReturnToFirmware).
+      Still to find: the function that builds the menu's item list (it uses
+      string ids, not addresses; grep for the ids above in one function).
+
 - [ ] Starting a story game shows "Sign in to Xbox LIVE to post your score
       to the leaderboards" (A continues). Remove it on the original Xbox.
 - [ ] The main menu still lists Xbox LIVE Game, Leaderboards,

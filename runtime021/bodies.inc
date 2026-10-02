@@ -5337,11 +5337,29 @@ static uint32_t cc_tex_swap_in(Machine& base, CcDxtTexture& t) {
   return cache;
 }
 // Evict least recently bound textures until the cache fits (never `keep`).
+// Least recently bound resident texture other than `keep`. On the Xbox a
+// texture bound this frame is still referenced by queued draws (the GPU
+// samples the zone directly), so those are evicted only when nothing else
+// is resident, and then only after the GPU has finished the queued work.
+static CcDxtTexture* cc_tex_pick_victim(uint32_t keep) {
+  CcDxtTexture* victim = nullptr;
+#ifdef CC_XBOX_DRIVER
+  for (auto& t : g_dxt_textures)
+    if (t.cache && t.data != keep && t.last_use != g_frame_delay_calls &&
+        (!victim || t.last_use < victim->last_use)) victim = &t;
+  if (victim) return victim;
+  for (auto& t : g_dxt_textures)
+    if (t.cache && t.data != keep && (!victim || t.last_use < victim->last_use)) victim = &t;
+  if (victim) ::cc_xr_gpu_idle();
+#else
+  for (auto& t : g_dxt_textures)
+    if (t.cache && t.data != keep && (!victim || t.last_use < victim->last_use)) victim = &t;
+#endif
+  return victim;
+}
 static void cc_tex_cache_trim(Machine& base, uint32_t keep) {
   while (g_tex_cache_bytes > cc_tex_cache_limit()) {
-    CcDxtTexture* victim = nullptr;
-    for (auto& t : g_dxt_textures)
-      if (t.cache && t.data != keep && (!victim || t.last_use < victim->last_use)) victim = &t;
+    CcDxtTexture* victim = cc_tex_pick_victim(keep);
     if (!victim) return;
     cc_tex_swap_out(base, *victim);
     const uint32_t cache = victim->cache;
@@ -5356,9 +5374,7 @@ static void cc_tex_cache_trim(Machine& base, uint32_t keep) {
 static uint32_t cc_texzone_alloc(Machine& base, uint32_t bytes, uint32_t keep) {
   for (;;) {
     if (const uint32_t a = cc_texzone_try_alloc(bytes)) return a;
-    CcDxtTexture* victim = nullptr;
-    for (auto& t : g_dxt_textures)
-      if (t.cache && t.data != keep && (!victim || t.last_use < victim->last_use)) victim = &t;
+    CcDxtTexture* victim = cc_tex_pick_victim(keep);
     if (!victim) base.fail(Error::memory, kTexZoneBase);
     cc_tex_swap_out(base, *victim);
     const uint32_t cache = victim->cache;

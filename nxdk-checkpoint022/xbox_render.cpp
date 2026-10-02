@@ -346,6 +346,14 @@ void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t st
   ++g_draws;
 }
 
+// Wait for the GPU to finish everything queued so far (called before a
+// texture still referenced by this frame's draws is evicted and its zone
+// block reused).
+void cc_xr_gpu_idle() {
+  if (!g_in_frame) return;
+  while (pb_busy()) {}
+}
+
 // Frame boundary: wait for the GPU and present.
 // update_us/render_us: time in the game's update and render this frame.
 void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
