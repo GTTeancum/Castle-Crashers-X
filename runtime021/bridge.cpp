@@ -1421,7 +1421,22 @@ static void cc_capture_on_function(const char*, const Context&, cc::xbox::Addres
 static void cc_capture_end_frame(cc::xbox::AddressSpace&, uint32_t) {}
 #endif
 static void dispatch(uint32_t, Context &, Machine &);
+#ifdef CC_FAST
+// Play build: each indirect call site caches its last target (key 0 never
+// matches a guest address). A miss looks the address up in the sorted
+// table of generated functions (runtime021/dispatch_table.inc); anything
+// else goes through the full switch.
+using CcGenFn = void (*)(Context &, Machine &);
+static void cc_dispatch_cached(uint32_t a, Context &ctx, Machine &base, uint32_t &key, CcGenFn &fn);
+#define REX_CALL_INDIRECT_FUNC(a) do { \
+    static uint32_t cc_ic_key = 0; static CcGenFn cc_ic_fn = nullptr; \
+    const uint32_t cc_ic_a = uint32_t(a); \
+    if (cc_ic_a == cc_ic_key) cc_ic_fn(ctx, base); \
+    else cc_dispatch_cached(cc_ic_a, ctx, base, cc_ic_key, cc_ic_fn); \
+  } while (0)
+#else
 #define REX_CALL_INDIRECT_FUNC(a) dispatch(uint32_t(a), ctx, base)
+#endif
 #ifdef CC_FAST
 // Play build: the generated bodies' std:: calls resolve to cheaper exact
 // equivalents (qualified lookup finds these declarations before the
@@ -1462,6 +1477,23 @@ static bool submit(void *ptr, const Draw &d) {
   ++m.result.submits;
   return true;
 }
+#ifdef CC_FAST
+struct CcDispatchEntry { uint32_t address; CcGenFn fn; };
+#include "dispatch_table.inc"
+static void cc_dispatch_cached(uint32_t a, Context &ctx, Machine &base, uint32_t &key, CcGenFn &fn) {
+  size_t lo = 0, hi = sizeof(cc_dispatch_table) / sizeof(cc_dispatch_table[0]);
+  while (lo < hi) {
+    const size_t mid = (lo + hi) / 2;
+    if (cc_dispatch_table[mid].address < a) lo = mid + 1; else hi = mid;
+  }
+  if (lo < sizeof(cc_dispatch_table) / sizeof(cc_dispatch_table[0]) && cc_dispatch_table[lo].address == a) {
+    key = a; fn = cc_dispatch_table[lo].fn;
+    fn(ctx, base);
+    return;
+  }
+  dispatch(a, ctx, base);
+}
+#endif
 static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
 #ifndef CC_FAST
   // Verification only: counted dispatches and the tree/owner walks.
