@@ -21,6 +21,10 @@ CXXFLAGS += -std=c++20 -O2 -march=pentium3 -fno-exceptions -fno-rtti -ffp-contra
 CXXFLAGS += -DCC_XBOX_DRIVER
 # Play build: no verification counters (~16% faster; CHECKs report, not stop)
 CXXFLAGS += -DCC_FAST
+# Input script variant that selects Quit on the main menu: make SCRIPT=quit
+ifeq ($(SCRIPT),quit)
+CXXFLAGS += -DCC_SCRIPT_QUIT
+endif
 # On-screen sampling profiler: make PROFILE=1
 ifneq ($(PROFILE),)
 CXXFLAGS += -DCC_XBOX_PROFILE

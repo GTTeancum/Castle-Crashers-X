@@ -22,6 +22,8 @@ void cc_xr_bind(uint32_t key, const void* data, uint32_t w, uint32_t h, int kind
 void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t stride, uint32_t blend);
 void cc_xr_frame_end(uint32_t update_us, uint32_t render_us);
 void cc_xr_gpu_idle();
+// nxdk-checkpoint022/xbox_shims.cpp: leave the game for the dashboard.
+[[noreturn]] void cc_xbox_return_to_dashboard();
 // nxdk-checkpoint022/xbox_audio.cpp: real clock for the play build.
 uint64_t cc_xbox_clock(uint64_t hz);
 void cc_xbox_sleep_100ns(uint64_t interval);
@@ -544,6 +546,26 @@ struct Machine {
   bool prof_enabled = false;
   void prologue(const char *name, const Context& ctx) {
     last_function = name;
+#ifdef CC_WATCH_ADDR
+    // Probe build: trace text-object creation (sub_82067020: obj r3, x r4,
+    // y r5, string id r6, r7) with the guest return-address chain.
+    if (!std::strcmp(name, "sub_82067020")) {
+      static unsigned n = 0;
+      const uint32_t id = ctx.r6.u32;
+      const bool menu_id = id >= 585u && id <= 620u;
+      if (menu_id && ++n <= 40) {
+        cc_elog("TEXTOBJ #%u obj=%08x x=%d y=%d id=%u r7=%08x chain:", n, ctx.r3.u32,
+                int32_t(ctx.r4.u32), int32_t(ctx.r5.u32), ctx.r6.u32, ctx.r7.u32);
+        uint32_t sp = ctx.r1.u32; uint64_t v = 0, ra = 0;
+        cc_elog(" %08x", uint32_t(ctx.lr));
+        for (unsigned k = 0; k < 10 && memory.load_be(sp, 4, v) == cc::xbox::MemoryError::ok && v > sp; ++k) {
+          if (memory.load_be(uint32_t(v) - 8u, 4, ra) != cc::xbox::MemoryError::ok) break;
+          cc_elog(" %08x", uint32_t(ra)); sp = uint32_t(v);
+        }
+        cc_elog("\n");
+      }
+    }
+#endif
 #ifndef CC_XBOX_DRIVER
     if (name[0] != '_') {  // skip register save/restore helpers
       g_sample_fn.store(name, std::memory_order_relaxed);
@@ -716,6 +738,21 @@ struct Machine {
       }
     }
   }
+#ifdef CC_WATCH_ADDR
+  __attribute__((noinline)) void watch_hit(uint32_t a) {
+    static unsigned hits = 0;
+    if (++hits > 12) return;
+    cc_elog("WATCH %08x hit %u in %s lr=%08x r3=%08x r4=%08x r5=%08x r6=%08x r31=%08x; recent:", a, hits, last_function,
+            last_ctx ? uint32_t(last_ctx->lr) : 0u, last_ctx ? last_ctx->r3.u32 : 0u,
+            last_ctx ? last_ctx->r4.u32 : 0u, last_ctx ? last_ctx->r5.u32 : 0u,
+            last_ctx ? last_ctx->r6.u32 : 0u, last_ctx ? last_ctx->r31.u32 : 0u);
+    for (unsigned k = 0; k < 32; ++k) {
+      const char* n = recent_functions[(recent_pos + k) & 31u];
+      if (n) cc_elog(" %s", n);
+    }
+    cc_elog("\n");
+  }
+#endif
   void tick([[maybe_unused]] uint32_t a) {
 #ifndef CC_FAST
     // Verification builds count every guest memory access; the fast (play)
@@ -863,6 +900,10 @@ struct Machine {
   }
   uint64_t load(uint32_t a, unsigned n) {
     tick(a);
+#ifdef CC_WATCH_ADDR
+    // Host probe build: report the guest functions that read one address.
+    if (a == uint32_t(CC_WATCH_ADDR)) watch_hit(a);
+#endif
     const uint32_t off = a - hot_read.lo;
     if (off < hot_read.limit) return get_be(hot_read.host + off, n);
     return load_slow(a, n);

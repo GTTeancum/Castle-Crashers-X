@@ -1538,6 +1538,20 @@ static uint32_t frame_budget() {
   return k_frame_budget_default;
 #endif
 }
+#ifdef CC_FAST
+// Play build: the main menu's last item reads "Quit" (it leaves for the
+// dashboard; see __imp__XamLoaderLaunchTitle). The English string of
+// localized record 216, "Return to Arcade" (UTF-16 BE in the image at
+// 0x8201545C), is overwritten in place once; the other languages keep
+// their text. Not applied to the verification build.
+static void cc_menu_text_patch(Machine& base) {
+  static bool done = false;
+  if (done) return;
+  done = true;
+  static const uint16_t quit[] = {'Q', 'u', 'i', 't', 0};
+  for (unsigned i = 0; i < 5; ++i) base.memory.store_be(0x8201545Cu + 2u * i, 2, quit[i]);
+}
+#endif
 static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   cc_thread_block_point();  // a started system thread sleeping = blocked
   if (ctx.r3.u32 != 1u || ctx.r4.u32 != 0u || ctx.r5.u32 == 0u ||
@@ -1555,6 +1569,9 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     base.memory.store_be(0x02500110u, 4, uint32_t(t100ns / 10000ull));
   }
   cc_audio_frame();
+#ifdef CC_FAST
+  cc_menu_text_patch(base);
+#endif
 #ifdef CC_XBOX_DRIVER
 #ifdef CC_XBOX_PROFILE
   {
@@ -4523,7 +4540,21 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_82066820.inc"
 #include "generated/sub_82063648.inc"
 #include "generated/sub_820669E8.inc"
+#ifdef CC_FAST
+#define sub_82062990 sub_82062990_exact
+#endif
 #include "generated/sub_82062990.inc"
+#ifdef CC_FAST
+#undef sub_82062990
+// Main menu: refresh the Download Content / Unlock Full Game item, which
+// the exact code addresses as menu slot 6 ([[screen+48]+44]). The play
+// build drops that item (see the trim), so the slot is empty: nothing to do.
+static void sub_82062990(Context& ctx, Machine& base) {
+  const uint32_t menu = uint32_t(base.load(ctx.r3.u32 + 48u, 4));
+  if (!menu || base.load(menu + 44u, 4) == 0u) return;
+  sub_82062990_exact(ctx, base);
+}
+#endif
 #include "generated/sub_82065DF0.inc"
 #include "generated/sub_820657B0.inc"
 #include "generated/sub_820655E0.inc"
@@ -4888,7 +4919,52 @@ static void sub_820A89F8(Context& ctx, Machine& base) {
 #include "generated/sub_821279C0.inc"
 #include "generated/sub_8209BC08.inc"
 #include "generated/sub_820631B0.inc"
+// ---- Main menu trim (play build) -------------------------------------------
+// The user's main menu is Local Game, Player Statistics, Help & Options and
+// Quit. The exact constructor sub_820623C0(screen r3, menu r4) builds eight
+// items: each is created by sub_82067020(obj, parent, handler, string id,
+// 0) and appended by sub_82065F78(menu, item, scale, scale), which also
+// re-lays the list out, vertically centred, 30 px apart. The play build
+// drops the Xbox LIVE Game (387), Leaderboards (597), Achievements (598),
+// Unlock Full Game (601, trial only) and Download Content (600) items at
+// the append, and afterwards moves the remaining four down by the 60 px the
+// centring took away, so the last item stays where Return to Arcade was.
+// The verification build runs the exact code unchanged.
+#ifdef CC_FAST
+static bool g_menu_trim_active = false;
+static struct { uint32_t obj, id; } g_text_ids[64];
+static unsigned g_text_ids_next = 0;
+static uint32_t cc_text_id_of(uint32_t obj) {
+  for (const auto& e : g_text_ids) if (e.obj == obj) return e.id;
+  return 0xFFFFFFFFu;
+}
+static bool cc_menu_item_dropped(uint32_t id) {
+  return id == 387u || id == 597u || id == 598u || id == 600u || id == 601u;
+}
+#define sub_820623C0 sub_820623C0_exact
+#endif
 #include "generated/sub_820623C0.inc"
+#ifdef CC_FAST
+#undef sub_820623C0
+static void sub_820623C0(Context& ctx, Machine& base) {
+  const uint32_t menu = ctx.r4.u32;
+  g_menu_trim_active = true;
+  sub_820623C0_exact(ctx, base);
+  g_menu_trim_active = false;
+  // Items: count u16 at +4, pointers from +20 (slot i at (i+5)*4); each
+  // item's y is the float at +8. Shift by the four removed slots' centring.
+  const uint32_t count = uint32_t(base.load(menu + 4u, 2));
+  for (uint32_t i = 0; i < count && i < 16u; ++i) {
+    const uint32_t item = uint32_t(base.load(menu + (i + 5u) * 4u, 4));
+    if (!item) continue;
+    uint32_t bits = uint32_t(base.load(item + 8u, 4));
+    float y; std::memcpy(&y, &bits, 4);
+    y += 60.0f;
+    std::memcpy(&bits, &y, 4);
+    base.store(item + 8u, 4, bits);
+  }
+}
+#endif
 #include "generated/sub_8206D728.inc"
 #include "generated/sub_82057398.inc"
 #include "generated/sub_82056718.inc"
@@ -6053,7 +6129,12 @@ static void __imp__XamInputGetState(Context& ctx, Machine& base) {
   // walk up-right, three light attacks, walk right to the next room.
   struct InputRow { uint32_t first, last, buttons; int16_t lx, ly; };
   static constexpr InputRow k_script[] = {
-    {300,311,0x0010,0,0},{1200,1211,0x0010,0,0},{3000,3011,0x1000,0,0},
+    {300,311,0x0010,0,0},{1200,1211,0x0010,0,0},
+#ifdef CC_SCRIPT_QUIT
+    // Xbox check of the trimmed menu's Quit: DOWN three times, then A.
+    {2800,2805,0x0002,0,0},{2850,2855,0x0002,0,0},{2900,2905,0x0002,0,0},
+#endif
+    {3000,3011,0x1000,0,0},
     {4000,4011,0x1000,0,0},{4500,4511,0x0002,0,0},{5000,5011,0x1000,0,0},
     {6000,6011,0x0010,0,0},{7000,7011,0x1000,0,0},{7600,7899,0,30000,0},
     {8000,8011,0x1000,0,0},{8100,8104,0x4000,0,0},{8130,8134,0x4000,0,0},
@@ -6179,7 +6260,16 @@ static void __imp__XamAlloc([[maybe_unused]] Context& ctx, Machine& base) { base
 static void __imp__XamContentClose([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A324u); }
 static void __imp__XamContentCreateEx([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A314u); }
 static void __imp__XamFree([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AA94u); }
-static void __imp__XamLoaderLaunchTitle([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A354u); }
+// XamLoaderLaunchTitle(path r3, flags r4): every caller is the game's
+// XLaunchNewImage with the XLNI_DASH_ARCADE path, which sub_820B6908 maps to
+// a null title + flag 0x100 ("back to the dashboard"). The main menu's Quit
+// ends here: the Xbox returns to the dashboard; the host stays fail-closed.
+static void __imp__XamLoaderLaunchTitle([[maybe_unused]] Context& ctx, Machine& base) {
+#ifdef CC_XBOX_DRIVER
+  if (ctx.r3.u32 == 0u) ::cc_xbox_return_to_dashboard();
+#endif
+  base.fail(Error::unsupported, 0x8214A354u);
+}
 static void __imp__XamUserCreateStatsEnumerator([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A284u); }
 static void __imp__NetDll_WSACleanup(Context& ctx, [[maybe_unused]] Machine& base) {
   // Teardown mirror of the accepted title-caller WSAStartup.
@@ -6451,7 +6541,21 @@ static void sub_820D8370(Context& ctx, Machine& base) {
 #include "generated/sub_82050900.inc"
 #include "generated/sub_820A0F88.inc"
 #include "generated/sub_82068470.inc"
+#ifdef CC_FAST
+#define sub_82067230 sub_82067230_exact
+#endif
 #include "generated/sub_82067230.inc"
+#ifdef CC_FAST
+#undef sub_82067230
+// Set a text object's string by id. With main-menu items dropped (see the
+// trim above), later code that addresses menu slots by index can hand this
+// a null object (the Download Content slot); setting text on a missing
+// item is a no-op in the play build.
+static void sub_82067230(Context& ctx, Machine& base) {
+  if (ctx.r3.u32 == 0u) return;
+  sub_82067230_exact(ctx, base);
+}
+#endif
 #include "generated/sub_82066610.inc"
 // PORT POLICY (user directive 2026-09-27): the original Xbox has no
 // profiles, so nobody is ever signed in. Exact sub_82053C70 is the menu
@@ -6956,8 +7060,29 @@ static void sub_820759A8(Context& ctx, Machine& base) {
 #include "generated/sub_820735B0.inc"
 #include "generated/sub_82066F80.inc"
 #include "generated/sub_82067778.inc"
+#ifdef CC_FAST
+#define sub_82067020 sub_82067020_exact
+#define sub_82065F78 sub_82065F78_exact
+#endif
 #include "generated/sub_82067020.inc"
 #include "generated/sub_82065F78.inc"
+#ifdef CC_FAST
+#undef sub_82067020
+#undef sub_82065F78
+// Text object constructor: remember each object's string id (see the main
+// menu trim above).
+static void sub_82067020(Context& ctx, Machine& base) {
+  g_text_ids[g_text_ids_next % 64u] = {ctx.r3.u32, ctx.r6.u32};
+  ++g_text_ids_next;
+  sub_82067020_exact(ctx, base);
+}
+// Menu append: while the main menu is being built, dropped items are not
+// appended (the exact code's later stores do not depend on the result).
+static void sub_82065F78(Context& ctx, Machine& base) {
+  if (g_menu_trim_active && cc_menu_item_dropped(cc_text_id_of(ctx.r4.u32))) return;
+  sub_82065F78_exact(ctx, base);
+}
+#endif
 #include "generated/sub_82067E00.inc"
 #include "generated/sub_8205F6E0.inc"
 #include "generated/sub_8205D8E0.inc"
