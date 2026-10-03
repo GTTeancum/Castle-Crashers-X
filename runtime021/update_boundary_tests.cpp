@@ -594,6 +594,14 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // platform-globals page and is advanced every frame from the virtual
   // timebase by the KeDelayExecutionThread frame contract.
   store(m,0x82000704,4,0x02500100u);
+  // Xbox kernel ordinal 344 is XboxKrnlVersion (Major, Minor, Build, Qfe as
+  // u16). The pad-vibration wrapper sub_820B6B90 checks it before rumbling;
+  // the fixture reports a late retail kernel (2.0.17559.0).
+  store(m,0x82000650,4,0x02500300u);
+  store(m,0x02500300u,2,2u);
+  store(m,0x02500302u,2,0u);
+  store(m,0x02500304u,2,17559u);
+  store(m,0x02500306u,2,0u);
   for (uint32_t i=0;i<24u;i+=4u) store(m,0x02500100u+i,4,0u);
   // Guest arena backing the bounded NtAllocateVirtualMemory contract used by
   // the exact CRT heap (reservations start at 0x04000000).

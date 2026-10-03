@@ -1215,7 +1215,44 @@ static void __imp__RtlLeaveCriticalSection(Context& ctx, Machine& base) {
 #include "generated/sub_820B6498.inc"
 #undef HARD_BOUNDARY_017
 
+#if defined(CC_FAST)
+#define sub_8209A728 sub_8209A728_exact
+#endif
 #include "generated/sub_8209A728.inc"
+#if defined(CC_FAST)
+#undef sub_8209A728
+// Direct level load (diagnostic; Xbox: make LEVEL=<n>, host: CC_LEVEL=<n>):
+// see the sub_82076758 wrapper.
+static uint32_t cc_direct_level() {
+#if defined(CC_DIRECT_LEVEL)
+  return uint32_t(CC_DIRECT_LEVEL);
+#elif !defined(CC_XBOX_DRIVER)
+  static const uint32_t n = [] { const char* e = std::getenv("CC_LEVEL"); return e ? uint32_t(std::strtoul(e, nullptr, 10)) : 0u; }();
+  return n;
+#else
+  return 0u;
+#endif
+}
+static void sub_8209A728(Context& ctx, Machine& base) {
+  // Direct level load: the BSP of the first level ("bsp2") is requested by
+  // name like the level itself; it becomes "bsp<n>" (scratch copy).
+  if (const uint32_t lvl = cc_direct_level(); lvl && ctx.r3.u32) {
+    char name[16] = {};
+    for (uint32_t k = 0; k < 15u; ++k) { name[k] = char(base.load(ctx.r3.u32 + k, 1)); if (!name[k]) break; }
+    if (std::strcmp(name, "bsp2") == 0) {
+      char repl[16] = {};
+      std::snprintf(repl, sizeof(repl), "bsp%u", lvl);
+      constexpr uint32_t scratch = 0x02500440u;
+      for (uint32_t k = 0; k < 16u; ++k) base.store(scratch + k, 1, uint8_t(repl[k]));
+      cc_log("direct_level %s -> %s\n", name, repl);
+      ctx.r3.u64 = scratch;
+    }
+  }
+  sub_8209A728_exact(ctx, base);
+}
+#else
+static uint32_t cc_direct_level() { return 0u; }
+#endif
 #include "generated/sub_8209B458.inc"
 #include "generated/sub_820A7668.inc"
 
@@ -5309,7 +5346,59 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_8207D0C8.inc"
 #include "generated/sub_8207B598.inc"
 #include "generated/sub_8207D2A0.inc"
+#ifdef CC_FAST
+#define sub_82077BC0 sub_82077BC0_exact
+#endif
 #include "generated/sub_82077BC0.inc"
+#ifdef CC_FAST
+#undef sub_82077BC0
+// GameManager::QueueMovie (exact sub_82077BC0: manager r3, name r4 =
+// {u32 length, chars}, r5). Host CC_MOVIE_LOG=1 logs each request.
+static void sub_82077BC0(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  if (std::getenv("CC_MOVIE_LOG") && ctx.r4.u32) {
+    const uint32_t len = uint32_t(base.load(ctx.r4.u32, 4));
+    char nm[24] = {};
+    for (uint32_t k = 0; k < len && k < 23u; ++k) nm[k] = char(base.load(ctx.r4.u32 + 4u + k, 1));
+    cc_log("queue '%s' r3=%08x r5=%08x lr=%08x\n", nm, ctx.r3.u32, ctx.r5.u32, uint32_t(ctx.lr));
+  }
+#endif
+  // Direct level load (make LEVEL=<n> / CC_LEVEL=<n>): a request for the
+  // first level, "level2" (the castle interior), queues "level<n>" instead,
+  // from a copy in the platform-globals page.
+  if (const uint32_t lvl = cc_direct_level(); lvl && ctx.r4.u32) {
+    const uint32_t len = uint32_t(base.load(ctx.r4.u32, 4));
+    char name[16] = {};
+    for (uint32_t k = 0; k < len && k < 15u; ++k) name[k] = char(base.load(ctx.r4.u32 + 4u + k, 1));
+    if (len == 6u && std::strcmp(name, "level2") == 0) {
+      char repl[16] = {};
+      const int n = std::snprintf(repl, sizeof(repl), "level%u", lvl);
+      constexpr uint32_t obj = 0x02500400u;
+      base.store(obj, 4, uint32_t(n));
+      for (int k = 0; k <= n; ++k) base.store(obj + 4u + uint32_t(k), 1, uint8_t(repl[k]));
+      cc_log("direct_level %s -> %s\n", name, repl);
+      ctx.r4.u64 = obj;
+      // The level that normally leads into level 13 also queues the movies
+      // level 13 uses (its horses, chickens and sky); queue them here too.
+      const uint32_t r3 = ctx.r3.u32, r5 = ctx.r5.u32;
+      sub_82077BC0_exact(ctx, base);
+      const uint32_t ret = ctx.r3.u32;
+      static const char* const extra[] = {"horse", "chicken", "sky1"};
+      for (const char* e : extra) {
+        const uint32_t eo = 0x02500480u;
+        const uint32_t el = uint32_t(std::strlen(e));
+        base.store(eo, 4, el);
+        for (uint32_t k = 0; k <= el; ++k) base.store(eo + 4u + k, 1, uint8_t(e[k]));
+        ctx.r3.u64 = r3; ctx.r4.u64 = eo; ctx.r5.u64 = r5;
+        sub_82077BC0_exact(ctx, base);
+      }
+      ctx.r3.u64 = ret;
+      return;
+    }
+  }
+  sub_82077BC0_exact(ctx, base);
+}
+#endif
 #include "generated/sub_82087CF8.inc"
 #include "generated/sub_820815C0.inc"
 #include "generated/sub_820822D8.inc"
@@ -7436,15 +7525,20 @@ static bool cc_four_players() {
 // attacks, walk back, heavy and light attacks; offsets keep the players apart.
 static void cc_combat_loop(uint32_t user, uint32_t frame, uint32_t start, uint32_t& buttons, uint32_t& thumbs) {
   if (frame < start) return;
-  const uint32_t t = (frame - start + user * 47u) % 360u;
+  // Net movement is to the right (the camera only scrolls when the whole
+  // party moves on, and the enemies are ahead), attacking all the way.
+  const uint32_t t = (frame - start + user * 23u) % 400u;
+  const uint32_t cycle = (frame - start + user * 23u) / 400u;
   int16_t lx = 0, ly = 0;
-  if (t < 70u) { lx = 26000; ly = int16_t(user & 1u ? 9000 : -9000); }
-  else if (t < 150u) { if ((t % 16u) < 4u) buttons |= 0x4000u; }              // X: light attack
-  else if (t < 200u) { lx = -22000; ly = int16_t(user & 2u ? 12000 : -12000); }
-  else if (t < 260u) { if ((t % 30u) < 5u) buttons |= 0x8000u;               // Y: heavy attack
-                       else if ((t % 30u) >= 15u && (t % 30u) < 19u) buttons |= 0x4000u; }
-  else if (t < 300u) { lx = 20000; }
-  else { if ((t % 12u) < 3u) buttons |= 0x4000u; if (t == 330u + user) buttons |= 0x1000u; }  // A: jump
+  // Zigzag up and down while walking so nobody stays stuck behind a table.
+  const int16_t lane = int16_t(((cycle + user) & 1u) ? 17000 : -17000);
+  if (t < 150u) { lx = 26000; ly = t < 60u ? lane : int16_t(0); }                     // walk right (zigzag, then level)
+  else if (t < 210u) { if ((t % 14u) < 4u) buttons |= 0x4000u; }                     // X combo
+  else if (t < 230u) { lx = -14000; ly = int16_t(-lane); }                           // step back
+  else if (t < 290u) { if ((t % 28u) < 5u) buttons |= 0x8000u;                       // Y heavy
+                       else if ((t % 28u) >= 14u && (t % 28u) < 18u) buttons |= 0x4000u; }
+  else if (t < 380u) { lx = 26000; if (t >= 320u + user * 2u && t < 324u + user * 2u) buttons |= 0x1000u; }  // walk right, jump
+  else { if ((t % 8u) < 3u) buttons |= 0x4000u; }
   if (lx || ly) thumbs = (uint32_t(uint16_t(lx)) << 16) | uint16_t(ly);
 }
 // Scripted pads 1-3: A to join at character select (on screen from about
@@ -7457,7 +7551,7 @@ static void cc_extra_pad(uint32_t user, uint32_t frame, uint32_t& buttons, uint3
 #endif
   if (frame >= join && frame < join + hold) buttons |= 0x1000u;
   if (frame >= pick && frame < pick + hold) buttons |= 0x1000u;
-  cc_combat_loop(user, frame, 9400u, buttons, thumbs);
+  cc_combat_loop(user, frame, cc_direct_level() ? 6500u : 9400u, buttons, thumbs);
 }
 static void __imp__XamInputGetCapabilities(Context& ctx, Machine& base) {
   const uint32_t user = ctx.r3.u32, caps = ctx.r5.u32;
@@ -7523,11 +7617,13 @@ static void __imp__XamInputGetState(Context& ctx, Machine& base) {
   uint32_t thumbs = 0u;
   for (const InputRow &row : k_script) {
     if (g_frame_delay_calls < row.first || g_frame_delay_calls > row.last) continue;
+    if (cc_direct_level() && row.first >= 6500u) continue;  // level-1 walk-through rows
     buttons |= row.buttons;
     if (row.lx || row.ly)
       thumbs = (uint32_t(uint16_t(row.lx)) << 16) | uint16_t(row.ly);
   }
-  if (cc_four_players()) cc_combat_loop(0u, g_frame_delay_calls, 9900u, buttons, thumbs);
+  if (cc_four_players() || cc_direct_level())
+    cc_combat_loop(0u, g_frame_delay_calls, cc_direct_level() ? 6500u : 9900u, buttons, thumbs);
 #ifndef CC_XBOX_DRIVER
   // Host diagnostic override: CC_INPUT_SCRIPT="first-last:buttons[:lx,ly];..."
   // (hex buttons, signed decimal stick) replaces the built-in script above.
@@ -7867,7 +7963,19 @@ static void __imp__XamUserReadProfileSettings(Context& ctx, Machine& base) {
   base.store(pcb, 4, need);
   ctx.r3.u64 = 0u;
 }
-static void __imp__XamUserWriteProfileSettings([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AAC4u); }
+static void __imp__XamUserWriteProfileSettings(Context& ctx, Machine& base) {
+  // Four-player diagnostic: settings written for the local profiles of pads
+  // 1-3 are accepted and dropped (completed at once when overlapped).
+  if (!cc_four_players() || ctx.r4.u32 < 1u || ctx.r4.u32 > 3u) base.fail(Error::unsupported, 0x8214AAC4u);
+  if (const uint32_t ov = ctx.r7.u32) {
+    base.store(ov + 0, 4, 0u);   // InternalLow = ERROR_SUCCESS
+    base.store(ov + 4, 4, 0u);
+    base.store(ov + 24, 4, 0u);
+    ctx.r3.u64 = 997u;           // ERROR_IO_PENDING (already complete)
+    return;
+  }
+  ctx.r3.u64 = 0u;
+}
 static void __imp__XamVoiceClose([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214ADA4u); }
 static void __imp__XamWriteGamerTile(Context& ctx, Machine& base) {
   // Four-player diagnostic: gamer-picture awards for the local profiles are
@@ -8445,7 +8553,45 @@ static void sub_820759A8(Context& ctx, Machine& base) {
 #include "generated/sub_82078E38.inc"
 #include "generated/sub_8209C718.inc"
 #include "generated/sub_820780D8.inc"
+#ifdef CC_FAST
+#define sub_82077CE0 sub_82077CE0_exact
+#endif
 #include "generated/sub_82077CE0.inc"
+#ifdef CC_FAST
+#undef sub_82077CE0
+// Movie change (exact sub_82077CE0: manager r3, name r4 = {u32 length,
+// chars}, r5). Levels arrive here by name; the first one after character
+// select is "level2" (the castle interior). With a direct level set
+// (make LEVEL=<n> / CC_LEVEL=<n>), that request names "level<n>" instead,
+// from a copy in the platform-globals page, so the game loads and starts
+// that level itself: pak, movie, BSP, music and scripts.
+static void sub_82077CE0(Context& ctx, Machine& base) {
+  const uint32_t lvl = cc_direct_level();
+#ifndef CC_XBOX_DRIVER
+  if (std::getenv("CC_MOVIE_LOG") && ctx.r4.u32) {
+    const uint32_t len = uint32_t(base.load(ctx.r4.u32, 4));
+    char nm[24] = {};
+    for (uint32_t k = 0; k < len && k < 23u; ++k) nm[k] = char(base.load(ctx.r4.u32 + 4u + k, 1));
+    cc_log("movie '%s' r3=%08x r5=%08x lr=%08x phase640=%08x\n", nm, ctx.r3.u32, ctx.r5.u32, uint32_t(ctx.lr), uint32_t(base.load(0x82290280u, 4)));
+  }
+#endif
+  if (false && lvl && ctx.r4.u32) {  // superseded by the queue-time rename (sub_82077BC0)
+    const uint32_t len = uint32_t(base.load(ctx.r4.u32, 4));
+    char name[16] = {};
+    for (uint32_t k = 0; k < len && k < 15u; ++k) name[k] = char(base.load(ctx.r4.u32 + 4u + k, 1));
+    if (len == 6u && std::strcmp(name, "level2") == 0) {  // every request for it
+      // r4 is the manager's own movie slot name (76-byte slots), so the
+      // rename is made in place and every later step sees the new level.
+      char repl[16] = {};
+      const int n = std::snprintf(repl, sizeof(repl), "level%u", lvl);
+      base.store(ctx.r4.u32, 4, uint32_t(n));
+      for (int k = 0; k <= n; ++k) base.store(ctx.r4.u32 + 4u + uint32_t(k), 1, uint8_t(repl[k]));
+      cc_log("direct_level %s -> %s\n", name, repl);
+    }
+  }
+  sub_82077CE0_exact(ctx, base);
+}
+#endif
 #include "generated/sub_8206BE30.inc"
 #include "generated/sub_820B5FE8.inc"
 #include "generated/sub_820788B8.inc"
@@ -8497,7 +8643,32 @@ static void sub_820759A8(Context& ctx, Machine& base) {
 #include "generated/sub_82072D00.inc"
 #include "generated/sub_82078810.inc"
 #include "generated/sub_82078778.inc"
+#ifdef CC_FAST
+#define sub_82077FD8 sub_82077FD8_exact
+#endif
 #include "generated/sub_82077FD8.inc"
+#ifdef CC_FAST
+#undef sub_82077FD8
+// GameManager movie lookup by name (exact sub_82077FD8: manager r3, name r4
+// = {u32 length, chars}; returns the slot index or -1). With a direct level
+// set, lookups of "level2" find the replacement level, so the scripts that
+// wait for the first level see it load.
+static void sub_82077FD8(Context& ctx, Machine& base) {
+  if (const uint32_t lvl = cc_direct_level(); lvl && ctx.r4.u32 && base.load(ctx.r4.u32, 4) == 6u) {
+    char name[8] = {};
+    for (uint32_t k = 0; k < 6u; ++k) name[k] = char(base.load(ctx.r4.u32 + 4u + k, 1));
+    if (std::strcmp(name, "level2") == 0) {
+      char repl[16] = {};
+      const int n = std::snprintf(repl, sizeof(repl), "level%u", lvl);
+      constexpr uint32_t obj = 0x025004C0u;
+      base.store(obj, 4, uint32_t(n));
+      for (int k = 0; k <= n; ++k) base.store(obj + 4u + uint32_t(k), 1, uint8_t(repl[k]));
+      ctx.r4.u64 = obj;
+    }
+  }
+  sub_82077FD8_exact(ctx, base);
+}
+#endif
 #include "generated/sub_82075210.inc"
 #include "generated/sub_82096530.inc"
 #include "generated/sub_820967B0.inc"

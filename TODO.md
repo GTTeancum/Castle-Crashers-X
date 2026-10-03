@@ -287,6 +287,17 @@ sound effects where possible; stream art wherever it can be streamed.
       pixel-identical; XEMU 57-61 FPS everywhere in the run, the same as H13
       under the 60 Hz cap (update ~3 ms, render ~6 ms); menus slightly
       higher. A BENCH=1 build is the way to see the remaining headroom.
+      2026-10-03 four-player combat (disc CC-H16-4p-level13.iso, make
+      FOURP=1 LEVEL=13: scripted pads 1-3 join, the run goes from character
+      select straight into level 13, the castle keep battle, and all four
+      knights fight in a loop): burning-village fight 26-42 FPS (update
+      9-23 ms, render 12-14 ms), wall fight 24-39 FPS (update 10-26 ms),
+      barracks 37-41 FPS. Four-player combat is the stress case: at the peaks
+      the game update (scripts for four players and many enemies) is ~20-26
+      ms, so the native script interpreter core is the next lever. The run
+      then continues through level 19 and the map into level 11, whose load
+      stops at 3 @ 0x10529000: the main pool backs only 4.5 MiB (the next
+      level needs more; see "later levels' memory").
       The host capture now records the
       texture from the bind wrapper itself, since it used to read it in the
       exact bind's prologue hook; written from the exact
