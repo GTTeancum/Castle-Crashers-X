@@ -1388,7 +1388,7 @@ static simde__m128i simde_mm_setzero_si128() { return simde__m128i{}; }
 static uint8_t* raw_addr021(Machine& base,uint32_t a) { auto* p=base.fast_host(a,16,3); if(!p) p=base.memory.contiguous(a,16,3); if(!p) base.fail(Error::memory,a); return p; }
 #define REX_RAW_ADDR(a) raw_addr021(base,uint32_t(a))
 using PPCRegister = Register;
-#if defined(CC_FAST) && defined(CC_VIEW)  // opt-in: breaks the run at startup (under investigation)
+#if defined(CC_FAST) && !defined(CC_NO_VIEW)
 // Play build register view. Each generated function runs on a view of the
 // guest registers in which the stack pointer r1, the callee-saved r14-r31
 // and f14-f31 and the condition-register fields are C++ locals (kept in
@@ -1683,10 +1683,30 @@ struct CcView {
 [[maybe_unused]] static inline void __restfpr_29(CcView&, Machine&) {}
 [[maybe_unused]] static inline void __restfpr_30(CcView&, Machine&) {}
 [[maybe_unused]] static inline void __restfpr_31(CcView&, Machine&) {}
-#define DEFINE_REX_FUNC(name) \
+#define DEFINE_REX_FUNC_VIEW(name) \
   static inline __attribute__((always_inline)) void name##_v(CcView& ctx, Machine& base); \
   static void name(Context& cc_c, Machine& base) { CcView cc_v(cc_c); name##_v(cc_v, base); cc_c.r1 = cc_v.r1; } \
   static inline __attribute__((always_inline)) void name##_v([[maybe_unused]] CcView& ctx, [[maybe_unused]] Machine& base)
+// Split functions (prefix/suffix slices that the harness resumes with the
+// previous slice's registers) keep every register in the Context: their
+// includes in runtime021/bodies.inc switch to DEFINE_REX_FUNC_PLAIN.
+#define DEFINE_REX_FUNC_PLAIN(name) \
+  static void name([[maybe_unused]] Context &ctx, [[maybe_unused]] Machine &base)
+// Per-name choice: names listed in view_plain.inc (CC_PLAIN_<name>) take
+// the plain form, everything else the view.
+#define CC_PROBE() ~, 1
+#define CC_SECOND(a, b, ...) b
+#define CC_IS_PROBE(...) CC_SECOND(__VA_ARGS__, 0, 0)
+#define CC_IS_PLAIN_I(name) CC_IS_PROBE(CC_PLAIN_##name)
+#define CC_IS_PLAIN(name) CC_IS_PLAIN_I(name)
+#define CC_CAT_I(a, b) a##b
+#define CC_CAT(a, b) CC_CAT_I(a, b)
+#define CC_SEL_0 DEFINE_REX_FUNC_VIEW
+#define CC_SEL_1 DEFINE_REX_FUNC_PLAIN
+#define DEFINE_REX_FUNC_SELECT(name) CC_CAT(CC_SEL_, CC_IS_PLAIN(name))(name)
+#include "view_plain.inc"
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#define CC_VIEW_ACTIVE 1
 #else
 #define DEFINE_REX_FUNC(name)                                                  \
   static void name([[maybe_unused]] Context &ctx,                              \

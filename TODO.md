@@ -276,9 +276,17 @@ sound effects where possible; stream art wherever it can be streamed.
       table load, an add and the byte swap): castle hall 58-60 FPS (update
       4 ms, render 6 ms; capped by the game's 60 Hz pacing), tavern and
       fights 48-58 FPS, menus 43-59. Host oracle and pixel checks
-      identical; release verification unchanged. A register view (r1,
-      r14-r31, f14-f31 and CR fields as C++ locals, CC_VIEW, opt-in)
-      fails at startup on the host and is under investigation.
+      identical; release verification unchanged. Disc H14 adds the
+      register view (r1, r14-r31, f14-f31 and the CR fields as C++ locals
+      in every generated function; save/restore helpers become no-ops;
+      runtime021/view_plain.inc lists the functions that keep the plain
+      Context: continuation chunks that read a callee-saved register first,
+      their direct callers, the harness's split prefix/suffix functions and
+      the graphics device layer, whose resume shims inspect callee-saved
+      registers; CC_NO_VIEW turns it off): host oracle clean, 7500/9362
+      pixel-identical; XEMU 57-61 FPS everywhere in the run, the same as H13
+      under the 60 Hz cap (update ~3 ms, render ~6 ms); menus slightly
+      higher. A BENCH=1 build is the way to see the remaining headroom.
       The host capture now records the
       texture from the bind wrapper itself, since it used to read it in the
       exact bind's prologue hook; written from the exact

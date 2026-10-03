@@ -1,5 +1,21 @@
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savegprlr_29.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restgprlr_29.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #include "generated/sub_8208C5D8.inc"
 #include "generated/sub_8209CC98.inc"
 
@@ -26,8 +42,24 @@ static void ppc_trap([[maybe_unused]] Context& ctx, Machine& base, uint32_t code
 }
 
 #include "generated/sub_82097720.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savegprlr_22.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restgprlr_22.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 
 #define HARD_BOUNDARY(sym, addr) \
   static void sym([[maybe_unused]] Context& ctx, Machine& base) { \
@@ -68,8 +100,24 @@ static void sub_8209BF18(Context& ctx, Machine& base) {
   sub_8209BF18_exact(ctx, base);
 }
 #endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savegprlr_26.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restgprlr_26.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #include "generated/sub_82099A80.inc"
 #include "generated/sub_82099968.inc"
 #include "generated/sub_820986F0.inc"
@@ -78,7 +126,15 @@ static void sub_8209BF18(Context& ctx, Machine& base) {
 #include "generated/sub_820744C8.inc"
 #include "generated/sub_82099680.inc"
 #include "generated/sub_82097650.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/sub_820701D0_manager_slice.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 
 // Xbox 360's performance/timebase frequency is 49.875 MHz. Keep the platform
 // shim paired with a scaled monotonic timebase so generated mftb code observes
@@ -441,8 +497,24 @@ static void sub_8208AE78(Context& ctx, Machine& base) {
 // Checkpoint 016 startup-prefix closure. Exact bodies are copied byte-for-byte
 // from the sealed ReXGlue translation units; the two host shims below are
 // intentionally narrow platform/CRT boundaries and are not counted as exact bodies.
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savegprlr_23.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restgprlr_23.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #include "generated/sub_82053A00.inc"
 
 static void sub_82127778(Context& ctx, Machine& base) {
@@ -1056,13 +1128,37 @@ static void __imp__RtlNtStatusToDosError(Context& ctx, Machine& base) {
 #include "generated/sub_820B5E08.inc"
 #include "generated/sub_820B6028.inc"
 #include "generated/sub_8209D688.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/sub_820701D0_startup_full.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 
 // Checkpoint 017 caller-prefix closure. The original caller reaches this code
 // only after the complete sub_820701D0 startup initializer. Unused branches in
 // sub_8209A728 remain hard boundaries; the observed r3=0 path does not enter them.
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savegprlr_18.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restgprlr_18.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 
 #define HARD_BOUNDARY_017(sym, addr) \
   static void sym([[maybe_unused]] Context& ctx, Machine& base) { \
@@ -1128,7 +1224,15 @@ static void __imp__RtlLeaveCriticalSection(Context& ctx, Machine& base) {
 static void sub_820701D0(Context& ctx, Machine& base) {
   sub_820701D0_startup_full(ctx, base);
 }
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/sub_82070AC8_renderer_prefix.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 
 // PlatformRenderer::Init entry. The shim returns one deterministic standard
 // 640x480/60-Hz mode descriptor; the exact original code consumes it and builds
@@ -1144,8 +1248,24 @@ static void __imp__XGetVideoMode(Context& ctx, Machine& base) {
   base.store(p+24,4,1u);          // deterministic non-PAL standard token
   ctx.r3.u64=0;
 }
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/sub_820A7990_platform_prefix.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/sub_820A7990_platform_post_graphics.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #include "generated/sub_820A85E8.inc"
 
 
@@ -1553,20 +1673,76 @@ static void sub_820C5EE8(Context& ctx, Machine& base) { base.hooked_fast(4, ctx)
 #endif
 #include "generated/sub_820C5F98.inc"
 #include "generated/sub_820C73F0.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/sub_820C7548.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #include "generated/sub_820BEAC8.inc"
 #include "generated/sub_820D7708.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savegprlr_17.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restgprlr_17.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #include "generated/sub_820BF5E0.inc"
 #include "generated/sub_820BF8D0.inc"
 #include "generated/sub_820BF930.inc"
 #include "generated/sub_820D7920.inc"
 
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savegprlr_14.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restgprlr_14.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savegprlr_16.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restgprlr_16.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #include "generated/sub_820C2EF8.inc"
 #include "generated/sub_820C2F80.inc"
 #include "generated/sub_820C2E60.inc"
@@ -1576,8 +1752,24 @@ static void sub_820C5EE8(Context& ctx, Machine& base) { base.hooked_fast(4, ctx)
 #include "generated/sub_820C4210.inc"
 #include "generated/sub_820C44A0.inc"
 #include "generated/sub_820C45C0.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savefpr_26.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restfpr_26.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #include "generated/sub_820BB3B8.inc"
 #include "generated/sub_820BD978.inc"
 #include "generated/sub_820BDF40.inc"
@@ -1590,8 +1782,24 @@ static void sub_820C5EE8(Context& ctx, Machine& base) { base.hooked_fast(4, ctx)
 #include "generated/sub_820CFE10.inc"
 #include "generated/sub_820D1938.inc"
 #include "generated/sub_820D19B8.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savefpr_28.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restfpr_28.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #include "generated/sub_8212AA90.inc"
 #include "generated/sub_82130550.inc"
 #include "generated/sub_8212DEE8.inc"
@@ -2039,8 +2247,24 @@ static void checkpoint020_mm_store_u32(Machine& base, uint32_t a, uint32_t v) {
 #define REX_MM_STORE_U32(a,v) checkpoint020_mm_store_u32(base,uint32_t(a),uint32_t(v))
 #define REX_QUERY_TIMEBASE() base.query_timebase()
 // Checkpoint 020 exact command-buffer / flush family from sub_820C7228.
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restgprlr_19.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savegprlr_19.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #include "generated/sub_820B6068.inc"
 #include "generated/sub_820B74B0.inc"
 #include "generated/sub_820BE8F8.inc"
@@ -2170,8 +2394,24 @@ static void sub_820D0720([[maybe_unused]] Context& ctx, Machine& base) { base.fa
 static void sub_820D0898([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported,0x820D0898u); }
 static void sub_820D08F0([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported,0x820D08F0u); }
 #include "generated/sub_820D09F8.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savefpr_22.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restfpr_22.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #include "generated/sub_820D0B00.inc"
 #include "generated/sub_82129EF8.inc"
 #include "generated/sub_820D02C0.inc"
@@ -2764,8 +3004,24 @@ static void __imp__MmAllocatePhysicalMemoryEx(Context& ctx, Machine& base) {
 }
 #include "generated/sub_820B6108.inc"
 #include "generated/sub_8209BC98.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savegprlr_15.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restgprlr_15.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #include "generated/sub_820C2D58.inc"
 #include "generated/sub_820C3568.inc"
 #include "generated/sub_820C7D48.inc"
@@ -2999,28 +3255,204 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_82074A58.inc"
 #include "generated/sub_82074B00.inc"
 #include "generated/xstart.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savegprlr_30.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savegprlr_31.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restgprlr_30.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restgprlr_31.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savefpr_15.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savefpr_16.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savefpr_17.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savefpr_18.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savefpr_21.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savefpr_23.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savefpr_29.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savefpr_30.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savefpr_31.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restfpr_15.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restfpr_16.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restfpr_17.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restfpr_18.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restfpr_21.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restfpr_23.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restfpr_29.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restfpr_30.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restfpr_31.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #include "generated/sub_82051758.inc"
 #include "generated/sub_82051848.inc"
 #include "generated/sub_82051960.inc"
@@ -3133,7 +3565,15 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_8206EDA0.inc"
 #include "generated/sub_8206EDC0.inc"
 #include "generated/sub_82070828.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/sub_82070AC8.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #include "generated/sub_82072678.inc"
 #include "generated/sub_82072680.inc"
 #include "generated/sub_82072B68.inc"
@@ -3247,7 +3687,15 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_820A69F0.inc"
 #include "generated/sub_820A6A18.inc"
 #include "generated/sub_820A6B60.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/sub_820A7990.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #include "generated/sub_820A86A8.inc"
 #include "generated/sub_820A8960.inc"
 #include "generated/sub_820A8CE0.inc"
@@ -5140,7 +5588,15 @@ static void sub_82062990(Context& ctx, Machine& base) {
 #include "generated/sub_820D57F0.inc"
 #include "generated/sub_820D46F0.inc"
 #include "generated/sub_820C14E8.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savefpr_20.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #define sub_820C1980 sub_820C1980_exact
 #include "generated/sub_820C1980.inc"
 #undef sub_820C1980
@@ -5202,7 +5658,15 @@ static void sub_820C1980(Context& ctx, Machine& base) {
   sub_820C1980_exact(ctx, base);
 #endif
 }
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restfpr_20.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #if !defined(CC_XBOX_DRIVER) || defined(CC_FAST)
 #define sub_820A9308 sub_820A9308_exact
 #endif
@@ -7857,8 +8321,24 @@ static void sub_820759A8(Context& ctx, Machine& base) {
 #include "generated/sub_8209BB30.inc"
 #include "generated/sub_820A5478.inc"
 #include "generated/sub_8209DFE8.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restfpr_27.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savefpr_27.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #include "generated/sub_820A1DD8.inc"
 #include "generated/sub_82078170.inc"
 #include "generated/sub_82095F78.inc"
@@ -7965,8 +8445,24 @@ static void sub_82065F78(Context& ctx, Machine& base) {
 #include "generated/sub_82073D80.inc"
 #include "generated/sub_82072AB8.inc"
 #include "generated/sub_82067C40.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restfpr_24.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savefpr_24.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #include "generated/sub_820679E8.inc"
 #include "generated/sub_82067828.inc"
 #include "generated/sub_82097A28.inc"
@@ -8025,7 +8521,15 @@ static void sub_82065F78(Context& ctx, Machine& base) {
 #include "generated/sub_820ADB18.inc"
 #include "generated/sub_820ACEB8.inc"
 #pragma clang diagnostic pop
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/sub_82070AC8_post_init.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 
 // KeBugCheck is a terminal kernel failure; reaching it is never success.
 static void __imp__KeBugCheck([[maybe_unused]] Context& ctx, Machine& base) {

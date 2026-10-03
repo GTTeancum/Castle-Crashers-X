@@ -50,22 +50,150 @@ static void sub_82127AE8(Context&, Machine&);
 static void sub_82127FB0(Context&, Machine&);
 static void sub_82129038(Context&, Machine&);
 static void sub_82129A70(Context&, Machine&);
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restfpr_14.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restfpr_19.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restfpr_25.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restgprlr_20.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restgprlr_21.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restgprlr_25.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restgprlr_27.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__restgprlr_28.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savefpr_14.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savefpr_19.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savefpr_25.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savegprlr_20.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savegprlr_21.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savegprlr_25.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savegprlr_27.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
+#endif
 #include "generated/__savegprlr_28.inc"
+#ifdef CC_VIEW_ACTIVE
+#undef DEFINE_REX_FUNC
+#define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
+#endif
 #include "generated/sub_82053A98.inc"
 #include "generated/sub_820619E8.inc"
 #include "generated/sub_820836E0.inc"
