@@ -35,6 +35,7 @@ struct Texture {
   const void* gpu = nullptr;
   bool normalized = false;  // swizzled/compressed textures take 0..1 UVs
   uint32_t sig = 0;         // converted copies: sample hash of the source
+  uint32_t checked = 0xFFFFFFFFu;  // frame of the last signature check
 };
 
 bool g_init = false, g_failed = false, g_in_frame = false, g_shown = false;
@@ -108,6 +109,10 @@ bool init() {
   for (int i = 0; i < 16; ++i) g_white[i] = 0xFFFFFFFFu;
   return true;
 }
+// Texture and blend state last sent to the GPU this frame; draws only
+// send what changed (a level frame has ~236 draws over ~82 textures).
+struct PushedState { bool valid = false; const void* tex = nullptr; uint32_t format = 0, rect = 0, sf = 0, df = 0; };
+PushedState g_ps;
 uint32_t* push_white(uint32_t* p) {
   p = pb_push1(p, NV097_SET_TEXTURE_OFFSET, physical(g_white));
   p = pb_push1(p, NV097_SET_TEXTURE_FORMAT,
@@ -121,6 +126,7 @@ uint32_t* push_white(uint32_t* p) {
 }
 
 void begin_frame() {
+  g_ps = PushedState();
   pb_reset();
   pb_target_back_buffer();
   pb_erase_depth_stencil_buffer(0, 0, 640, 480);
@@ -185,21 +191,28 @@ void convert_into(uint8_t* dst, const uint8_t* src, uint32_t w, uint32_t h, int 
 const Texture* converted(uint32_t key, const uint8_t* src, uint32_t w, uint32_t h, int kind) {
   const uint32_t bpp = kind == 1 ? 4u : 2u;
   const uint32_t bytes = w * h * bpp;
-  const uint32_t sig = sample_sig(src, bytes);
   for (Texture& t : g_converted)
     if (t.key == key && t.w == w && t.h == h && t.pitch == w * bpp) {
-      if (t.sig != sig) {
-        convert_into(static_cast<uint8_t*>(const_cast<void*>(t.gpu)), src, w, h, kind);
-        t.sig = sig;
+      // The source is sampled once per frame per texture: the font atlas
+      // (1024x1024 A4R4G4B4, 2 MB, ~34K samples) is bound several times a
+      // frame, and glyphs added mid-frame show from the next frame on.
+      if (t.checked != g_frames) {
+        t.checked = g_frames;
+        const uint32_t sig = sample_sig(src, bytes);
+        if (t.sig != sig) {
+          convert_into(static_cast<uint8_t*>(const_cast<void*>(t.gpu)), src, w, h, kind);
+          t.sig = sig;
+        }
       }
       return &t;
     }
+  const uint32_t sig = sample_sig(src, bytes);
   uint8_t* dst = static_cast<uint8_t*>(MmAllocateContiguousMemoryEx(
       bytes, 0, kMaxGpuAddress, 0, PAGE_READWRITE | PAGE_WRITECOMBINE));
   if (!dst) return nullptr;
   convert_into(dst, src, w, h, kind);
   Texture t;
-  t.key = key; t.w = w; t.h = h; t.gpu = dst; t.pitch = w * bpp; t.normalized = false; t.sig = sig;
+  t.key = key; t.w = w; t.h = h; t.gpu = dst; t.pitch = w * bpp; t.normalized = false; t.sig = sig; t.checked = g_frames;
   t.format = 0x0000002Au |
              ((kind == 1 ? NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A8R8G8B8
                          : NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A4R4G4B4) << 8) |
@@ -231,6 +244,7 @@ void flush_overlay() {
     }
   }
   auto* p = pb_begin();
+  g_ps = PushedState();
   p = push_white(p);
   p = pb_push1(p, NV097_SET_BLEND_FUNC_SFACTOR, NV097_SET_BLEND_FUNC_SFACTOR_V_ONE);
   p = pb_push1(p, NV097_SET_BLEND_FUNC_DFACTOR, NV097_SET_BLEND_FUNC_SFACTOR_V_ZERO);
@@ -340,21 +354,32 @@ void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t st
     o.uv[0] = bef(v + 12) * su; o.uv[1] = bef(v + 16) * sv;
   }
   auto* p = pb_begin();
-  if (g_have_tex) {
-    p = pb_push1(p, NV097_SET_TEXTURE_OFFSET, physical(g_cur.gpu));
-    p = pb_push1(p, NV097_SET_TEXTURE_FORMAT, g_cur.format);
-    if (!g_cur.normalized) {
-      p = pb_push1(p, NV097_SET_TEXTURE_CONTROL1, g_cur.pitch << 16);
-      p = pb_push1(p, NV097_SET_TEXTURE_IMAGE_RECT, (g_cur.w << 16) | g_cur.h);
+  const void* tex = g_have_tex ? g_cur.gpu : static_cast<const void*>(g_white);
+  const uint32_t fmt = g_have_tex ? g_cur.format : 0u;
+  const uint32_t rect = g_have_tex ? ((g_cur.w << 16) | g_cur.h) ^ (g_cur.pitch << 3) : 0u;
+  if (!g_ps.valid || g_ps.tex != tex || g_ps.format != fmt || g_ps.rect != rect) {
+    if (g_have_tex) {
+      p = pb_push1(p, NV097_SET_TEXTURE_OFFSET, physical(g_cur.gpu));
+      p = pb_push1(p, NV097_SET_TEXTURE_FORMAT, g_cur.format);
+      if (!g_cur.normalized) {
+        p = pb_push1(p, NV097_SET_TEXTURE_CONTROL1, g_cur.pitch << 16);
+        p = pb_push1(p, NV097_SET_TEXTURE_IMAGE_RECT, (g_cur.w << 16) | g_cur.h);
+      }
+      p = pb_push1(p, NV097_SET_TEXTURE_ADDRESS, 0x00050505);  // clamp U/V/P
+      p = pb_push1(p, NV097_SET_TEXTURE_CONTROL0, 0x40000000);  // enabled, LOD 0
+      p = pb_push1(p, NV097_SET_TEXTURE_FILTER, 0x02022000);    // linear min/mag
+    } else {
+      p = push_white(p);
     }
-    p = pb_push1(p, NV097_SET_TEXTURE_ADDRESS, 0x00050505);  // clamp U/V/P
-    p = pb_push1(p, NV097_SET_TEXTURE_CONTROL0, 0x40000000);  // enabled, LOD 0
-    p = pb_push1(p, NV097_SET_TEXTURE_FILTER, 0x02022000);    // linear min/mag
-  } else {
-    p = push_white(p);
+    g_ps.tex = tex; g_ps.format = fmt; g_ps.rect = rect;
   }
-  p = pb_push1(p, NV097_SET_BLEND_FUNC_SFACTOR, blend_factor(blend & 0x1F));
-  p = pb_push1(p, NV097_SET_BLEND_FUNC_DFACTOR, blend_factor((blend >> 8) & 0x1F));
+  const uint32_t sf = blend_factor(blend & 0x1F), df = blend_factor((blend >> 8) & 0x1F);
+  if (!g_ps.valid || g_ps.sf != sf || g_ps.df != df) {
+    p = pb_push1(p, NV097_SET_BLEND_FUNC_SFACTOR, sf);
+    p = pb_push1(p, NV097_SET_BLEND_FUNC_DFACTOR, df);
+    g_ps.sf = sf; g_ps.df = df;
+  }
+  g_ps.valid = true;
   p = pb_push1(p, NV097_SET_BEGIN_END, op);
   for (uint32_t first = 0; first < count; first += 256) {
     const uint32_t n = count - first < 256 ? count - first : 256;
@@ -392,6 +417,15 @@ void cc_xr_show_fail(uint32_t code, uint32_t addr) {
 
 // Frame boundary: wait for the GPU and present.
 // update_us/render_us: time in the game's update and render this frame.
+// Benchmark windows (BENCH builds): average frame / update / render time in
+// tenths of a millisecond, drawn under the live counters once complete.
+unsigned g_bench[4][3];
+bool g_bench_done[4];
+void cc_xr_bench(unsigned window, unsigned frames, unsigned frame_us, unsigned update_us, unsigned render_us) {
+  if (window >= 4 || !frames) return;
+  g_bench[window][0] = frame_us / 100u; g_bench[window][1] = update_us / 100u; g_bench[window][2] = render_us / 100u;
+  g_bench_done[window] = true;
+}
 void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
   if (!g_in_frame) return;
   // On-screen counters, averaged over each second of real time. Top row:
@@ -437,6 +471,14 @@ void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
     draw_number(80, 44, shown_render, 0xFFFFA040);    // render ms
     draw_number(160, 44, shown_draw, 0xFFC080FF);     // draw hand-off ms
     draw_number(232, 44, shown_wait, 0xFF80FFFF);     // GPU wait ms
+    for (unsigned w = 0; w < 4; ++w)
+      if (g_bench_done[w]) {
+        const int y = 96 + int(w) * 34;
+        pb_fill_quad(8, y - 4, 300, 32, 0xFF102040);
+        draw_number(16, y, g_bench[w][0], 0xFFFFFF40);   // frame, 0.1 ms
+        draw_number(112, y, g_bench[w][1], 0xFFFFFFFF);  // update, 0.1 ms
+        draw_number(208, y, g_bench[w][2], 0xFFFFA040);  // render, 0.1 ms
+      }
 #ifdef CC_XBOX_PROFILE
     // Profiler: last 20 s window. Left column self time, right column
     // inclusive; each row: 6 hex digits of the address (0x82xxxxxx) and

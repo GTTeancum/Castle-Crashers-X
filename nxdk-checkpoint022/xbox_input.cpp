@@ -33,6 +33,9 @@ bool cc_xbox_pad(uint32_t* buttons, int16_t* lx, int16_t* ly, int16_t* rx, int16
   if (!g_init) {
     g_init = true;
     g_ok = SDL_Init(SDL_INIT_GAMECONTROLLER) == 0;
+    // Pads are polled directly; nothing drains SDL's event queue, which
+    // would otherwise grow to megabytes on a 64 MB machine.
+    if (g_ok) { SDL_JoystickEventState(SDL_IGNORE); SDL_GameControllerEventState(SDL_IGNORE); }
   }
   if (!g_ok) return false;
   SDL_GameControllerUpdate();

@@ -133,3 +133,32 @@ void __basic_string_common<true>::__throw_out_of_range() const {
   HalReturnToFirmware(HalRebootRoutine);
   for (;;) Sleep(1000);
 }
+
+// Fast memcpy/memmove/memset. nxdk builds its PDCLib without optimisation,
+// so its versions are byte loops with every variable on the stack (12-17
+// instructions per byte); a 2.6 KB register-file copy per matrix push once
+// cost ~7 ms per frame. These definitions take precedence over the library
+// archive members (one function per object there). Inline asm keeps clang
+// from turning the loops back into calls to themselves; DF is clear per the
+// calling convention.
+extern "C" void* memcpy(void* dst, const void* src, unsigned int n) {
+  void* d = dst; const void* s = src; unsigned int q = n >> 2, r = n & 3u;
+  __asm__ volatile("rep movsl" : "+D"(d), "+S"(s), "+c"(q) : : "memory");
+  __asm__ volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(r) : : "memory");
+  return dst;
+}
+extern "C" void* memmove(void* dst, const void* src, unsigned int n) {
+  unsigned char* d = (unsigned char*)dst; const unsigned char* s = (const unsigned char*)src;
+  if (d <= s || d >= s + n) return memcpy(dst, src, n);
+  // Overlapping with dst above src: copy backwards.
+  void* de = d + n - 1; const void* se = s + n - 1; unsigned int c = n;
+  __asm__ volatile("std\n\trep movsb\n\tcld" : "+D"(de), "+S"(se), "+c"(c) : : "memory", "cc");
+  return dst;
+}
+extern "C" void* memset(void* dst, int v, unsigned int n) {
+  const unsigned int b = (unsigned char)v, w = b * 0x01010101u;
+  void* d = dst; unsigned int q = n >> 2, r = n & 3u;
+  __asm__ volatile("rep stosl" : "+D"(d), "+c"(q) : "a"(w) : "memory");
+  __asm__ volatile("rep stosb" : "+D"(d), "+c"(r) : "a"(w) : "memory");
+  return dst;
+}

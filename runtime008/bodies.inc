@@ -99,6 +99,9 @@ static void cc_colour_native(Machine& base, Context& ctx, uint32_t out[4]) {
   }
 }
 static void sub_82084100(Context& ctx, Machine& base) {
+#ifdef CC_SPRITE_EXACT_BUILD
+  if (true) { sub_82084100_exact(ctx, base); return; }  // Xbox bisect build
+#endif
   uint32_t out[4];
   cc_colour_native(base, ctx, out);
   const uint32_t o = ctx.r3.u32;
@@ -167,6 +170,9 @@ static void cc_corners_native(Context& ctx, Machine& base, uint32_t out[4][3]) {
   for (int i = 0; i < 4; ++i) out[i][2] = zb;
 }
 static void sub_82085110(Context& ctx, Machine& base) {
+#ifdef CC_SPRITE_EXACT_BUILD
+  if (true) { sub_82085110_exact(ctx, base); return; }  // Xbox bisect build
+#endif
   uint32_t out[4][3];
   cc_corners_native(ctx, base, out);
   const uint32_t dst[4] = {ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32};
@@ -208,12 +214,11 @@ static void sub_82085110(Context& ctx, Machine& base) {
 // float, the second product fused, the sum rounded). The byte at
 // 0x8228A7B4 selects an extra fix-up call (sub_82085C70) that the harness
 // never runs; that path keeps the exact body. Returns out in r3.
-static void cc_matmul_native(Machine& base, Context& ctx, uint32_t out[6]) {
+static void cc_matmul_native(Machine& base, Context& ctx, uint32_t A, uint32_t B, uint32_t out[6]) {
   ctx.fpscr.disableFlushMode();
   auto f32 = [](uint32_t b) { float f; __builtin_memcpy(&f, &b, 4); return double(f); };
   auto bits = [](double v) { const float f = float(v); uint32_t b; __builtin_memcpy(&b, &f, 4); return b; };
   auto r = [](double v) { return double(float(v)); };
-  const uint32_t A = ctx.r4.u32, B = ctx.r5.u32;
   const double c05 = f32(REX_LOAD_U32(0x82042564u)), c01 = f32(REX_LOAD_U32(0x82042574u));
   const double k20 = f32(REX_LOAD_U32(0x82042568u)), k100 = f32(REX_LOAD_U32(0x8201473Cu));
   auto ld = [&](uint32_t a) { return f32(REX_LOAD_U32(a)); };
@@ -234,9 +239,12 @@ static void cc_matmul_native(Machine& base, Context& ctx, uint32_t out[6]) {
   out[4] = bits(f9 * k20); out[5] = bits(f8 * k20);
 }
 static void sub_82085AD8(Context& ctx, Machine& base) {
+#ifdef CC_SPRITE_EXACT_BUILD
+  if (true) { sub_82085AD8_exact(ctx, base); return; }  // Xbox bisect build
+#endif
   if (REX_LOAD_U8(0x8228A7B4u) != 0u) { sub_82085AD8_exact(ctx, base); return; }
   uint32_t out[6];
-  cc_matmul_native(base, ctx, out);
+  cc_matmul_native(base, ctx, ctx.r4.u32, ctx.r5.u32, out);
   const uint32_t o = ctx.r3.u32;
 #ifndef CC_XBOX_DRIVER
   static const bool oracle = std::getenv("CC_ORACLE") != nullptr;
@@ -267,6 +275,9 @@ static void sub_82085AD8(Context& ctx, Machine& base) {
 // bytes +12..14, floats +16..36 (byte 15 untouched). The combined form is
 // sub_82085AD8's result ({100, 100, 0}, zero bytes, product).
 static void sub_82086090(Context& ctx, Machine& base) {
+#ifdef CC_SPRITE_EXACT_BUILD
+  if (true) { sub_82086090_exact(ctx, base); return; }  // Xbox bisect build
+#endif
   const uint32_t st = ctx.r3.u32, m = ctx.r4.u32;
   const bool combine = (ctx.r5.u32 & 0xFFu) != 0u;
   if (combine && REX_LOAD_U8(0x8228A7B4u) != 0u) { sub_82086090_exact(ctx, base); return; }
@@ -280,10 +291,10 @@ static void sub_82086090(Context& ctx, Machine& base) {
   const uint32_t e = st + 8252u + depth * 40u;
   uint32_t v[10]; uint8_t by[3];
   if (combine) {
-    Context c = ctx; c.r4.u64 = e - 40u; c.r5.u64 = m;
+    // Operands passed directly: a whole-Context copy (2.6 KB, a byte-loop
+    // memcpy under nxdk) here cost ~7 ms of render per level frame on Xbox.
     uint32_t prod[6];
-    cc_matmul_native(base, c, prod);
-    ctx.fpscr = c.fpscr;
+    cc_matmul_native(base, ctx, e - 40u, m, prod);
     const uint32_t k100 = REX_LOAD_U32(0x8201473Cu);
     v[0] = k100; v[1] = k100; v[2] = 0u; by[0] = by[1] = by[2] = 0u;
     for (int k = 0; k < 6; ++k) v[4 + k] = prod[k];
@@ -324,26 +335,64 @@ static void sub_82086090(Context& ctx, Machine& base) {
 // of those leaves is answered directly (same result, and the leaves only
 // write r3 and volatile scratch registers); anything else goes through the
 // normal indirect call with r3 = object and the original return address.
-static inline bool cc_leaf_method(Machine& base, uint32_t fn, uint32_t obj, uint32_t& r3) {
+// Two-instruction methods "li r3,K / lwz|lhz|lha|lbz r3,D(r3)" + blr are
+// recognised from the original code (read once per method address from the
+// mapped image, cached); no hand-written wrapper is such a method.
+struct CcLeaf { uint32_t fn; uint8_t kind; int32_t imm; };  // kind 0 unknown, 1 not a leaf, 2.. leaf
+static CcLeaf g_leaf_cache[1024];
+static inline const CcLeaf& cc_leaf_info(Machine& base, uint32_t fn) {
+  CcLeaf& e = g_leaf_cache[(fn >> 2) & 1023u];
+  if (e.fn == fn && e.kind) return e;
+  e.fn = fn; e.kind = 1; e.imm = 0;
+  if (fn >= 0x82000000u && fn < 0x822D0000u) {
+    uint64_t i0 = 0, i1 = 0;
+    base.memory.load_be(fn, 4, i0);
+    base.memory.load_be(fn + 4u, 4, i1);
+    if (uint32_t(i1) == 0x4E800020u) {
+      const uint32_t op = uint32_t(i0) >> 16;
+      e.imm = int32_t(int16_t(uint16_t(i0)));
+      if (op == 0x3860u) e.kind = 2;        // li r3,K
+      else if (op == 0x8063u) e.kind = 3;   // lwz r3,D(r3)
+      else if (op == 0xA063u) e.kind = 4;   // lhz r3,D(r3)
+      else if (op == 0xA863u) e.kind = 5;   // lha r3,D(r3)
+      else if (op == 0x8863u) e.kind = 6;   // lbz r3,D(r3)
+    }
+  }
+  return e;
+}
+static inline bool cc_leaf_method(Machine& base, uint32_t fn, uint32_t obj, uint64_t& r3) {
   switch (fn) {
-    case 0x820619E8u: r3 = 1u; return true;                                     // li r3,1
-    case 0x82053A98u: r3 = 0u; return true;                                     // li r3,0
-    case 0x820868A8u: r3 = 1024u; return true;                                  // li r3,1024
-    case 0x820868D0u: r3 = REX_LOAD_U32(obj + 96u); return true;                // lwz r3,96(r3)
     case 0x820867D0u: r3 = REX_LOAD_U16(obj + 100u) != 0u ? 1u : 0u; return true;  // u16 +100 != 0
     case 0x82086818u: r3 = (REX_LOAD_U8(obj + 140u) >> 2) & 1u; return true;    // bit 2 of byte +140
+    default: break;
+  }
+  const CcLeaf& e = cc_leaf_info(base, fn);
+  const uint32_t a = obj + uint32_t(e.imm);
+  switch (e.kind) {
+    case 2: r3 = uint64_t(int64_t(e.imm)); return true;             // sign-extended like li
+    case 3: r3 = REX_LOAD_U32(a); return true;
+    case 4: r3 = REX_LOAD_U16(a); return true;
+    case 5: r3 = uint64_t(int64_t(int16_t(REX_LOAD_U16(a)))); return true;
+    case 6: r3 = REX_LOAD_U8(a); return true;
     default: return false;
   }
 }
-static inline uint32_t cc_vcall(Context& ctx, Machine& base, uint32_t obj, uint32_t slot, uint32_t lr) {
+static inline uint32_t cc_vcall_ic(Context& ctx, Machine& base, uint32_t obj, uint32_t slot, uint32_t lr,
+                                   uint32_t& ic_key, CcGenFn& ic_fn) {
   const uint32_t fn = REX_LOAD_U32(REX_LOAD_U32(obj) + slot);
-  uint32_t r3 = 0;
-  if (cc_leaf_method(base, fn, obj, r3)) { ctx.r3.u64 = r3; return r3; }
+  uint64_t r3 = 0;
+  if (cc_leaf_method(base, fn, obj, r3)) { ctx.r3.u64 = r3; return uint32_t(r3); }
   ctx.r3.u64 = obj;
   ctx.lr = lr;
-  REX_CALL_INDIRECT_FUNC(fn);
+  if (fn == ic_key) ic_fn(ctx, base);
+  else cc_dispatch_cached(fn, ctx, base, ic_key, ic_fn);
   return ctx.r3.u32;
 }
+// One inline cache per call site, like the generated code's indirect calls
+// (a shared cache would miss on every alternation of targets).
+#define cc_vcall(CTX, BASE, OBJ, SLOT, LR) ([&]() -> uint32_t { \
+    static uint32_t cc_vic_key = 0; static CcGenFn cc_vic_fn = nullptr; \
+    return cc_vcall_ic(CTX, BASE, OBJ, SLOT, LR, cc_vic_key, cc_vic_fn); }())
 // Native frame for a walker: the exact walkers open a stack frame before
 // their calls; callees then use the stack below it.
 struct CcFrame {
@@ -369,6 +418,9 @@ static void sub_8208AF08(Context& ctx, Machine& base) {
   static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
   if (walk_exact) { sub_8208AF08_exact(ctx, base); return; }
 #else
+  #ifdef CC_WALK_EXACT_BUILD
+  sub_8208AF08_exact(ctx, base); return;  // Xbox bisect build
+#endif
   static_cast<void>(&sub_8208AF08_exact);
 #endif
   const uint32_t node = ctx.r3.u32;

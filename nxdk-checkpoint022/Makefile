@@ -36,6 +36,17 @@ endif
 ifneq ($(CULLEXACT),)
 CXXFLAGS += -DCC_CULL_EXACT_BUILD
 endif
+# Benchmark build: make BENCH=1 (fixed game clock, no frame pacing,
+# per-window averages on screen; see runtime021/bodies.inc CC_BENCH)
+ifneq ($(BENCH),)
+CXXFLAGS += -DCC_BENCH
+endif
+ifneq ($(SPRITEEXACT),)
+CXXFLAGS += -DCC_SPRITE_EXACT_BUILD
+endif
+ifneq ($(WALKEXACT),)
+CXXFLAGS += -DCC_WALK_EXACT_BUILD
+endif
 ifneq ($(NOFMAFAST),)
 CXXFLAGS += -DCC_NO_FMA_FAST
 endif

@@ -136,7 +136,83 @@ static std::set<uint32_t> g_committed_pages;
 #include "generated/sub_820B6D10.inc"
 #include "generated/sub_820B6D48.inc"
 
+#ifdef CC_FAST
+#define sub_82082390 sub_82082390_exact
+#endif
 #include "generated/sub_82082390.inc"
+#ifdef CC_FAST
+#undef sub_82082390
+// ActionScript member map lookup (exact sub_82082390: map r3 = {u32 n,
+// entry* e}, id r4 u16; entries are 8 bytes {u16 id, u32 value}; returns
+// the value or 0). Fewer than 4 entries: linear scan; otherwise the
+// original's binary search, probe for probe (unsigned index arithmetic
+// kept as compiled, so even a malformed map reads the same entries).
+static uint32_t cc_asmap_find(Machine& base, uint32_t map, uint32_t key) {
+  const uint32_t n = REX_LOAD_U32(map + 0u), e = REX_LOAD_U32(map + 4u);
+  if (n < 4u) {
+    for (uint32_t i = 0; i < n; ++i)
+      if (REX_LOAD_U16(e + i * 8u) == key) return REX_LOAD_U32(e + i * 8u + 4u);
+    return 0u;
+  }
+  uint32_t hi = n - 1u, lo = 0u, mid = hi >> 1;
+  uint32_t v = REX_LOAD_U16(e + mid * 8u);
+  while (v != key) {
+    if (v > key) hi = mid - 1u; else lo = mid + 1u;
+    const uint32_t d = hi - lo;
+    if (d < 2u) {
+      if (REX_LOAD_U16(e + lo * 8u) == key) return REX_LOAD_U32(e + lo * 8u + 4u);
+      if (REX_LOAD_U16(e + hi * 8u) == key) return REX_LOAD_U32(e + hi * 8u + 4u);
+      return 0u;
+    }
+    mid = (d >> 1) + lo;
+    v = REX_LOAD_U16(e + mid * 8u);
+  }
+  return REX_LOAD_U32(e + mid * 8u + 4u);
+}
+// ActionScript Var read (shared by the locals and member lookups): Var
+// {+0 object, +4 type, +8 payload} -> out value {type, payload}; object type
+// 1 goes through sub_8206F918(out, object); unknown types leave out alone.
+static void cc_as_var_read(Context& ctx, Machine& base, uint32_t var, uint32_t out, uint32_t lr) {
+  const uint32_t type = REX_LOAD_U32(var + 4u);
+  switch (type) {
+    case 0x80000000u: REX_STORE_U32(out + 0u, 0x80000000u); REX_STORE_U32(out + 4u, 0u); break;
+    case 1u: {
+      CcFrame frame(ctx, base, 96u);
+      ctx.r3.u64 = out; ctx.r4.u64 = REX_LOAD_U32(var + 0u); ctx.lr = lr;
+      sub_8206F918(ctx, base);
+      break;
+    }
+    case 2u: REX_STORE_U32(out + 0u, 2u); REX_STORE_U8(out + 4u, REX_LOAD_U8(var + 8u)); break;
+    case 4u: REX_STORE_U32(out + 0u, 4u); REX_STORE_U32(out + 4u, REX_LOAD_U32(var + 8u)); break;
+    case 8u: REX_STORE_U32(out + 0u, 8u); REX_STORE_U16(out + 4u, REX_LOAD_U16(var + 8u)); break;
+    case 16u: {  // through f0 as the original (float -> double -> float)
+      ctx.fpscr.disableFlushMode();
+      PPCRegister temp{};
+      temp.u32 = REX_LOAD_U32(var + 8u);
+      ctx.f0.f64 = double(temp.f32);
+      REX_STORE_U32(out + 0u, 16u);
+      temp.f32 = float(ctx.f0.f64);
+      REX_STORE_U32(out + 4u, temp.u32);
+      break;
+    }
+    default: break;
+  }
+}
+static void sub_82082390(Context& ctx, Machine& base) {
+  const uint32_t r = cc_asmap_find(base, ctx.r3.u32, ctx.r4.u32 & 0xFFFFu);
+#ifndef CC_XBOX_DRIVER
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr;
+  if (oracle) {
+    sub_82082390_exact(ctx, base);
+    if (ctx.r3.u32 != r) cc_oracle_mismatch("sub_82082390", 0, ctx.r3.u32, r);
+    return;
+  }
+#else
+  static_cast<void>(&sub_82082390_exact);
+#endif
+  ctx.r3.u64 = r;
+}
+#endif
 #include "generated/sub_8208BE40.inc"
 #include "generated/sub_8208AB98.inc"
 #include "generated/sub_820936B0.inc"
@@ -144,8 +220,182 @@ static std::set<uint32_t> g_committed_pages;
 #include "generated/sub_82094420.inc"
 #include "generated/sub_820772B0.inc"
 #include "generated/sub_820A1AC0.inc"
+#ifdef CC_FAST
+#define sub_82088A08 sub_82088A08_exact
+#endif
 #include "generated/sub_82088A08.inc"
+#ifdef CC_FAST
+#undef sub_82088A08
+// Display-list advance (exact sub_82088A08: node r3), run per frame for
+// every playing clip. Only for nodes with bit 7 of byte +140 set: the node
+// is pushed on the manager's update stack ([[[node+156]+76]+156], count
+// +8248, entries at +(count+1998)*4); if the node is playing (slot 124) its
+// frame counter u16 +146 advances, wrapping to 1 past u16 +148 (on a wrap
+// the children whose u16 +84 is not 1 are removed via sub_82084D18, the
+// others take the node's u16 +144 into +82), +144 takes the new frame and
+// slot 92 (r4 = 1) applies it. Then each child: after a wrap, a child whose
+// +82 differs from the node's +144 is released via sub_82084C78(list,
+// [child+28]); otherwise its +82 is cleared and, if active (slot 44), it
+// advances (slot 148, r4 = node) and updates (slot 84). The stack entry is
+// popped at the end.
+static void sub_82088A08(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
+  if (walk_exact) { sub_82088A08_exact(ctx, base); return; }
+#else
+  #ifdef CC_WALK_EXACT_BUILD
+  sub_82088A08_exact(ctx, base); return;  // Xbox bisect build
+#endif
+  static_cast<void>(&sub_82088A08_exact);
+#endif
+  const uint32_t node = ctx.r3.u32;
+  if ((REX_LOAD_U8(node + 140u) & 0x80u) == 0u) return;
+  CcFrame frame(ctx, base, 128u);
+  auto mgr_of = [&]() { return REX_LOAD_U32(REX_LOAD_U32(REX_LOAD_U32(node + 156u) + 76u) + 156u); };
+  {
+    const uint32_t mgr = mgr_of();
+    const uint32_t cnt = REX_LOAD_U32(mgr + 8248u) + 1u;
+    REX_STORE_U32(mgr + 8248u, cnt);
+    REX_STORE_U32(mgr + (cnt + 1998u) * 4u, node);
+  }
+  bool wrapped = false;
+  if ((cc_vcall(ctx, base, node, 124u, 0x82088A64u) & 0xFFu) != 0u) {
+    const uint32_t f = (REX_LOAD_U16(node + 146u) + 1u) & 0xFFFFu;
+    REX_STORE_U16(node + 146u, uint16_t(f));
+    if (f > REX_LOAD_U16(node + 148u)) {
+      wrapped = true;
+      REX_STORE_U16(node + 146u, 1u);
+      uint32_t ch = REX_LOAD_U32(node + 104u);
+      while (ch) {
+        if (REX_LOAD_U16(ch + 84u) == 1u) {
+          REX_STORE_U16(ch + 82u, REX_LOAD_U16(node + 144u));
+          ch = REX_LOAD_U32(ch + 88u);
+        } else {
+          const uint32_t next = REX_LOAD_U32(ch + 88u);
+          ctx.r3.u64 = node + 104u; ctx.r4.u64 = ch; ctx.lr = 0x82088ABCu;
+          sub_82084D18(ctx, base);
+          ch = next;
+        }
+      }
+    }
+    REX_STORE_U16(node + 144u, REX_LOAD_U16(node + 146u));
+    ctx.r4.u64 = 1u;
+    cc_vcall(ctx, base, node, 92u, 0x82088AF8u);
+  }
+  for (uint32_t ch = REX_LOAD_U32(node + 104u); ch; ch = REX_LOAD_U32(ch + 88u)) {
+    if (wrapped && REX_LOAD_U16(node + 144u) != REX_LOAD_U16(ch + 82u)) {
+      ctx.r3.u64 = node + 104u; ctx.r4.u64 = REX_LOAD_U32(ch + 28u); ctx.lr = 0x82088B30u;
+      sub_82084C78(ctx, base);
+      continue;
+    }
+    REX_STORE_U16(ch + 82u, 0u);
+    if ((cc_vcall(ctx, base, ch, 44u, 0x82088B4Cu) & 0xFFu) != 0u) {
+      ctx.r4.u64 = node;
+      cc_vcall(ctx, base, ch, 148u, 0x82088B70u);
+      cc_vcall(ctx, base, ch, 84u, 0x82088B84u);
+    }
+  }
+  {
+    const uint32_t mgr = mgr_of();
+    const uint32_t idx = REX_LOAD_U32(mgr + 8248u);
+    REX_STORE_U32(mgr + (idx + 1998u) * 4u, 0u);
+    REX_STORE_U32(mgr + 8248u, idx - 1u);
+  }
+}
+#endif
+#ifdef CC_FAST
+#define sub_8208A228 sub_8208A228_exact
+#endif
 #include "generated/sub_8208A228.inc"
+#ifdef CC_FAST
+#undef sub_8208A228
+// Display-list frame update (exact sub_8208A228: node r3, frame r4 u16).
+// Sets bit 4 of byte +86; nodes without bit 7 of byte +140 return 0. A
+// nonzero frame is stored in u16 +144 with bit 6 of +140 set; +144 and +146
+// are at least 1. The node is pushed on the manager's update stack; its
+// transform block at +160 is rebuilt (sub_8207BAE8 when bit 3 of +140 is
+// set, else sub_8207B8B8 and bit 3 set); a playing node (slot 124) applies
+// its frame (slot 92, r4 = 2) and refreshes the block (sub_8207B630). Bit 2
+// of +140 is cleared when bit 1 is set or the clip has one frame. Each
+// child that is active (slot 44) and, while bit 6 is set, on the node's
+// frame (u16 +82 == +144) is drawn (slot 88, r4 = 0) and its result OR-ed
+// into the return value; active children while bit 6 is set, and inactive
+// children with bit 4 of their +86, set bit 0. Without bit 0 the node's
+// bit 4 of +86 is cleared; bit 6 of +140 is cleared and the stack popped.
+static void sub_8208A228(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
+  if (walk_exact) { sub_8208A228_exact(ctx, base); return; }
+#else
+  #ifdef CC_WALK_EXACT_BUILD
+  sub_8208A228_exact(ctx, base); return;  // Xbox bisect build
+#endif
+  static_cast<void>(&sub_8208A228_exact);
+#endif
+  const uint32_t node = ctx.r3.u32;
+  REX_STORE_U8(node + 86u, uint8_t(REX_LOAD_U8(node + 86u) | 16u));
+  if ((REX_LOAD_U8(node + 140u) & 0x80u) == 0u) { ctx.r3.u64 = 0u; return; }
+  CcFrame frame(ctx, base, 112u);
+  const uint32_t fr = ctx.r4.u32 & 0xFFFFu;
+  if (fr) {
+    REX_STORE_U16(node + 144u, uint16_t(fr));
+    REX_STORE_U8(node + 140u, uint8_t(REX_LOAD_U8(node + 140u) | 64u));
+  }
+  if (REX_LOAD_U16(node + 144u) == 0u) REX_STORE_U16(node + 144u, 1u);
+  if (REX_LOAD_U16(node + 146u) == 0u) REX_STORE_U16(node + 146u, 1u);
+  auto mgr_of = [&]() { return REX_LOAD_U32(REX_LOAD_U32(REX_LOAD_U32(node + 156u) + 76u) + 156u); };
+  {
+    const uint32_t mgr = mgr_of();
+    const uint32_t cnt = REX_LOAD_U32(mgr + 8248u) + 1u;
+    REX_STORE_U32(mgr + 8248u, cnt);
+    REX_STORE_U32(mgr + (cnt + 1998u) * 4u, node);
+  }
+  ctx.r3.u64 = node + 160u;
+  if (REX_LOAD_U8(node + 140u) & 0x08u) {
+    ctx.lr = 0x8208A2E4u;
+    sub_8207BAE8(ctx, base);
+  } else {
+    ctx.lr = 0x8208A2ECu;
+    sub_8207B8B8(ctx, base);
+    REX_STORE_U8(node + 140u, uint8_t(REX_LOAD_U8(node + 140u) | 8u));
+  }
+  if ((cc_vcall(ctx, base, node, 124u, 0x8208A30Cu) & 0xFFu) != 0u) {
+    ctx.r4.u64 = 2u;
+    cc_vcall(ctx, base, node, 92u, 0x8208A330u);
+    ctx.r3.u64 = node + 160u;
+    ctx.lr = 0x8208A338u;
+    sub_8207B630(ctx, base);
+  }
+  {
+    const uint32_t f = REX_LOAD_U8(node + 140u);
+    if ((f & 2u) || REX_LOAD_U16(node + 148u) == 1u) REX_STORE_U8(node + 140u, uint8_t(f & ~4u));
+  }
+  uint64_t acc = 0u;
+  for (uint32_t ch = REX_LOAD_U32(node + 104u); ch; ch = REX_LOAD_U32(ch + 88u)) {
+    uint32_t bit;
+    if ((cc_vcall(ctx, base, ch, 44u, 0x8208A380u) & 0xFFu) != 0u) {
+      if ((REX_LOAD_U8(node + 140u) & 0x40u) == 0u || REX_LOAD_U16(ch + 82u) == REX_LOAD_U16(node + 144u)) {
+        ctx.r4.u64 = 0u;
+        cc_vcall(ctx, base, ch, 88u, 0x8208A3C4u);
+        acc |= ctx.r3.u64;
+      }
+      bit = REX_LOAD_U8(node + 140u) & 0x40u;
+    } else {
+      bit = REX_LOAD_U8(ch + 86u) & 0x10u;
+    }
+    if (bit) acc |= 1u;
+  }
+  if ((acc & 1u) == 0u) REX_STORE_U8(node + 86u, uint8_t(REX_LOAD_U8(node + 86u) & ~16u));
+  REX_STORE_U8(node + 140u, uint8_t(REX_LOAD_U8(node + 140u) & ~64u));
+  {
+    const uint32_t mgr = mgr_of();
+    const uint32_t idx = REX_LOAD_U32(mgr + 8248u);
+    REX_STORE_U32(mgr + (idx + 1998u) * 4u, 0u);
+    REX_STORE_U32(mgr + 8248u, idx - 1u);
+  }
+  ctx.r3.u64 = acc;
+}
+#endif
 #ifdef CC_FAST
 #define sub_8208AE78 sub_8208AE78_exact
 #endif
@@ -161,6 +411,9 @@ static void sub_8208AE78(Context& ctx, Machine& base) {
   static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
   if (walk_exact) { sub_8208AE78_exact(ctx, base); return; }
 #else
+  #ifdef CC_WALK_EXACT_BUILD
+  sub_8208AE78_exact(ctx, base); return;  // Xbox bisect build
+#endif
   static_cast<void>(&sub_8208AE78_exact);
 #endif
   const uint32_t node = ctx.r3.u32;
@@ -1288,7 +1541,16 @@ static void __imp__KiApcNormalRoutineNop(Context& ctx, Machine& base) {
 #include "generated/sub_820BEF80.inc"
 #include "generated/sub_820CC088.inc"
 #include "generated/sub_820CBFF0.inc"
+#if defined(CC_XBOX_DRIVER) && defined(CC_FAST) && !defined(CC_XBOX_PROFILE)
+#define sub_820C5EE8 sub_820C5EE8_exact
+#endif
 #include "generated/sub_820C5EE8.inc"
+#if defined(CC_XBOX_DRIVER) && defined(CC_FAST) && !defined(CC_XBOX_PROFILE)
+#undef sub_820C5EE8
+// Xbox play build: the generated prologue is empty, so the hook this
+// function needs (Machine::hooked_fast) runs here.
+static void sub_820C5EE8(Context& ctx, Machine& base) { base.hooked_fast(4, ctx); sub_820C5EE8_exact(ctx, base); }
+#endif
 #include "generated/sub_820C5F98.inc"
 #include "generated/sub_820C73F0.inc"
 #include "generated/sub_820C7548.inc"
@@ -1623,9 +1885,27 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     });
   }
 #endif
+#ifdef CC_BENCH
+  // Benchmark build: average frame, update and render time over fixed frame
+  // windows of the scripted run (menu, level start, tavern, tavern later),
+  // shown on screen once each window completes.
+  {
+    static const unsigned lo[4] = {1800u, 5800u, 7300u, 8800u};
+    static uint64_t last = 0, sum_f[4], sum_u[4], sum_r[4];
+    static unsigned n[4];
+    const uint64_t now = ::cc_xbox_clock(1000000u);
+    const unsigned f = g_frame_delay_calls;
+    for (unsigned w = 0; w < 4; ++w)
+      if (f >= lo[w] && f < lo[w] + 400u && last) {
+        sum_f[w] += now - last; sum_u[w] += g_frame_update_us; sum_r[w] += g_frame_render_us; ++n[w];
+        if (n[w] == 400u) ::cc_xr_bench(w, n[w], unsigned(sum_f[w] / n[w]), unsigned(sum_u[w] / n[w]), unsigned(sum_r[w] / n[w]));
+      }
+    last = now;
+  }
+#endif
   ::cc_xr_frame_end(g_frame_update_us, g_frame_render_us);
   g_frame_update_us = g_frame_render_us = 0;
-#ifdef CC_FAST
+#if defined(CC_FAST) && !defined(CC_BENCH)
   // Play build: honour the game's own frame pacing (it asks to sleep the
   // rest of a 1/60 s frame when it finished early). A late frame still
   // asks for its 2 ms minimum; skip that.
@@ -1765,8 +2045,26 @@ static void checkpoint020_mm_store_u32(Machine& base, uint32_t a, uint32_t v) {
 #include "generated/sub_820B74B0.inc"
 #include "generated/sub_820BE8F8.inc"
 #include "generated/sub_820BE928.inc"
+#if defined(CC_XBOX_DRIVER) && defined(CC_FAST) && !defined(CC_XBOX_PROFILE)
+#define sub_820BE9F0 sub_820BE9F0_exact
+#endif
 #include "generated/sub_820BE9F0.inc"
+#if defined(CC_XBOX_DRIVER) && defined(CC_FAST) && !defined(CC_XBOX_PROFILE)
+#undef sub_820BE9F0
+// Xbox play build: the generated prologue is empty, so the hook this
+// function needs (Machine::hooked_fast) runs here.
+static void sub_820BE9F0(Context& ctx, Machine& base) { base.hooked_fast(2, ctx); sub_820BE9F0_exact(ctx, base); }
+#endif
+#if defined(CC_XBOX_DRIVER) && defined(CC_FAST) && !defined(CC_XBOX_PROFILE)
+#define sub_820C5E50 sub_820C5E50_exact
+#endif
 #include "generated/sub_820C5E50.inc"
+#if defined(CC_XBOX_DRIVER) && defined(CC_FAST) && !defined(CC_XBOX_PROFILE)
+#undef sub_820C5E50
+// Xbox play build: the generated prologue is empty, so the hook this
+// function needs (Machine::hooked_fast) runs here.
+static void sub_820C5E50(Context& ctx, Machine& base) { base.hooked_fast(3, ctx); sub_820C5E50_exact(ctx, base); }
+#endif
 #include "generated/sub_820C6178.inc"
 #include "generated/sub_820C6218.inc"
 #include "generated/sub_820C6290.inc"
@@ -5088,6 +5386,9 @@ static void sub_82085078(Context& ctx, Machine& base) {
   static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
   if (walk_exact) { sub_82085078_exact(ctx, base); return; }
 #else
+  #ifdef CC_WALK_EXACT_BUILD
+  sub_82085078_exact(ctx, base); return;  // Xbox bisect build
+#endif
   static_cast<void>(&sub_82085078_exact);
 #endif
   const uint32_t id = ctx.r4.u32 & 0xFFFFu;
@@ -5224,8 +5525,64 @@ static void sub_820623C0(Context& ctx, Machine& base) {
 #include "generated/sub_82128E90.inc"
 #include "generated/sub_82128E88.inc"
 #include "generated/sub_820B7540.inc"
+#ifdef CC_FAST
+#define sub_8208C140 sub_8208C140_exact
+#endif
 #include "generated/sub_8208C140.inc"
+#ifdef CC_FAST
+#undef sub_8208C140
+// ActionScript object member read (exact sub_8208C140: object r3, id r4
+// u16, out r5): the member map at object+4; found -> Var read, returns 1;
+// not found -> 0.
+static void sub_8208C140(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;
+  if (walk_exact) { sub_8208C140_exact(ctx, base); return; }
+#else
+  #ifdef CC_WALK_EXACT_BUILD
+  sub_8208C140_exact(ctx, base); return;  // Xbox bisect build
+#endif
+  static_cast<void>(&sub_8208C140_exact);
+#endif
+  const uint32_t var = cc_asmap_find(base, ctx.r3.u32 + 4u, ctx.r4.u32 & 0xFFFFu);
+  if (!var) { ctx.r3.u64 = 0u; return; }
+  cc_as_var_read(ctx, base, var, ctx.r5.u32, 0x8208C1C4u);
+  ctx.r3.u64 = 1u;
+}
+#endif
+#ifdef CC_FAST
+#define sub_82079BE0 sub_82079BE0_exact
+#endif
 #include "generated/sub_82079BE0.inc"
+#ifdef CC_FAST
+#undef sub_82079BE0
+// ActionScript local variable read (exact sub_82079BE0: activation r3,
+// id r4 u16, out value r5). Locals are {u16 id at +44+8i, Var* at +48+8i},
+// ended by a null Var*. A Var is {+0 object, +4 type, +8 payload}. Found:
+// out = {type, payload} by type (undefined 0x80000000 -> {tag, 0}; object
+// type 1 -> sub_8206F918(out, object); bool 2 byte; int 4 word; string 8
+// u16 id; number 16 float), other types leave out alone; returns 1.
+// Not found: 0.
+static void sub_82079BE0(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;
+  if (walk_exact) { sub_82079BE0_exact(ctx, base); return; }
+#else
+  #ifdef CC_WALK_EXACT_BUILD
+  sub_82079BE0_exact(ctx, base); return;  // Xbox bisect build
+#endif
+  static_cast<void>(&sub_82079BE0_exact);
+#endif
+  const uint32_t act = ctx.r3.u32, id = ctx.r4.u32 & 0xFFFFu, out = ctx.r5.u32;
+  uint32_t i = 0;
+  bool found = false;
+  for (uint32_t p = act + 48u; REX_LOAD_U32(p) != 0u; p += 8u, ++i)
+    if (REX_LOAD_U16(p - 4u) == id) { found = true; break; }
+  if (!found) { ctx.r3.u64 = 0u; return; }
+  cc_as_var_read(ctx, base, REX_LOAD_U32(act + (i + 6u) * 8u), out, 0x82079CA0u);
+  ctx.r3.u64 = 1u;
+}
+#endif
 #include "generated/sub_82085400.inc"
 #include "generated/sub_82128290.inc"
 #include "generated/sub_820935B0.inc"
@@ -5260,7 +5617,36 @@ static void sub_820623C0(Context& ctx, Machine& base) {
 #include "generated/sub_82086FF0.inc"
 #include "generated/sub_8207B150.inc"
 #include "generated/sub_82089778.inc"
+#ifdef CC_FAST
+#define sub_8206F918 sub_8206F918_exact
+#endif
 #include "generated/sub_8206F918.inc"
+#ifdef CC_FAST
+#undef sub_8206F918
+// Typed reference (exact sub_8206F918: out r3, object r4): out = {type
+// (slot 40), object}, or {0x80000000, 0} for no object.
+static void sub_8206F918(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
+  if (walk_exact) { sub_8206F918_exact(ctx, base); return; }
+#else
+  #ifdef CC_WALK_EXACT_BUILD
+  sub_8206F918_exact(ctx, base); return;  // Xbox bisect build
+#endif
+  static_cast<void>(&sub_8206F918_exact);
+#endif
+  const uint32_t out = ctx.r3.u32, obj = ctx.r4.u32;
+  if (!obj) {
+    REX_STORE_U32(out + 0u, 0x80000000u);
+    REX_STORE_U32(out + 4u, 0u);
+    return;
+  }
+  CcFrame frame(ctx, base, 112u);
+  const uint32_t t = cc_vcall(ctx, base, obj, 40u, 0x8206F950u);
+  REX_STORE_U32(out + 0u, t);
+  REX_STORE_U32(out + 4u, obj);
+}
+#endif
 #include "generated/sub_82089AB8.inc"
 #include "generated/sub_820899D0.inc"
 #include "generated/sub_82082848.inc"
@@ -5279,8 +5665,166 @@ static void sub_820623C0(Context& ctx, Machine& base) {
 #include "generated/sub_82082890.inc"
 #include "generated/sub_82082BB0.inc"
 #include "generated/sub_8207E048.inc"
+#ifdef CC_FAST
+#define sub_82082488 sub_82082488_exact
+#endif
 #include "generated/sub_82082488.inc"
+#ifdef CC_FAST
+#undef sub_82082488
+// ActionScript value-pool allocation (exact sub_82082488: pool r3). 1256
+// slots of 12 bytes at +5028, in-use byte at slot+8, rover at +20100: the
+// first free slot from the rover on (wrapping), marked used and made the
+// new rover; 0 when all are in use.
+static void sub_82082488(Context& ctx, Machine& base) {
+  const uint32_t pool = ctx.r3.u32;
+  const uint32_t start = REX_LOAD_U32(pool + 20100u);
+  uint32_t i = start;
+  if (REX_LOAD_U8(pool + i * 12u + 5036u) != 0u) {
+    for (;;) {
+      i = (int32_t(i + 1u) < 1256) ? i + 1u : 0u;
+      if (i == start) {
+#ifndef CC_XBOX_DRIVER
+        static const bool oracle = std::getenv("CC_ORACLE") != nullptr;
+        if (oracle) { sub_82082488_exact(ctx, base); if (ctx.r3.u32) cc_oracle_mismatch("sub_82082488", 1, ctx.r3.u32, 0u); return; }
+#endif
+        ctx.r3.u64 = 0u; return;
+      }
+      if (REX_LOAD_U8(pool + i * 12u + 5036u) == 0u) break;
+    }
+  }
+#ifndef CC_XBOX_DRIVER
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr;
+  if (oracle) {
+    sub_82082488_exact(ctx, base);
+    if (ctx.r3.u32 != pool + i * 12u + 5028u) cc_oracle_mismatch("sub_82082488", 0, ctx.r3.u32, pool + i * 12u + 5028u);
+    return;
+  }
+#else
+  static_cast<void>(&sub_82082488_exact);
+#endif
+  REX_STORE_U8(pool + i * 12u + 5036u, 1u);
+  REX_STORE_U32(pool + 20100u, i);
+  ctx.r3.u64 = pool + i * 12u + 5028u;
+}
+#endif
+#ifdef CC_FAST
+#define sub_8207AA50 sub_8207AA50_exact
+#endif
 #include "generated/sub_8207AA50.inc"
+#ifdef CC_FAST
+#undef sub_8207AA50
+// ActionScript Push item decode (exact sub_8207AA50: script r3, out value
+// r4, data r5, pos* r6). type = data[pos++]; then, as the original reads
+// the bytes b0.. that follow:
+//  0 string: copied and interned (sub_82053A00, sub_8209D948 on the VM's
+//    string table VM+10316) -> {8, id}; pos += length + 1
+//  1 float: bits b0b1b2b3 (big-endian) -> {16, float}; pos += 4
+//  2 nothing; 3 undefined {0x80000000, 0}; 4 -> {4, VM+30476}, pos += 1
+//  5 bool: {2, b0 == 1}; pos += 1
+//  6 double: bytes b3 b2 b1 b0 b7 b6 b5 b4 (big-endian) -> {16, float}
+//  7 int: little-endian b0..b3 -> {4, int}; pos += 4
+//  8/9 constant-pool index (u8 / LE u16) -> {8, pool[index]} from the
+//    active function's pool (VM[(VM[10180] + 2513) * 4] -> +140 -> +0), or
+//    the script's own pool ([r3+4] -> +0) when none is active
+// VM = [[r3+0]+76]+156. Float values pass through f0 as in the original.
+static void sub_8207AA50(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;
+  if (walk_exact) { sub_8207AA50_exact(ctx, base); return; }
+#else
+  #ifdef CC_WALK_EXACT_BUILD
+  sub_8207AA50_exact(ctx, base); return;  // Xbox bisect build
+#endif
+  static_cast<void>(&sub_8207AA50_exact);
+#endif
+  const uint32_t as = ctx.r3.u32, out = ctx.r4.u32, data = ctx.r5.u32, posp = ctx.r6.u32;
+  uint32_t pos = REX_LOAD_U32(posp);
+  const uint32_t type = REX_LOAD_U8(data + pos);
+  ++pos;
+  REX_STORE_U32(posp, pos);
+  auto b = [&](uint32_t k) { return uint32_t(REX_LOAD_U8(data + pos + k)); };
+  auto vm_of = [&]() { return REX_LOAD_U32(REX_LOAD_U32(REX_LOAD_U32(as + 0u) + 76u) + 156u); };
+  auto pool_id = [&](uint32_t idx2) {
+    const uint32_t vm = vm_of();
+    const uint32_t act = REX_LOAD_U32(vm + (REX_LOAD_U32(vm + 10180u) + 2513u) * 4u);
+    const uint32_t tbl = act ? REX_LOAD_U32(REX_LOAD_U32(act + 140u)) : REX_LOAD_U32(REX_LOAD_U32(as + 4u));
+    REX_STORE_U32(out + 0u, 8u);
+    REX_STORE_U16(out + 4u, REX_LOAD_U16(tbl + idx2));
+  };
+  switch (type) {
+    case 0: {
+      CcFrame frame(ctx, base, 208u);
+      const uint32_t buf = ctx.r1.u32 + 96u;
+      ctx.r3.u64 = buf; ctx.r4.u64 = data + pos; ctx.lr = 0x8207AACCu;
+      sub_82053A00(ctx, base);
+      REX_STORE_U32(posp, REX_LOAD_U32(posp) + REX_LOAD_U32(buf) + 1u);
+      ctx.r3.u64 = REX_LOAD_U32(vm_of() + 10316u); ctx.r4.u64 = buf + 4u; ctx.lr = 0x8207AAF8u;
+      sub_8209D948(ctx, base);
+      REX_STORE_U16(out + 4u, ctx.r3.u16);
+      REX_STORE_U32(out + 0u, 8u);
+      return;
+    }
+    case 1: {
+      const uint32_t bits = (b(0) << 24) | (b(1) << 16) | (b(2) << 8) | b(3);
+      REX_STORE_U32(posp, pos + 4u);
+      REX_STORE_U32(out + 0u, 16u);
+      ctx.fpscr.disableFlushMode();
+      PPCRegister temp{};
+      temp.u32 = bits;
+      ctx.f0.f64 = double(temp.f32);
+      temp.f32 = float(ctx.f0.f64);
+      REX_STORE_U32(out + 4u, temp.u32);
+      return;
+    }
+    case 3: REX_STORE_U32(out + 0u, 0x80000000u); REX_STORE_U32(out + 4u, 0u); return;
+    case 4:
+      REX_STORE_U32(posp, pos + 1u);
+      REX_STORE_U32(out + 0u, 4u);
+      REX_STORE_U32(out + 4u, REX_LOAD_U32(vm_of() + 30476u));
+      return;
+    case 5: {
+      const uint32_t v = b(0);
+      REX_STORE_U32(out + 0u, 2u);
+      REX_STORE_U32(posp, pos + 1u);
+      REX_STORE_U8(out + 4u, v == 1u ? 1u : 0u);
+      return;
+    }
+    case 6: {
+      const uint64_t bits = (uint64_t(b(3)) << 56) | (uint64_t(b(2)) << 48) | (uint64_t(b(1)) << 40) | (uint64_t(b(0)) << 32) |
+                            (uint64_t(b(7)) << 24) | (uint64_t(b(6)) << 16) | (uint64_t(b(5)) << 8) | uint64_t(b(4));
+      REX_STORE_U32(posp, pos + 8u);
+      REX_STORE_U32(out + 0u, 16u);
+      ctx.fpscr.disableFlushMode();
+      ctx.f0.u64 = bits;
+      ctx.f13.f64 = double(float(ctx.f0.f64));
+      PPCRegister temp{};
+      temp.f32 = float(ctx.f13.f64);
+      REX_STORE_U32(out + 4u, temp.u32);
+      return;
+    }
+    case 7: {
+      const uint32_t v = (b(3) << 24) | (b(2) << 16) | (b(1) << 8) | b(0);
+      REX_STORE_U32(posp, pos + 4u);
+      REX_STORE_U32(out + 0u, 4u);
+      REX_STORE_U32(out + 4u, v);
+      return;
+    }
+    case 8: {
+      const uint32_t idx = b(0);
+      REX_STORE_U32(posp, pos + 1u);
+      pool_id((idx << 1) & 0x1FEu);
+      return;
+    }
+    case 9: {
+      const uint32_t idx = (b(1) << 8) | b(0);
+      REX_STORE_U32(posp, pos + 2u);
+      pool_id((idx << 1) & 0x1FFFEu);
+      return;
+    }
+    default: return;  // 2 and anything above 9: nothing more
+  }
+}
+#endif
 #include "generated/sub_820814A0.inc"
 #include "generated/sub_82083900.inc"
 #include "generated/sub_820813F8.inc"
@@ -5294,7 +5838,16 @@ static void sub_820623C0(Context& ctx, Machine& base) {
 #include "generated/sub_820B20F0.inc"
 #include "generated/sub_820B2180.inc"
 #include "generated/sub_820B20C8.inc"
+#if defined(CC_XBOX_DRIVER) && defined(CC_FAST) && !defined(CC_XBOX_PROFILE)
+#define sub_820B0F18 sub_820B0F18_exact
+#endif
 #include "generated/sub_820B0F18.inc"
+#if defined(CC_XBOX_DRIVER) && defined(CC_FAST) && !defined(CC_XBOX_PROFILE)
+#undef sub_820B0F18
+// Xbox play build: the generated prologue is empty, so the hook this
+// function needs (Machine::hooked_fast) runs here.
+static void sub_820B0F18(Context& ctx, Machine& base) { base.hooked_fast(1, ctx); sub_820B0F18_exact(ctx, base); }
+#endif
 #include "generated/sub_820868C8.inc"
 #include "generated/sub_820867E8.inc"
 #include "generated/sub_8208BBB0.inc"
@@ -6004,7 +6557,35 @@ static void sub_820B1478(Context& ctx, Machine& base) {
 #include "generated/sub_82075400.inc"
 #include "generated/sub_820753F8.inc"
 #include "generated/sub_82094040.inc"
+#ifdef CC_FAST
+#define sub_82066EA8 sub_82066EA8_exact
+#endif
 #include "generated/sub_82066EA8.inc"
+#ifdef CC_FAST
+#undef sub_82066EA8
+// Reference count step (exact sub_82066EA8: object r3, up r4 byte): for an
+// object whose type (slot 40) has any of the bits 0x7C6C1, the u16 at +24
+// is incremented (up) or decremented and 1 is returned; else 0.
+static void sub_82066EA8(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
+  if (walk_exact) { sub_82066EA8_exact(ctx, base); return; }
+#else
+  #ifdef CC_WALK_EXACT_BUILD
+  sub_82066EA8_exact(ctx, base); return;  // Xbox bisect build
+#endif
+  static_cast<void>(&sub_82066EA8_exact);
+#endif
+  const uint32_t obj = ctx.r3.u32;
+  const bool up = (ctx.r4.u32 & 0xFFu) != 0u;
+  CcFrame frame(ctx, base, 112u);
+  const uint32_t t = cc_vcall(ctx, base, obj, 40u, 0x82066ED4u);
+  if ((t & 0x7C6C1u) == 0u) { ctx.r3.u64 = 0u; return; }
+  const uint32_t v = REX_LOAD_U16(obj + 24u);
+  REX_STORE_U16(obj + 24u, uint16_t(up ? v + 1u : v + 0xFFFFu));
+  ctx.r3.u64 = 1u;
+}
+#endif
 #include "generated/sub_820B6190.inc"
 #include "generated/sub_820B0D80.inc"
 #include "generated/sub_820B1CA8.inc"

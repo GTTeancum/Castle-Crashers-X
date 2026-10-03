@@ -21,6 +21,7 @@ void cc_xbox_audio_stats(unsigned* started, unsigned* submitted, unsigned* callb
 void cc_xr_bind(uint32_t key, const void* data, uint32_t w, uint32_t h, int kind);
 void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t stride, uint32_t blend);
 void cc_xr_frame_end(uint32_t update_us, uint32_t render_us);
+void cc_xr_bench(unsigned window, unsigned frames, unsigned frame_us, unsigned update_us, unsigned render_us);
 void cc_xr_gpu_idle();
 // nxdk-checkpoint022/xbox_shims.cpp: leave the game for the dashboard.
 [[noreturn]] void cc_xbox_return_to_dashboard();
@@ -64,8 +65,11 @@ struct CcSampler {
   CcSampler() {
     if (!std::getenv("CC_SAMPLE")) return;
     worker = std::thread([this] {
+      // Spin to a 200 us period: sleep_for(1 ms) is ~15 ms on Windows.
+      auto next = std::chrono::steady_clock::now();
       while (!stop.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        next += std::chrono::microseconds(200);
+        while (std::chrono::steady_clock::now() < next) std::this_thread::yield();
         if (!g_sample_on.load(std::memory_order_relaxed)) continue;
         if (const char* f = g_sample_fn.load(std::memory_order_relaxed)) { ++counts[f]; ++total; }
         if (const cc::xbox::AddressSpace* mem = g_sample_mem.load(std::memory_order_relaxed)) {
@@ -280,6 +284,16 @@ static void cc_capture_on_function(const char* name, const Context& ctx,
                                    cc::xbox::AddressSpace& mem);
 static void cc_capture_end_frame(cc::xbox::AddressSpace& mem, uint32_t frame);
 void set_exact_texture_bind(bool v) noexcept { g_use_exact_texture_bind = v; }
+#ifdef CC_FAST
+// Play build guest page table: one entry per 64 KiB guest page holding the
+// host address of the page start when the whole page lies in mapped memory
+// with one host offset (one region, or adjacent regions laid out the same
+// way on the host); 1 = mixed or partly mapped (checked path); 0 = not yet
+// looked at. Filled lazily from the address space on the checked path, so
+// every guest access is a table load, an add and the byte swap.
+static uint8_t* g_page_host[65536];
+static const void* g_page_owner = nullptr;
+#endif
 struct Machine {
   struct ThreadSlot {
     bool allocated{};
@@ -448,7 +462,7 @@ struct Machine {
   // the eventual product presentation layer, never in this harness.
   uint64_t timebase_virtual_ticks = 0;
   uint64_t query_timebase() noexcept {
-#if defined(CC_XBOX_DRIVER) && defined(CC_FAST)
+#if defined(CC_XBOX_DRIVER) && defined(CC_FAST) && !defined(CC_BENCH)
     // Play build: the game's main loop steps by the measured frame time
     // (clamped by exact code to 1/60..1/10 s), so a real clock makes the
     // game run at real speed whatever the frame rate.
@@ -529,7 +543,7 @@ struct Machine {
         // the listed functions by return address (printed at exit).
         if (!fid) {
           static const char* const callers = std::getenv("CC_CALLERS");
-          if (callers && name[0] == 's' && std::strstr(callers, name)) fid = 8;
+          if (callers && name[0] == 's' && std::strncmp(name, "sub_", 4) == 0) { char k[13]; std::memcpy(k, name, 12); k[12] = 0; if (std::strstr(callers, k)) fid = 8; }
         }
 #endif
         s.name = name;
@@ -927,53 +941,110 @@ struct Machine {
     h.limit = span - 7u;
     h.host = region_cache[0].host;
   }
-  uint64_t load(uint32_t a, unsigned n) {
+  __attribute__((always_inline)) uint64_t load(uint32_t a, unsigned n) {
     tick(a);
 #ifdef CC_WATCH_ADDR
     // Host probe build: report the guest functions that read one address.
     if (a == uint32_t(CC_WATCH_ADDR)) watch_hit(a);
 #endif
+#ifdef CC_FAST
+    {
+      uint8_t* b = g_page_host[a >> 16];
+      if (__builtin_expect(uintptr_t(b) > 1u, 1)) return get_be(b + (a & 0xFFFFu), n);
+    }
+#endif
     const uint32_t off = a - hot_read.lo;
-    if (off < hot_read.limit) return get_be(hot_read.host + off, n);
+    if (__builtin_expect(off < hot_read.limit, 1)) return get_be(hot_read.host + off, n);
     return load_slow(a, n);
   }
-  void store(uint32_t a, unsigned n, uint64_t v) {
+  __attribute__((always_inline)) void store(uint32_t a, unsigned n, uint64_t v) {
     tick(a);
+#ifdef CC_FAST
+    {
+      uint8_t* b = g_page_host[a >> 16];
+      if (__builtin_expect(uintptr_t(b) > 1u, 1)) { put_be(b + (a & 0xFFFFu), n, v); return; }
+    }
+#endif
     const uint32_t off = a - hot_write.lo;
-    if (off < hot_write.limit) { put_be(hot_write.host + off, n, v); return; }
+    if (__builtin_expect(off < hot_write.limit, 1)) { put_be(hot_write.host + off, n, v); return; }
     store_slow(a, n, v);
   }
   // r1-addressed accesses: their own hot entry (a read/write region), so
   // interleaved stack and heap accesses do not evict each other.
-  uint64_t load_stack(uint32_t a, unsigned n) {
+  __attribute__((always_inline)) uint64_t load_stack(uint32_t a, unsigned n) {
     tick(a);
+#ifdef CC_FAST
+    {
+      uint8_t* b = g_page_host[a >> 16];
+      if (__builtin_expect(uintptr_t(b) > 1u, 1)) return get_be(b + (a & 0xFFFFu), n);
+    }
+#endif
     const uint32_t off = a - hot_stack.lo;
-    if (off < hot_stack.limit) return get_be(hot_stack.host + off, n);
+    if (__builtin_expect(off < hot_stack.limit, 1)) return get_be(hot_stack.host + off, n);
     return stack_load_slow(a, n);
   }
-  void store_stack(uint32_t a, unsigned n, uint64_t v) {
+  __attribute__((always_inline)) void store_stack(uint32_t a, unsigned n, uint64_t v) {
     tick(a);
+#ifdef CC_FAST
+    {
+      uint8_t* b = g_page_host[a >> 16];
+      if (__builtin_expect(uintptr_t(b) > 1u, 1)) { put_be(b + (a & 0xFFFFu), n, v); return; }
+    }
+#endif
     const uint32_t off = a - hot_stack.lo;
-    if (off < hot_stack.limit) { put_be(hot_stack.host + off, n, v); return; }
+    if (__builtin_expect(off < hot_stack.limit, 1)) { put_be(hot_stack.host + off, n, v); return; }
     stack_store_slow(a, n, v);
   }
-  __attribute__((noinline)) uint64_t stack_load_slow(uint32_t a, unsigned n) {
+  // Fill the page-table entry for a's page (play build): host address of
+  // the page start if the regions covering the page cover all of it with
+  // one host offset, else the 'checked path' marker.
+  void fill_page([[maybe_unused]] uint32_t a) {
+#ifdef CC_FAST
+    if (g_page_owner != &memory) {
+      std::memset(g_page_host, 0, sizeof(g_page_host));
+      g_page_owner = &memory;
+    }
+    const uint32_t pg = a >> 16;
+    if (g_page_host[pg]) return;
+    const uint64_t lo = uint64_t(pg) << 16, hi = lo + 0x10000u;
+    const cc::xbox::Region* rs = memory.regions();
+    uint64_t covered = 0;
+    intptr_t delta = 0;
+    bool first = true, ok = true;
+    for (size_t i = 0; i < memory.region_count() && ok; ++i) {
+      const cc::xbox::Region& r = rs[i];
+      const uint64_t rlo = r.guest, rhi = uint64_t(r.guest) + r.bytes;
+      if (rhi <= lo || rlo >= hi) continue;
+      if ((r.access & 3u) != 3u) { ok = false; break; }
+      const intptr_t d = intptr_t(r.host) - intptr_t(r.guest);
+      if (first) { delta = d; first = false; } else if (d != delta) { ok = false; break; }
+      covered += (rhi < hi ? rhi : hi) - (rlo > lo ? rlo : lo);
+    }
+    g_page_host[pg] = (ok && !first && covered == 0x10000u)
+        ? reinterpret_cast<uint8_t*>(intptr_t(lo) + delta)
+        : reinterpret_cast<uint8_t*>(uintptr_t(1));
+#endif
+  }
+  __attribute__((noinline, cold)) uint64_t stack_load_slow(uint32_t a, unsigned n) {
     if (const uint8_t* p = fast_host(a, n, 3u)) {
+      fill_page(a);
       refresh_hot(hot_stack);
       return get_be(p, n);
     }
     return load_slow(a, n);
   }
-  __attribute__((noinline)) void stack_store_slow(uint32_t a, unsigned n, uint64_t v) {
+  __attribute__((noinline, cold)) void stack_store_slow(uint32_t a, unsigned n, uint64_t v) {
     if (uint8_t* p = fast_host(a, n, 3u)) {
+      fill_page(a);
       refresh_hot(hot_stack);
       put_be(p, n, v);
       return;
     }
     store_slow(a, n, v);
   }
-  __attribute__((noinline)) uint64_t load_slow(uint32_t a, unsigned n) {
+  __attribute__((noinline, cold)) uint64_t load_slow(uint32_t a, unsigned n) {
     if (const uint8_t* p = fast_host(a, n, 1u)) {
+      fill_page(a);
       refresh_hot(hot_read);
       return get_be(p, n);
     }
@@ -982,8 +1053,9 @@ struct Machine {
       fail(Error::memory, a);
     return v;
   }
-  __attribute__((noinline)) void store_slow(uint32_t a, unsigned n, uint64_t v) {
+  __attribute__((noinline, cold)) void store_slow(uint32_t a, unsigned n, uint64_t v) {
     if (uint8_t* p = fast_host(a, n, 2u)) {
+      fill_page(a);
       refresh_hot(hot_write);
       put_be(p, n, v);
       return;
@@ -1013,13 +1085,48 @@ static int64_t convert(double x, bool nearest) {
 static int64_t simde_mm_cvtsd_si64(ScalarDouble d) {
   return convert(d.value, true);
 }
+#ifdef CC_FAST
+// Truncating conversions (fctidz/fctiwz) from the IEEE bit pattern: no x87
+// control-word switches (each fldcw ends an XEMU translation block) and no
+// out-of-line isfinite/trunc. Same results as the checked forms: NaN, Inf
+// and out-of-range values give the minimum integer.
+static int64_t cc_trunc_i64(double x) {
+  uint64_t b; __builtin_memcpy(&b, &x, 8);
+  const uint32_t e = uint32_t(b >> 52) & 0x7FFu;
+  if (e < 1023u) return 0;                       // |x| < 1 (and zero, subnormals)
+  if (e >= 1023u + 63u) return INT64_MIN;        // |x| >= 2^63, Inf, NaN
+  const uint64_t m = (b & 0x000FFFFFFFFFFFFFull) | 0x0010000000000000ull;
+  const uint32_t sh = e - 1023u;
+  const uint64_t v = sh >= 52u ? m << (sh - 52u) : m >> (52u - sh);
+  return (b >> 63) ? int64_t(0 - v) : int64_t(v);
+}
+static int32_t cc_trunc_i32(double x) {
+  uint64_t b; __builtin_memcpy(&b, &x, 8);
+  const uint32_t hi = uint32_t(b >> 32);
+  const uint32_t e = (hi >> 20) & 0x7FFu;
+  if (e < 1023u) return 0;
+  if (e >= 1023u + 31u) return INT_MIN;          // |x| >= 2^31, Inf, NaN
+  const uint32_t sh = e - 1023u;                 // 0..30
+  const uint32_t top = (hi & 0x000FFFFFu) | 0x00100000u;  // mantissa bits 52..32
+  const uint32_t v = sh > 20u ? (top << (sh - 20u)) | (uint32_t(b) >> (52u - sh)) : top >> (20u - sh);
+  return (hi >> 31) ? int32_t(0u - v) : int32_t(v);
+}
+#endif
 static int64_t simde_mm_cvttsd_si64(ScalarDouble d) {
+#ifdef CC_FAST
+  return cc_trunc_i64(d.value);
+#else
   return convert(d.value, false);
+#endif
 }
 static int32_t simde_mm_cvttsd_si32(ScalarDouble d) {
+#ifdef CC_FAST
+  return cc_trunc_i32(d.value);
+#else
   if (!std::isfinite(d.value) || d.value < double(INT_MIN) || d.value >= 2147483648.0)
     return INT_MIN;
   return static_cast<int32_t>(std::trunc(d.value));
+#endif
 }
 using PPCVRegister = cc::quad::VRegister;
 struct SimdI021 { uint8_t u8[16]; };
@@ -1281,9 +1388,310 @@ static simde__m128i simde_mm_setzero_si128() { return simde__m128i{}; }
 static uint8_t* raw_addr021(Machine& base,uint32_t a) { auto* p=base.fast_host(a,16,3); if(!p) p=base.memory.contiguous(a,16,3); if(!p) base.fail(Error::memory,a); return p; }
 #define REX_RAW_ADDR(a) raw_addr021(base,uint32_t(a))
 using PPCRegister = Register;
+#if defined(CC_FAST) && defined(CC_VIEW)  // opt-in: breaks the run at startup (under investigation)
+// Play build register view. Each generated function runs on a view of the
+// guest registers in which the stack pointer r1, the callee-saved r14-r31
+// and f14-f31 and the condition-register fields are C++ locals (kept in
+// x86 registers, never stored unless used), and everything else refers to
+// the shared Context. Callees only ever see the Context: r1 is written back
+// whenever the view is passed on (and at return); callee-saved registers
+// need no write-back because a callee preserves them by definition, so the
+// generated save/restore helpers (__savegprlr_N/__restgprlr_N/__savefpr_N/
+// __restfpr_N) become no-ops inside views. Verification builds keep the
+// plain Context (CC_NO_VIEW turns this off in a play build).
+struct CcView {
+  Context& c;
+  Register& r0;
+  Register r1;
+  Register& r2;
+  Register& r3;
+  Register& r4;
+  Register& r5;
+  Register& r6;
+  Register& r7;
+  Register& r8;
+  Register& r9;
+  Register& r10;
+  Register& r11;
+  Register& r12;
+  Register& r13;
+  Register r14;
+  Register r15;
+  Register r16;
+  Register r17;
+  Register r18;
+  Register r19;
+  Register r20;
+  Register r21;
+  Register r22;
+  Register r23;
+  Register r24;
+  Register r25;
+  Register r26;
+  Register r27;
+  Register r28;
+  Register r29;
+  Register r30;
+  Register r31;
+  Register& f0;
+  Register& f1;
+  Register& f2;
+  Register& f3;
+  Register& f4;
+  Register& f5;
+  Register& f6;
+  Register& f7;
+  Register& f8;
+  Register& f9;
+  Register& f10;
+  Register& f11;
+  Register& f12;
+  Register& f13;
+  Register f14;
+  Register f15;
+  Register f16;
+  Register f17;
+  Register f18;
+  Register f19;
+  Register f20;
+  Register f21;
+  Register f22;
+  Register f23;
+  Register f24;
+  Register f25;
+  Register f26;
+  Register f27;
+  Register f28;
+  Register f29;
+  Register f30;
+  Register f31;
+  uint64_t& lr;
+  uint64_t& msr;
+  Register& ctr;
+  cc::quad::XER& xer;
+  Register& reserved;
+  cc::quad::CR cr0;
+  cc::quad::CR cr1;
+  cc::quad::CR cr2;
+  cc::quad::CR cr3;
+  cc::quad::CR cr4;
+  cc::quad::CR cr5;
+  cc::quad::CR cr6;
+  cc::quad::CR cr7;
+  cc::quad::FPState& fpscr;
+  cc::quad::VRegister& v0;
+  cc::quad::VRegister& v1;
+  cc::quad::VRegister& v2;
+  cc::quad::VRegister& v3;
+  cc::quad::VRegister& v4;
+  cc::quad::VRegister& v5;
+  cc::quad::VRegister& v6;
+  cc::quad::VRegister& v7;
+  cc::quad::VRegister& v8;
+  cc::quad::VRegister& v9;
+  cc::quad::VRegister& v10;
+  cc::quad::VRegister& v11;
+  cc::quad::VRegister& v12;
+  cc::quad::VRegister& v13;
+  cc::quad::VRegister& v14;
+  cc::quad::VRegister& v15;
+  cc::quad::VRegister& v16;
+  cc::quad::VRegister& v17;
+  cc::quad::VRegister& v18;
+  cc::quad::VRegister& v19;
+  cc::quad::VRegister& v20;
+  cc::quad::VRegister& v21;
+  cc::quad::VRegister& v22;
+  cc::quad::VRegister& v23;
+  cc::quad::VRegister& v24;
+  cc::quad::VRegister& v25;
+  cc::quad::VRegister& v26;
+  cc::quad::VRegister& v27;
+  cc::quad::VRegister& v28;
+  cc::quad::VRegister& v29;
+  cc::quad::VRegister& v30;
+  cc::quad::VRegister& v31;
+  cc::quad::VRegister& v32;
+  cc::quad::VRegister& v33;
+  cc::quad::VRegister& v34;
+  cc::quad::VRegister& v35;
+  cc::quad::VRegister& v36;
+  cc::quad::VRegister& v37;
+  cc::quad::VRegister& v38;
+  cc::quad::VRegister& v39;
+  cc::quad::VRegister& v40;
+  cc::quad::VRegister& v41;
+  cc::quad::VRegister& v42;
+  cc::quad::VRegister& v43;
+  cc::quad::VRegister& v44;
+  cc::quad::VRegister& v45;
+  cc::quad::VRegister& v46;
+  cc::quad::VRegister& v47;
+  cc::quad::VRegister& v48;
+  cc::quad::VRegister& v49;
+  cc::quad::VRegister& v50;
+  cc::quad::VRegister& v51;
+  cc::quad::VRegister& v52;
+  cc::quad::VRegister& v53;
+  cc::quad::VRegister& v54;
+  cc::quad::VRegister& v55;
+  cc::quad::VRegister& v56;
+  cc::quad::VRegister& v57;
+  cc::quad::VRegister& v58;
+  cc::quad::VRegister& v59;
+  cc::quad::VRegister& v60;
+  cc::quad::VRegister& v61;
+  cc::quad::VRegister& v62;
+  cc::quad::VRegister& v63;
+  cc::quad::VRegister& v64;
+  cc::quad::VRegister& v65;
+  cc::quad::VRegister& v66;
+  cc::quad::VRegister& v67;
+  cc::quad::VRegister& v68;
+  cc::quad::VRegister& v69;
+  cc::quad::VRegister& v70;
+  cc::quad::VRegister& v71;
+  cc::quad::VRegister& v72;
+  cc::quad::VRegister& v73;
+  cc::quad::VRegister& v74;
+  cc::quad::VRegister& v75;
+  cc::quad::VRegister& v76;
+  cc::quad::VRegister& v77;
+  cc::quad::VRegister& v78;
+  cc::quad::VRegister& v79;
+  cc::quad::VRegister& v80;
+  cc::quad::VRegister& v81;
+  cc::quad::VRegister& v82;
+  cc::quad::VRegister& v83;
+  cc::quad::VRegister& v84;
+  cc::quad::VRegister& v85;
+  cc::quad::VRegister& v86;
+  cc::quad::VRegister& v87;
+  cc::quad::VRegister& v88;
+  cc::quad::VRegister& v89;
+  cc::quad::VRegister& v90;
+  cc::quad::VRegister& v91;
+  cc::quad::VRegister& v92;
+  cc::quad::VRegister& v93;
+  cc::quad::VRegister& v94;
+  cc::quad::VRegister& v95;
+  cc::quad::VRegister& v96;
+  cc::quad::VRegister& v97;
+  cc::quad::VRegister& v98;
+  cc::quad::VRegister& v99;
+  cc::quad::VRegister& v100;
+  cc::quad::VRegister& v101;
+  cc::quad::VRegister& v102;
+  cc::quad::VRegister& v103;
+  cc::quad::VRegister& v104;
+  cc::quad::VRegister& v105;
+  cc::quad::VRegister& v106;
+  cc::quad::VRegister& v107;
+  cc::quad::VRegister& v108;
+  cc::quad::VRegister& v109;
+  cc::quad::VRegister& v110;
+  cc::quad::VRegister& v111;
+  cc::quad::VRegister& v112;
+  cc::quad::VRegister& v113;
+  cc::quad::VRegister& v114;
+  cc::quad::VRegister& v115;
+  cc::quad::VRegister& v116;
+  cc::quad::VRegister& v117;
+  cc::quad::VRegister& v118;
+  cc::quad::VRegister& v119;
+  cc::quad::VRegister& v120;
+  cc::quad::VRegister& v121;
+  cc::quad::VRegister& v122;
+  cc::quad::VRegister& v123;
+  cc::quad::VRegister& v124;
+  cc::quad::VRegister& v125;
+  cc::quad::VRegister& v126;
+  cc::quad::VRegister& v127;
+  explicit CcView(Context& cc) : c(cc), r0(cc.r0), r1(cc.r1), r2(cc.r2), r3(cc.r3), r4(cc.r4), r5(cc.r5), r6(cc.r6), r7(cc.r7), r8(cc.r8), r9(cc.r9), r10(cc.r10), r11(cc.r11), r12(cc.r12), r13(cc.r13), r14(cc.r14), r15(cc.r15), r16(cc.r16), r17(cc.r17), r18(cc.r18), r19(cc.r19), r20(cc.r20), r21(cc.r21), r22(cc.r22), r23(cc.r23), r24(cc.r24), r25(cc.r25), r26(cc.r26), r27(cc.r27), r28(cc.r28), r29(cc.r29), r30(cc.r30), r31(cc.r31), f0(cc.f0), f1(cc.f1), f2(cc.f2), f3(cc.f3), f4(cc.f4), f5(cc.f5), f6(cc.f6), f7(cc.f7), f8(cc.f8), f9(cc.f9), f10(cc.f10), f11(cc.f11), f12(cc.f12), f13(cc.f13), f14(cc.f14), f15(cc.f15), f16(cc.f16), f17(cc.f17), f18(cc.f18), f19(cc.f19), f20(cc.f20), f21(cc.f21), f22(cc.f22), f23(cc.f23), f24(cc.f24), f25(cc.f25), f26(cc.f26), f27(cc.f27), f28(cc.f28), f29(cc.f29), f30(cc.f30), f31(cc.f31), lr(cc.lr), msr(cc.msr), ctr(cc.ctr), xer(cc.xer), reserved(cc.reserved), cr0(cc.cr0), cr1(cc.cr1), cr2(cc.cr2), cr3(cc.cr3), cr4(cc.cr4), cr5(cc.cr5), cr6(cc.cr6), cr7(cc.cr7), fpscr(cc.fpscr), v0(cc.v0), v1(cc.v1), v2(cc.v2), v3(cc.v3), v4(cc.v4), v5(cc.v5), v6(cc.v6), v7(cc.v7), v8(cc.v8), v9(cc.v9), v10(cc.v10), v11(cc.v11), v12(cc.v12), v13(cc.v13), v14(cc.v14), v15(cc.v15), v16(cc.v16), v17(cc.v17), v18(cc.v18), v19(cc.v19), v20(cc.v20), v21(cc.v21), v22(cc.v22), v23(cc.v23), v24(cc.v24), v25(cc.v25), v26(cc.v26), v27(cc.v27), v28(cc.v28), v29(cc.v29), v30(cc.v30), v31(cc.v31), v32(cc.v32), v33(cc.v33), v34(cc.v34), v35(cc.v35), v36(cc.v36), v37(cc.v37), v38(cc.v38), v39(cc.v39), v40(cc.v40), v41(cc.v41), v42(cc.v42), v43(cc.v43), v44(cc.v44), v45(cc.v45), v46(cc.v46), v47(cc.v47), v48(cc.v48), v49(cc.v49), v50(cc.v50), v51(cc.v51), v52(cc.v52), v53(cc.v53), v54(cc.v54), v55(cc.v55), v56(cc.v56), v57(cc.v57), v58(cc.v58), v59(cc.v59), v60(cc.v60), v61(cc.v61), v62(cc.v62), v63(cc.v63), v64(cc.v64), v65(cc.v65), v66(cc.v66), v67(cc.v67), v68(cc.v68), v69(cc.v69), v70(cc.v70), v71(cc.v71), v72(cc.v72), v73(cc.v73), v74(cc.v74), v75(cc.v75), v76(cc.v76), v77(cc.v77), v78(cc.v78), v79(cc.v79), v80(cc.v80), v81(cc.v81), v82(cc.v82), v83(cc.v83), v84(cc.v84), v85(cc.v85), v86(cc.v86), v87(cc.v87), v88(cc.v88), v89(cc.v89), v90(cc.v90), v91(cc.v91), v92(cc.v92), v93(cc.v93), v94(cc.v94), v95(cc.v95), v96(cc.v96), v97(cc.v97), v98(cc.v98), v99(cc.v99), v100(cc.v100), v101(cc.v101), v102(cc.v102), v103(cc.v103), v104(cc.v104), v105(cc.v105), v106(cc.v106), v107(cc.v107), v108(cc.v108), v109(cc.v109), v110(cc.v110), v111(cc.v111), v112(cc.v112), v113(cc.v113), v114(cc.v114), v115(cc.v115), v116(cc.v116), v117(cc.v117), v118(cc.v118), v119(cc.v119), v120(cc.v120), v121(cc.v121), v122(cc.v122), v123(cc.v123), v124(cc.v124), v125(cc.v125), v126(cc.v126), v127(cc.v127) {}
+  CcView(const CcView&) = delete;
+  operator Context&() { c.r1 = r1; return c; }
+};
+[[maybe_unused]] static inline void __savegprlr_14(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savegprlr_15(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savegprlr_16(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savegprlr_17(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savegprlr_18(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savegprlr_19(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savegprlr_20(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savegprlr_21(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savegprlr_22(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savegprlr_23(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savegprlr_24(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savegprlr_25(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savegprlr_26(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savegprlr_27(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savegprlr_28(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savegprlr_29(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savegprlr_30(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savegprlr_31(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restgprlr_14(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restgprlr_15(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restgprlr_16(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restgprlr_17(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restgprlr_18(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restgprlr_19(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restgprlr_20(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restgprlr_21(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restgprlr_22(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restgprlr_23(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restgprlr_24(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restgprlr_25(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restgprlr_26(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restgprlr_27(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restgprlr_28(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restgprlr_29(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restgprlr_30(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restgprlr_31(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savefpr_14(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savefpr_15(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savefpr_16(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savefpr_17(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savefpr_18(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savefpr_19(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savefpr_20(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savefpr_21(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savefpr_22(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savefpr_23(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savefpr_24(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savefpr_25(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savefpr_26(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savefpr_27(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savefpr_28(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savefpr_29(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savefpr_30(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __savefpr_31(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restfpr_14(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restfpr_15(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restfpr_16(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restfpr_17(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restfpr_18(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restfpr_19(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restfpr_20(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restfpr_21(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restfpr_22(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restfpr_23(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restfpr_24(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restfpr_25(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restfpr_26(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restfpr_27(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restfpr_28(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restfpr_29(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restfpr_30(CcView&, Machine&) {}
+[[maybe_unused]] static inline void __restfpr_31(CcView&, Machine&) {}
+#define DEFINE_REX_FUNC(name) \
+  static inline __attribute__((always_inline)) void name##_v(CcView& ctx, Machine& base); \
+  static void name(Context& cc_c, Machine& base) { CcView cc_v(cc_c); name##_v(cc_v, base); cc_c.r1 = cc_v.r1; } \
+  static inline __attribute__((always_inline)) void name##_v([[maybe_unused]] CcView& ctx, [[maybe_unused]] Machine& base)
+#else
 #define DEFINE_REX_FUNC(name)                                                  \
   static void name([[maybe_unused]] Context &ctx,                              \
                    [[maybe_unused]] Machine &base)
+#endif
 #if defined(CC_FAST) && !defined(CC_OLD_PROLOGUE)
 // Play build: no trace/crash-report bookkeeping per call; each function
 // resolves its hook flag once (cached in a per-function byte) and only
@@ -1291,15 +1699,30 @@ using PPCRegister = Register;
 #ifdef CC_XBOX_PROFILE
 #define CC_XPROF_NOTE() do { if (__func__[0] != 0x5F) { \
     ::g_xprof_fn = __func__; ::g_xprof_r1 = ctx.r1.u32; ::g_xprof_lr = uint32_t(ctx.lr); } } while (0)
+#elif !defined(CC_XBOX_DRIVER)
+// Host play build: feed the sampling profiler (CC_SAMPLE=1) as the slow
+// build does, so a host profile reflects the code the Xbox runs.
+#define CC_XPROF_NOTE() do { if (__func__[0] != 0x5F) { \
+    g_sample_fn.store(__func__, std::memory_order_relaxed); \
+    g_sample_r1.store(ctx.r1.u32, std::memory_order_relaxed); \
+    g_sample_lr.store(uint32_t(ctx.lr), std::memory_order_relaxed); \
+    g_sample_mem.store(&base.memory, std::memory_order_relaxed); } } while (0)
 #else
 #define CC_XPROF_NOTE() do {} while (0)
 #endif
+#if defined(CC_XBOX_DRIVER) && !defined(CC_XBOX_PROFILE)
+// Xbox play build: no per-call hook check; the four hooked functions
+// (worker drain and the GPU writeback publishes) have explicit wrappers
+// in runtime021/bodies.inc.
+#define REX_FUNC_PROLOGUE() do {} while (0)
+#else
 #define REX_FUNC_PROLOGUE() do { \
     CC_XPROF_NOTE(); \
     static uint8_t cc_hook = 0xFF; \
     if (cc_hook == 0xFF) cc_hook = uint8_t(base.hook_flags(__func__)); \
     if (cc_hook) base.hooked_fast(cc_hook, ctx); \
   } while (0)
+#endif
 #else
 #define REX_FUNC_PROLOGUE() base.prologue(__func__,ctx)
 #endif
@@ -1517,6 +1940,7 @@ static void cc_dispatch_cached(uint32_t a, Context &ctx, Machine &base, uint32_t
 //    sync/lwsync only need to stop compiler reordering (no lock or).
 //  - isnan: compiler builtin instead of nxdk's out-of-line __fpclassify.
 //  - fma: the exact float shortcut inline, software fused_nearest otherwise.
+static inline void* cc_memset(void* d, int c, ::size_t n) noexcept { return __builtin_memset(d, c, n); }
 namespace cc_std {
 using namespace ::std;
 inline void atomic_thread_fence(::std::memory_order) noexcept { asm volatile("" ::: "memory"); }
@@ -1525,8 +1949,17 @@ inline bool isnan(float x) noexcept { return __builtin_isnan(x); }
 inline double fma(double x, double y, double z) noexcept {
   return cc::numeric::fused_nearest_fastpath(x, y, z);
 }
+//  - memcpy/memmove/memset: compiler builtins (nxdk compiles with
+//    -ffreestanding/-fno-builtin, so the plain calls never inline and land
+//    in the library's byte loops; small constant sizes now inline).
+inline void* memcpy(void* d, const void* s, ::size_t n) noexcept { return __builtin_memcpy(d, s, n); }
+inline void* memmove(void* d, const void* s, ::size_t n) noexcept { return __builtin_memmove(d, s, n); }
+using cc::tree::cc_memset;
 }  // namespace cc_std
 #define std cc_std
+// Generated dcbz/dcbz128 call plain memset; std::memset becomes
+// cc_std::cc_memset (the using-declaration above).
+#define memset cc_memset
 #endif
 #include "decls.inc"
 #define sub_8208C5D8 sub_8208C5D8_unsupported008
@@ -1540,6 +1973,7 @@ inline double fma(double x, double y, double z) noexcept {
 #include "bodies.inc"
 #ifdef CC_FAST
 #undef std
+#undef memset
 #endif
 static bool submit(void *ptr, const Draw &d) {
   auto &m = *static_cast<Machine *>(ptr);
@@ -1551,7 +1985,17 @@ static bool submit(void *ptr, const Draw &d) {
 #ifdef CC_FAST
 struct CcDispatchEntry { uint32_t address; CcGenFn fn; };
 #include "dispatch_table.inc"
+// Second-level cache for polymorphic call sites (a site's own one-entry
+// cache misses whenever its target alternates, e.g. the ActionScript
+// handler call in the interpreter loops): direct-mapped by address, 64 KB.
+static CcDispatchEntry g_dispatch_l2[8192];
 static void cc_dispatch_cached(uint32_t a, Context &ctx, Machine &base, uint32_t &key, CcGenFn &fn) {
+  CcDispatchEntry& l2 = g_dispatch_l2[(a >> 2) & 8191u];
+  if (l2.address == a && l2.fn) {
+    key = a; fn = l2.fn;
+    fn(ctx, base);
+    return;
+  }
   size_t lo = 0, hi = sizeof(cc_dispatch_table) / sizeof(cc_dispatch_table[0]);
   while (lo < hi) {
     const size_t mid = (lo + hi) / 2;
@@ -1559,6 +2003,7 @@ static void cc_dispatch_cached(uint32_t a, Context &ctx, Machine &base, uint32_t
   }
   if (lo < sizeof(cc_dispatch_table) / sizeof(cc_dispatch_table[0]) && cc_dispatch_table[lo].address == a) {
     key = a; fn = cc_dispatch_table[lo].fn;
+    l2.address = a; l2.fn = fn;
     fn(ctx, base);
     return;
   }
@@ -1971,6 +2416,12 @@ Result invoke(uint32_t entry, Context &ctx, AddressSpace &memory, Sink sink,
   }
   Machine m(memory, sink);
   m.budget = budget;
+#ifdef CC_FAST
+  if (g_page_owner != &memory) {  // a different address space: forget its pages
+    std::memset(g_page_host, 0, sizeof(g_page_host));
+    g_page_owner = &memory;
+  }
+#endif
   FloatScope fp;
   execute(entry, ctx, m);
   return m.result;

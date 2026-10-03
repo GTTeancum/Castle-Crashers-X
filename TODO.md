@@ -50,6 +50,38 @@ for drawing, identical verification counts for everything else):
 Dropped as translation-layer tuning: flat page table, exact-body trims,
 30 Hz update, GPU vertex transform.
 
+**ActionScript interpreter map** (read-only survey 2026-10-02; host level
+profile: game update ~55% of a frame, most of it script execution):
+- Fetch/dispatch loop in four copies, each naming itself by its error
+  string: `sub_8207BAE8` OnEnterFrame, `sub_8207B8B8` OnLoad,
+  `sub_8207B630` ProcessEndOfFrameAction (frame scripts), `sub_8207B150`
+  CallCustomFunction (user functions). Opcode = code[pc] (code ptr at
+  this+20); >= 0x80 has an LE u16 length; handler table 0x8215A518 (0xA5
+  entries), handler(AS*, AS*, rec{+0 op, +4 len, +8 data}, ?, done*) returns
+  an extra pc delta. Standard AVM1 actions plus fused A0 (GetVariable with
+  inline name, `sub_82081C08`), A2 (GetMember inline name, `sub_82081E18`,
+  hot), A4 (SetVariable inline, `sub_820822D8`), A1/A3. No DefineFunction2.
+- Values: 12-byte pool slots (1256 at P+5028, P = VM+10372, in-use byte
+  +8, allocator `sub_82082488` scans linearly from a rover at P+20100);
+  operand stack of Value* at P+0, count at P+5024. Tag +0: 0x80000000
+  undefined, 2 bool, 4 int, 8 string (u16 interned id), 16 number (float),
+  object types 1/64/128 (MovieClip)/1024/4096/8192/0x4000/0x40000;
+  refcounted mask 0x7C6C1 (u16 refcount at obj+24 via `sub_82066EA8`).
+- Names are u16 ids (`sub_8209D948` hash Σc[i]*(119+i), linear probe;
+  builtin ids from `sub_820906A8`). GetVariable `sub_8207AF80`: locals
+  `sub_82079BE0`, then object map `sub_8208C140` (sorted map lookup
+  `sub_82082390`), then the scope stack. Clip GetMember `sub_8208B438`.
+  `sub_82088CF0` (38% inclusive) is Clip::CharToFunc, the builtin/user
+  function call wrapper reached from CallFunction `sub_8207E048`.
+- Per frame: `sub_8209DE50` -> `sub_820915F0` -> root advance
+  `sub_82088A08` -> MovieClip::Tick `sub_8208A228` (runs OnEnterFrame /
+  OnLoad and frame scripts on clip+160, recurses into children). Render
+  traversal is `sub_82091248` (separate).
+- Native so far: `sub_82082390` map lookup, `sub_82079BE0` locals read,
+  `sub_82066EA8` refcount step, `sub_8206F918`. Next: push decode
+  `sub_8207AA50`/`sub_8207A908`, pool allocator, GetVariable chain, then
+  the dispatch loop calling handlers directly.
+
 ## Memory budget (biggest known porting constraint)
 
 **Decision (2026-09-28): retail 64 MB consoles only.** No 128 MB
@@ -227,7 +259,27 @@ sound effects where possible; stream art wherever it can be streamed.
       level 1 tavern 24 FPS (update 21 ms, draw 17 ms), castle hall 31-34
       FPS (update 12-16 ms, draw 15-16 ms), busiest fight 16-20 FPS with
       update 25-35 ms; menus 40-57 FPS. Drawing is no longer the larger
-      half; the game update is. The host capture now records the
+      half; the game update is.
+      2026-10-03, after the Xbox/XEMU analysis (read-only multi-agent
+      review): XEMU, same scripted run, back to back in a quiet window:
+      disc H12 (the 2.6 KB register-file copy in the native matrix push
+      removed - it was the 31 -> 23 FPS regression of H8-H10; fast
+      memcpy/memset/memmove in xbox_shims.cpp instead of nxdk's unoptimised
+      PDCLib byte loops; builtin memcpy/memset in the generated range;
+      fall-through memory fast path with cold slow paths; fctidz/fctiwz
+      from the bit pattern without x87 control-word switches; integer fma
+      guard; empty prologue on Xbox with wrappers for the 4 hooked
+      functions; font atlas sampled once per frame; texture/blend state
+      sent only on change; play-build cc_log off; SDL events ignored):
+      castle hall ~42 FPS (update 8-9 ms, render 10 ms). Disc H13 (H12 plus
+      the 64 KiB guest page table g_page_host: every guest access is a
+      table load, an add and the byte swap): castle hall 58-60 FPS (update
+      4 ms, render 6 ms; capped by the game's 60 Hz pacing), tavern and
+      fights 48-58 FPS, menus 43-59. Host oracle and pixel checks
+      identical; release verification unchanged. A register view (r1,
+      r14-r31, f14-f31 and CR fields as C++ locals, CC_VIEW, opt-in)
+      fails at startup on the host and is under investigation.
+      The host capture now records the
       texture from the bind wrapper itself, since it used to read it in the
       exact bind's prologue hook; written from the exact
       body: count != 4 maps points to pixels x' = w(x+0.5), y' = h(y+0.5);

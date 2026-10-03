@@ -22,10 +22,28 @@ inline bool fused_nearest_fast(double x, double y, double z, double& out) noexce
   out = x * y + z;
   return true;
 }
+// Integer pre-check for the same shortcut (no x87 compares or float
+// round trips): x and y are zero, or finite doubles whose exponent lies in
+// the float normal range and whose low 29 mantissa bits are zero (exactly
+// floats); |z| < 2^1000. Anything it does not accept (float subnormals,
+// |z| == 2^1000, non-finite values) goes to fused_nearest_fast, so the
+// accepted set and the results are unchanged.
+inline bool fused_float_operand(double v) noexcept {
+  unsigned long long b; __builtin_memcpy(&b, &v, 8);
+  const unsigned hi = unsigned(b >> 32), lo = unsigned(b);
+  if (((hi & 0x7FFFFFFFu) | lo) == 0u) return true;
+  const unsigned e = (hi >> 20) & 0x7FFu;
+  return (lo & 0x1FFFFFFFu) == 0u && e >= 1023u - 126u && e <= 1023u + 127u;
+}
+inline bool fused_small_addend(double z) noexcept {
+  unsigned long long b; __builtin_memcpy(&b, &z, 8);
+  return ((unsigned(b >> 32) >> 20) & 0x7FFu) < 1023u + 1000u;
+}
 inline double fused_nearest_fastpath(double x, double y, double z) noexcept {
 #ifdef CC_NO_FMA_FAST  // bisect switch: software path only
   return fused_nearest(x, y, z);
 #else
+  if (fused_float_operand(x) && fused_float_operand(y) && fused_small_addend(z)) return x * y + z;
   double r;
   return fused_nearest_fast(x, y, z, r) ? r : fused_nearest(x, y, z);
 #endif

@@ -24,9 +24,16 @@ static inline void cc_vlog(const char* fmt, va_list ap) {
   vsnprintf(buf, sizeof(buf), fmt, ap);
   debugPrint("%s", buf);
 }
+#ifdef CC_FAST
+// Play build: informational lines are dropped (the debug console sits
+// behind the game picture, and each screenful costs a 1.2 MB clear);
+// errors still print.
+static inline void cc_log(const char*, ...) {}
+#else
 static inline void cc_log(const char* fmt, ...) {
   va_list ap; va_start(ap, fmt); cc_vlog(fmt, ap); va_end(ap);
 }
+#endif
 static inline void cc_elog(const char* fmt, ...) {
   va_list ap; va_start(ap, fmt); cc_vlog(fmt, ap); va_end(ap);
 }
