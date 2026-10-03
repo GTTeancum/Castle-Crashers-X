@@ -38,6 +38,10 @@ CXXFLAGS += -DCC_CULL_EXACT_BUILD
 endif
 # Benchmark build: make BENCH=1 (fixed game clock, no frame pacing,
 # per-window averages on screen; see runtime021/bodies.inc CC_BENCH)
+# Four scripted players (join, pick knights, fight in a loop): make FOURP=1
+ifneq ($(FOURP),)
+CXXFLAGS += -DCC_SCRIPT_4P
+endif
 ifneq ($(BENCH),)
 CXXFLAGS += -DCC_BENCH
 endif

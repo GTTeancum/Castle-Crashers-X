@@ -7387,10 +7387,19 @@ static void __imp__XamShowMarketplaceUI([[maybe_unused]] Context& ctx, Machine& 
 // PORT POLICY (nobody signs in): every controller slot reports "not
 // signed in" (ERROR_NOT_LOGGED_ON 0x4DD) with an empty name / zero XUID,
 // exactly as a real console answers for an empty slot.
+static bool cc_four_players();
 static void __imp__XamUserGetName(Context& ctx, Machine& base) {
   if (ctx.r3.u32 > 3u || (ctx.r4.u32 == 0u && ctx.r5.u32 != 0u))
     base.fail(Error::unsupported, 0x8214A234u);
   if (ctx.r4.u32 && ctx.r5.u32) base.store(ctx.r4.u32, 1, 0u);
+  if (cc_four_players() && ctx.r3.u32 >= 1u && ctx.r3.u32 <= 3u && ctx.r4.u32 && ctx.r5.u32 >= 9u) {
+    const char name[] = "Player ";
+    for (uint32_t k = 0; k < 7u; ++k) base.store(ctx.r4.u32 + k, 1, uint8_t(name[k]));
+    base.store(ctx.r4.u32 + 7, 1, uint8_t('1' + ctx.r3.u32));
+    base.store(ctx.r4.u32 + 8, 1, 0u);
+    ctx.r3.u64 = 0u;
+    return;
+  }
   ctx.r3.u64 = 0x4DDu;
 }
 // NtWriteFile(handle r3, event r4, apc r5, ctx r6, iosb r7, buffer r8, length
@@ -7409,9 +7418,50 @@ static void __imp__NtWriteFile([[maybe_unused]] Context& ctx, Machine& base) {
 // ERROR_DEVICE_NOT_CONNECTED (0x48F), matching a console with one pad.
 // The original-Xbox driver maps real pads through this same boundary.
 static uint32_t g_input_packet_number = 0;
+// Four-player diagnostic (Xbox: make FOURP=1, host: CC_4P=1): ports 1-3 are
+// connected too and follow their own scripts - join at character select,
+// pick a knight - and from the first fight on all four players walk and
+// attack in a loop, so a run measures combat with four players on screen.
+static bool cc_four_players() {
+#if defined(CC_SCRIPT_4P)
+  return true;
+#elif !defined(CC_XBOX_DRIVER)
+  static const bool on = std::getenv("CC_4P") != nullptr;
+  return on;
+#else
+  return false;
+#endif
+}
+// Combat loop for player `user` (0-3) from frame `start`: walk, light
+// attacks, walk back, heavy and light attacks; offsets keep the players apart.
+static void cc_combat_loop(uint32_t user, uint32_t frame, uint32_t start, uint32_t& buttons, uint32_t& thumbs) {
+  if (frame < start) return;
+  const uint32_t t = (frame - start + user * 47u) % 360u;
+  int16_t lx = 0, ly = 0;
+  if (t < 70u) { lx = 26000; ly = int16_t(user & 1u ? 9000 : -9000); }
+  else if (t < 150u) { if ((t % 16u) < 4u) buttons |= 0x4000u; }              // X: light attack
+  else if (t < 200u) { lx = -22000; ly = int16_t(user & 2u ? 12000 : -12000); }
+  else if (t < 260u) { if ((t % 30u) < 5u) buttons |= 0x8000u;               // Y: heavy attack
+                       else if ((t % 30u) >= 15u && (t % 30u) < 19u) buttons |= 0x4000u; }
+  else if (t < 300u) { lx = 20000; }
+  else { if ((t % 12u) < 3u) buttons |= 0x4000u; if (t == 330u + user) buttons |= 0x1000u; }  // A: jump
+  if (lx || ly) thumbs = (uint32_t(uint16_t(lx)) << 16) | uint16_t(ly);
+}
+// Scripted pads 1-3: A to join at character select (on screen from about
+// frame 5200 until player 1's START at 6000), A again to take a knight.
+static void cc_extra_pad(uint32_t user, uint32_t frame, uint32_t& buttons, uint32_t& thumbs) {
+  uint32_t join = 5640u + user * 40u, pick = 5800u + user * 40u, hold = 12u;
+#ifndef CC_XBOX_DRIVER
+  if (const char* e = std::getenv("CC_4P_JOIN")) join = uint32_t(std::strtoul(e, nullptr, 10)) + user * 40u;
+  if (const char* e = std::getenv("CC_4P_PICK")) pick = uint32_t(std::strtoul(e, nullptr, 10)) + user * 40u;
+#endif
+  if (frame >= join && frame < join + hold) buttons |= 0x1000u;
+  if (frame >= pick && frame < pick + hold) buttons |= 0x1000u;
+  cc_combat_loop(user, frame, 9400u, buttons, thumbs);
+}
 static void __imp__XamInputGetCapabilities(Context& ctx, Machine& base) {
   const uint32_t user = ctx.r3.u32, caps = ctx.r5.u32;
-  if (user != 0u) { ctx.r3.u64 = 0x48Fu; return; }
+  if (user != 0u && !(user <= 3u && cc_four_players())) { ctx.r3.u64 = 0x48Fu; return; }
   base.store(caps + 0, 1, 0x01u);      // Type    = XINPUT_DEVTYPE_GAMEPAD
   base.store(caps + 1, 1, 0x01u);      // SubType = XINPUT_DEVSUBTYPE_GAMEPAD
   base.store(caps + 2, 2, 0u);         // Flags
@@ -7428,7 +7478,22 @@ static void __imp__XamInputGetCapabilities(Context& ctx, Machine& base) {
 }
 static void __imp__XamInputGetState(Context& ctx, Machine& base) {
   const uint32_t user = ctx.r3.u32, state = ctx.r5.u32;
-  if (user != 0u) { ctx.r3.u64 = 0x48Fu; return; }
+  if (user != 0u) {
+    if (!(user <= 3u && cc_four_players())) { ctx.r3.u64 = 0x48Fu; return; }
+    static uint32_t packets[4];
+#ifndef CC_XBOX_DRIVER
+    if (std::getenv("CC_4P_LOG") && (packets[user] < 3u || (g_frame_delay_calls >= 5300u && g_frame_delay_calls < 5320u)))
+      cc_log("pad%u frame=%u lr=%08x flags=%08x\n", user, g_frame_delay_calls, uint32_t(ctx.lr), ctx.r4.u32);
+#endif
+    uint32_t b = 0u, th = 0u;
+    cc_extra_pad(user, g_frame_delay_calls, b, th);
+    base.store(state + 0, 4, ++packets[user]);
+    base.store(state + 4, 4, b << 16);
+    base.store(state + 8, 4, th);
+    base.store(state + 12, 4, 0u);
+    ctx.r3.u64 = 0u;
+    return;
+  }
   ++g_input_packet_number;
   // WIP 023 labeled diagnostic input script, keyed to the frame counter
   // (g_frame_delay_calls). This is injected input for the diagnostic, never faked game state; the
@@ -7462,6 +7527,7 @@ static void __imp__XamInputGetState(Context& ctx, Machine& base) {
     if (row.lx || row.ly)
       thumbs = (uint32_t(uint16_t(row.lx)) << 16) | uint16_t(row.ly);
   }
+  if (cc_four_players()) cc_combat_loop(0u, g_frame_delay_calls, 9900u, buttons, thumbs);
 #ifndef CC_XBOX_DRIVER
   // Host diagnostic override: CC_INPUT_SCRIPT="first-last:buttons[:lx,ly];..."
   // (hex buttons, signed decimal stick) replaces the built-in script above.
@@ -7556,7 +7622,11 @@ static void __imp__XamShowSigninUI(Context& ctx, Machine& base) {
   }
   ctx.r3.u64 = 0u;  // ERROR_SUCCESS; the blade closes with nobody signed in
 }
+static bool cc_four_players();
 static void __imp__XamUserGetSigninState(Context& ctx, [[maybe_unused]] Machine& base) {
+  // Four-player diagnostic: the game asks extra players to sign in before
+  // they can join; pads 1-3 report a local profile so they join directly.
+  if (cc_four_players() && ctx.r3.u32 >= 1u && ctx.r3.u32 <= 3u) { ctx.r3.u64 = 1u; return; }
   ctx.r3.u64 = 0u;  // eXUserSigninState_NotSignedIn
 }
 static void __imp__XNotifyGetNext(Context& ctx, Machine& base) {
@@ -7656,7 +7726,17 @@ static void __imp__XMsgStartIORequest(Context& ctx, Machine& base) {
   }
   ctx.r3.u64 = 0x800704DDu;
 }
-static void __imp__XamContentCreateEnumerator([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A344u); }
+// Four-player diagnostic: the local profiles of pads 1-3 have no saved
+// content. The enumerator is a handle that XamEnumerate answers with
+// "no more items" (synchronously, or as an already-completed overlapped
+// request); NtClose accepts it like any other handle in the play build.
+static void __imp__XamContentCreateEnumerator(Context& ctx, Machine& base) {
+  const uint32_t pcb = ctx.r8.u32, phenum = ctx.r9.u32;
+  if (!cc_four_players() || !phenum) base.fail(Error::unsupported, 0x8214A344u);
+  if (pcb) base.store(pcb, 4, (ctx.r7.u32 ? ctx.r7.u32 : 1u) * 0x134u);  // XCONTENT_DATA per item
+  base.store(phenum, 4, 0x0E000001u);
+  ctx.r3.u64 = 0u;
+}
 // WIP 023 PORT POLICY: no marketplace exists on the original Xbox. The
 // menu's DLC gate reads a zero license mask (base game only, synchronous
 // success); DLC stays hidden exactly as on an offline retail console.
@@ -7668,8 +7748,32 @@ static void __imp__XamContentGetLicenseMask(Context& ctx, Machine& base) {
   base.store(ctx.r3.u32, 4, 0xFFFFFFFFu);
   ctx.r3.u64 = 0u;  // ERROR_SUCCESS
 }
-static void __imp__XamEnumerate([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A364u); }
-static void __imp__XamGetExecutionId([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A414u); }
+static void __imp__XamEnumerate(Context& ctx, Machine& base) {
+  if (!cc_four_players() || (ctx.r3.u32 != 0x0E000001u && ctx.r3.u32 != 0x0E000002u)) base.fail(Error::unsupported, 0x8214A364u);
+  if (ctx.r7.u32) base.store(ctx.r7.u32, 4, 0u);
+  if (const uint32_t ov = ctx.r8.u32) {   // XOVERLAPPED: completed, no items
+    base.store(ov + 0, 4, 0x12u);          // InternalLow = ERROR_NO_MORE_FILES
+    base.store(ov + 4, 4, 0u);             // InternalHigh = 0 items
+    base.store(ov + 24, 4, 0x12u);         // dwExtendedError
+    ctx.r3.u64 = 997u;                     // ERROR_IO_PENDING
+    return;
+  }
+  ctx.r3.u64 = 0x12u;                      // ERROR_NO_MORE_FILES
+}
+// The XEX execution ID from the disc's own header (media 1DF2F0B2, version
+// 0x00000103, title 584108B7), published in the platform-globals page.
+static void __imp__XamGetExecutionId(Context& ctx, Machine& base) {
+  if (!ctx.r3.u32) base.fail(Error::unsupported, 0x8214A414u);
+  constexpr uint32_t id = 0x02500200u;
+  base.store(id + 0, 4, 0x1DF2F0B2u);   // MediaID
+  base.store(id + 4, 4, 0x00000103u);   // Version
+  base.store(id + 8, 4, 0x00000103u);   // BaseVersion
+  base.store(id + 12, 4, 0x584108B7u);  // TitleID
+  base.store(id + 16, 4, 0u);           // Platform, ExecutableType, DiscNum, DiscsInSet
+  base.store(id + 20, 4, 0u);           // SaveGameID
+  base.store(ctx.r3.u32, 4, id);
+  ctx.r3.u64 = 0u;
+}
 static void __imp__XamGetSystemVersion(Context& ctx, [[maybe_unused]] Machine& base) {
   // Trusted XAM contract: returns the packed system version. The retained
   // Checkpoint 011 kit's dashboard lineage is 2.0.17559.0; the exact caller
@@ -7689,11 +7793,40 @@ static void __imp__XamNotifyCreateListener(Context& ctx, Machine& base) {
 static void __imp__XamSessionRefObjByHandle([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AD74u); }
 static void __imp__XamUserAreUsersFriends([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A254u); }
 static void __imp__XamUserCheckPrivilege([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A264u); }
-static void __imp__XamUserCreateAchievementEnumerator([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A2A4u); }
-static void __imp__XamUserGetSigninInfo([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A3A4u); }
+// Four-player diagnostic: the local profiles have no achievements either;
+// the enumerator is answered by XamEnumerate with "no more items".
+static void __imp__XamUserCreateAchievementEnumerator(Context& ctx, Machine& base) {
+  const uint32_t pcb = ctx.r9.u32, phenum = ctx.r10.u32;
+  if (!cc_four_players() || !phenum) base.fail(Error::unsupported, 0x8214A2A4u);
+  if (pcb) base.store(pcb, 4, (ctx.r8.u32 ? ctx.r8.u32 : 1u) * 0x24u);  // XACHIEVEMENT_DETAILS per item
+  base.store(phenum, 4, 0x0E000002u);
+  ctx.r3.u64 = 0u;
+}
+// Four-player diagnostic: pads 1-3 report a local (offline) profile named
+// "Player 2".."Player 4" with an offline XUID; everyone else stays signed out.
+static bool cc_local_profile(uint32_t user) { return cc_four_players() && user >= 1u && user <= 3u; }
+static void __imp__XamUserGetSigninInfo(Context& ctx, Machine& base) {
+  // XUSER_SIGNIN_INFO: xuid u64, dwInfoFlags, UserSigninState, dwGuestNumber,
+  // dwSponsorUserIndex, szUserName[16] (40 bytes).
+  const uint32_t user = ctx.r3.u32, info = ctx.r5.u32;
+  if (user > 3u || !info) base.fail(Error::unsupported, 0x8214A3A4u);
+  for (uint32_t k = 0; k < 40u; k += 4u) base.store(info + k, 4, 0u);
+  if (!cc_local_profile(user)) { ctx.r3.u64 = 0x525u; return; }  // ERROR_NO_SUCH_USER
+  base.store(info + 0, 8, 0xE000000000000000ull | (user + 1u));
+  base.store(info + 12, 4, 1u);                                    // signed in locally
+  const char name[] = "Player ";
+  for (uint32_t k = 0; k < 7u; ++k) base.store(info + 24 + k, 1, uint8_t(name[k]));
+  base.store(info + 31, 1, uint8_t('1' + user));
+  ctx.r3.u64 = 0u;
+}
 static void __imp__XamUserGetXUID(Context& ctx, Machine& base) {
   if (ctx.r3.u32 > 3u) base.fail(Error::unsupported, 0x8214A2B4u);
   if (ctx.r5.u32) base.store(ctx.r5.u32, 8, 0u);
+  if (cc_four_players() && ctx.r3.u32 >= 1u && ctx.r3.u32 <= 3u) {
+    if (ctx.r5.u32) base.store(ctx.r5.u32, 8, 0xE000000000000000ull | (ctx.r3.u32 + 1u));
+    ctx.r3.u64 = 0u;
+    return;
+  }
   ctx.r3.u64 = 0x800704DDu;  // HRESULT_FROM_WIN32(ERROR_NOT_LOGGED_ON)
 }
 // Profile settings with no signed-in profile (port policy: nobody signs in):
@@ -7736,7 +7869,12 @@ static void __imp__XamUserReadProfileSettings(Context& ctx, Machine& base) {
 }
 static void __imp__XamUserWriteProfileSettings([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AAC4u); }
 static void __imp__XamVoiceClose([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214ADA4u); }
-static void __imp__XamWriteGamerTile([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A294u); }
+static void __imp__XamWriteGamerTile(Context& ctx, Machine& base) {
+  // Four-player diagnostic: gamer-picture awards for the local profiles are
+  // accepted and dropped (the original Xbox has no gamer pictures).
+  if (!cc_four_players()) base.fail(Error::unsupported, 0x8214A294u);
+  ctx.r3.u64 = 0u;
+}
 static void __imp__XexGetModuleHandle(Context& ctx, Machine& base) {
   // Only the observed "xam.xex" lookup is accepted; the fixture hands back
   // an opaque module token.
