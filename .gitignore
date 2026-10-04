@@ -70,3 +70,4 @@ logs/frames_bake/
 logs/frames_*/
 logs/xemu_*/
 logs/run_*.txt
+logs/console/

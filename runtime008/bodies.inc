@@ -322,7 +322,13 @@ static void sub_82085110(Context& ctx, Machine& base) {
     for (int k = 0; k < 3; ++k) REX_STORE_U32(dst[i] + 4u * uint32_t(k), out[i][k]);
 }
 #endif
+#ifdef CC_FAST
+#define sub_820855D8 sub_820855D8_exact
+#endif
 #include "generated/sub_820855D8.inc"
+#ifdef CC_FAST
+#undef sub_820855D8
+#endif
 #ifdef CC_FAST
 #define sub_82085AD8 sub_82085AD8_exact
 #endif
@@ -455,7 +461,13 @@ static void sub_82086090(Context& ctx, Machine& base) {
 #endif
 #include "generated/sub_82086278.inc"
 #include "generated/sub_820868D0.inc"
+#ifdef CC_FAST
+#define sub_8208A7A0 sub_8208A7A0_exact
+#endif
 #include "generated/sub_8208A7A0.inc"
+#ifdef CC_FAST
+#undef sub_8208A7A0
+#endif
 #ifdef CC_FAST
 // Native virtual call for the display-list walkers. The Flash display-list
 // classes answer most per-node questions with one-instruction methods; the
@@ -609,8 +621,47 @@ static void sub_820A8DD8(Context& ctx, Machine& base) {
 #include "generated/sub_820A9068.inc"
 #include "generated/sub_820A9D78.inc"
 #include "generated/sub_820A9E98.inc"
+#ifdef CC_FAST
+#define sub_82127A08 sub_82127A08_exact
+#define sub_82127AE8 sub_82127AE8_exact
+#endif
 #include "generated/sub_82127A08.inc"
 #include "generated/sub_82127AE8.inc"
+#ifdef CC_FAST
+#undef sub_82127A08
+#undef sub_82127AE8
+// sin (sub_82127A08) and cos (sub_82127AE8) of f1, memoised. The CRT
+// polynomials run ten fused multiply-adds on double coefficients, which take
+// the exact software fma (no fast path for non-float operands); the result
+// depends only on the input bits, so a direct-mapped cache of earlier
+// results is exact. Callers (the clip transform setter sub_82085EC0, which
+// asks for each value twice, Math.sin/Math.cos sub_82093B00, sub_82066BA0,
+// sub_820E4EB0) read only f1 and non-volatile registers after the call.
+struct CcTrigMemo { uint64_t key[512]; uint64_t val[512]; bool used[512]; };
+static CcTrigMemo g_trig_memo[2];
+static inline void cc_trig_memo(Context& ctx, Machine& base, unsigned which, void (*exact)(Context&, Machine&)) {
+  const uint64_t in = ctx.f1.u64;
+  const unsigned h = unsigned(uint32_t(in ^ (in >> 29) ^ (in >> 41)) * 0x9E3779B1u) >> 23;  // 9 bits
+  CcTrigMemo& m = g_trig_memo[which];
+  if (m.used[h] && m.key[h] == in) {
+#ifndef CC_XBOX_DRIVER
+    static const bool oracle = std::getenv("CC_ORACLE") != nullptr;
+    if (oracle) {
+      exact(ctx, base);
+      if (ctx.f1.u64 != m.val[h]) cc_oracle_mismatch(which ? "sub_82127AE8" : "sub_82127A08", 0, uint32_t(ctx.f1.u64 >> 32), uint32_t(m.val[h] >> 32));
+      return;
+    }
+#endif
+    ctx.fpscr.disableFlushMode();
+    ctx.f1.u64 = m.val[h];
+    return;
+  }
+  exact(ctx, base);
+  m.used[h] = true; m.key[h] = in; m.val[h] = ctx.f1.u64;
+}
+static void sub_82127A08(Context& ctx, Machine& base) { cc_trig_memo(ctx, base, 0u, sub_82127A08_exact); }
+static void sub_82127AE8(Context& ctx, Machine& base) { cc_trig_memo(ctx, base, 1u, sub_82127AE8_exact); }
+#endif
 #include "generated/sub_82129038.inc"
 // runtime021 play build wraps the guest memcpy (see runtime021/bodies.inc).
 #ifdef CC_WRAP_82129A70

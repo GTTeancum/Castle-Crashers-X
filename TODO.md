@@ -78,9 +78,45 @@ profile: game update ~55% of a frame, most of it script execution):
   OnLoad and frame scripts on clip+160, recurses into children). Render
   traversal is `sub_82091248` (separate).
 - Native so far: `sub_82082390` map lookup, `sub_82079BE0` locals read,
-  `sub_82066EA8` refcount step, `sub_8206F918`. Next: push decode
-  `sub_8207AA50`/`sub_8207A908`, pool allocator, GetVariable chain, then
-  the dispatch loop calling handlers directly.
+  `sub_82066EA8` refcount step, `sub_8206F918`, pool allocator, push decode.
+- 2026-10-03 native interpreter (runtime021/as_native.inc and the
+  as_ops*.inc files it includes; play build only): the four dispatch loops,
+  native handlers for 39 opcodes (every opcode the 4P level-13 profile
+  executes more than ~8k times in 4,000 frames) and the value / variable / member helpers
+  they use (GetVariable `sub_8207AF80`, SetVariable `sub_8208C2A0`, Var
+  assign `sub_8208BF38`, locals free `sub_82079A00`, map insert
+  `sub_820936B0`, ToString-id / ToNumber / ToInt `sub_82082890` /
+  `sub_82082700` / `sub_82082BB0`, clip GetMember / SetMember / property
+  get / set `sub_8208B438` / `sub_8208B520` / `sub_82089C00` /
+  `sub_82089F70`, timeline tag step `sub_8208AB98` / `sub_8208ADE8`), plus
+  the display-list draw walk `sub_8208A7A0` and the sprite leaf
+  `sub_820855D8` (runtime021/as_render.inc). Same guest memory effects as
+  the recompiled bodies, which stay as sub_X_exact. Opcodes without a
+  native handler run their recompiled handler from the native loop (rare
+  ones: 04-09, 15, 22, 24-26, 30, 33, 34, 3A, 3B, 3F, 40, 55, 60-64, 81, 87,
+  9A, 9B, 9F).
+  Host checks: CC_STATE_HASH=<n> hashes every writable guest region except
+  the stack each n frames (CC_STATE_DUMP=<dir> writes them); runs with
+  CC_AS_EXACT=1 (all recompiled) and without must print the same hashes.
+  CC_AS_GUEST=<hex ops> and CC_EXACT_FNS=sub_X,... switch single handlers
+  or helpers back for bisecting (logs/statecmp.sh, logs/statediff.py).
+  Two kinds of bytes legitimately differ and are excluded: the 3 padding
+  bytes after a script value's in-use byte (the game copies values as three
+  words, so their padding carries stale stack bytes of frame temporaries;
+  the hash keeps only the first byte of a word whose word 8 bytes earlier is
+  a value type), and stale heap contents those copies leave behind
+  (CC_HEAP_ZERO=1 zeroes game-heap blocks at alloc and free in both runs).
+  With those, native == exact at every checkpoint of the default run (47
+  checkpoints to frame 9400) and of the 4P level-13 run (64 checkpoints to
+  frame 16000); frames 7500/9362 pixel-identical.
+  XEMU, same window, 4P level 13 real clock: burning village 25-35 FPS
+  (disc H16, recompiled interpreter) -> 37-47 FPS (H17, native), walls
+  20-26 -> 33-43 FPS; update 12-31 ms -> 6-18 ms, render 12-15 -> 8-11 ms.
+  REAL CONSOLE (2026-10-03, dev kit via XDK tools, tools/xbox_console.py;
+  the user's direction is to test only there from now on), same native
+  build (disc C1): 4P level-13 combat 17-23 FPS, update 25-40 ms, render
+  16-18 ms; menus 57-59 FPS. XEMU on this PC ran the game's CPU work about
+  2-2.5x faster than the console, so the console numbers are the target.
 
 ## Memory budget (biggest known porting constraint)
 
@@ -356,8 +392,22 @@ sound effects where possible; stream art wherever it can be streamed.
       now re-sampled on every bind (every 61st byte) and reconverted when
       they change, since the game draws new glyphs into the atlas after
       the renderer's first copy.
-- [ ] Starting a story game shows "Sign in to Xbox LIVE to post your score
-      to the leaderboards" (A continues). Remove it on the original Xbox.
+- [x] Starting a story game showed "Sign in to Xbox LIVE to post your score
+      to the leaderboards" (A continues). 2026-10-03: skipped in the play
+      build (front-end menu 18, opened by the game-mode book's handler
+      sub_82063758 for players not signed in to Live; the sub_82053BC8
+      SetMenu wrapper takes the signed-in path instead: sub_82063C00 /
+      sub_82063F18 / sub_82063DC8 by the mode at +12). The scripted input
+      drops the two presses that landed on the notice; host CC_LIVE_NOTICE=1
+      keeps it (logs/oracle.sh). Host: character select right after the
+      book, frames 7500/9362 still pixel-identical to the references.
+- [x] Main menu items vertically centred between the logo's bottom (y 134)
+      and the "A Select" prompt's top (y 413), measured on the console
+      (user, 2026-10-03): items moved up 10 px from the exact layout.
+- [x] Flicker in the menus (user, XEMU 2026-10-03): pbkit's triple buffering
+      only refuses a fourth queued frame, so frames faster than the display
+      drew into the buffer on screen. xbox_render.cpp present() queues at
+      most one frame per vertical blank.
 - [ ] The main menu still lists Xbox LIVE Game, Leaderboards,
       Achievements and Download Content; hide them or grey them out.
 

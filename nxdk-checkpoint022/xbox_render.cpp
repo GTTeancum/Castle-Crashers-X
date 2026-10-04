@@ -39,6 +39,17 @@ struct Texture {
 };
 
 bool g_init = false, g_failed = false, g_in_frame = false, g_shown = false;
+// pbkit keeps three framebuffers and shows one queued frame per vertical
+// blank; it only refuses a fourth queued frame, so a game finishing frames
+// faster than the display would draw into the buffer still on screen
+// (parts of the menus flickered). present() queues at most one frame per
+// vertical blank, which keeps the buffer being drawn off screen.
+DWORD g_present_vbl = 0;
+void present() {
+  if (pb_get_vbl_counter() == g_present_vbl) pb_wait_for_vbl();
+  while (pb_finished()) {}
+  g_present_vbl = pb_get_vbl_counter();
+}
 GpuVertex* g_vb = nullptr;
 uint32_t g_vb_used = 0;
 Texture g_cur;
@@ -403,6 +414,7 @@ void cc_xr_gpu_idle() {
 // digits (the debug text console is hidden behind the pbkit display) and
 // present that frame, so a stopped game reports why on screen.
 void cc_xr_show_fail(uint32_t code, uint32_t addr) {
+  DbgPrint("FAIL code=%u addr=%08x\n", unsigned(code), unsigned(addr));
   if (!init()) return;
   if (!g_in_frame) begin_frame();
   pb_fill_quad(8, 300, 400, 40, 0xFF400000);
@@ -410,7 +422,7 @@ void cc_xr_show_fail(uint32_t code, uint32_t addr) {
   for (int k = 0; k < 8; ++k) draw_hex_digit(80 + k * 15, 310, (addr >> (28 - 4 * k)) & 15u, 0xFFFFFF40);
   flush_overlay();
   while (pb_busy()) {}
-  while (pb_finished()) {}
+  present();
   if (!g_shown) { pb_show_front_screen(); g_shown = true; }
   g_in_frame = false;
 }
@@ -424,6 +436,7 @@ bool g_bench_done[4];
 void cc_xr_bench(unsigned window, unsigned frames, unsigned frame_us, unsigned update_us, unsigned render_us) {
   if (window >= 4 || !frames) return;
   g_bench[window][0] = frame_us / 100u; g_bench[window][1] = update_us / 100u; g_bench[window][2] = render_us / 100u;
+  DbgPrint("BENCH window=%u frames=%u frame_us=%u update_us=%u render_us=%u\n", window, frames, frame_us, update_us, render_us);
   g_bench_done[window] = true;
 }
 void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
@@ -438,10 +451,27 @@ void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
   static unsigned shown_update = 0, shown_render = 0, shown_draw = 0, shown_wait = 0;
   sum_update += update_us; sum_render += render_us; sum_draw += g_draw_us; sum_wait += last_wait;
   g_draw_us = 0;
+  // Longest frame of the window (frame end to frame end).
+  static uint64_t last_end_us = 0, max_frame_us = 0;
+  {
+    const uint64_t t = now_us();
+    if (last_end_us && t - last_end_us > max_frame_us) max_frame_us = t - last_end_us;
+    last_end_us = t;
+  }
   const DWORD now = GetTickCount();
   if (!window_start) window_start = now;
   ++window_frames;
   if (now - window_start >= 1000) {
+    // The same window on the debug channel (XBDM debug strings, read on the
+    // PC by tools/xbox_console.py): times in 0.1 ms.
+    {
+      const unsigned el = now - window_start;
+      DbgPrint("PERF t=%u fps=%u ms=%u max=%u upd=%u ren=%u draw=%u wait=%u\n", unsigned(now), window_frames * 1000u / el,
+               el * 10u / window_frames, unsigned(max_frame_us / 100u), unsigned(sum_update / window_frames / 100u),
+               unsigned(sum_render / window_frames / 100u), unsigned(sum_draw / window_frames / 100u),
+               unsigned(sum_wait / window_frames / 100u));
+      max_frame_us = 0;
+    }
     shown_fps = window_frames * 1000u / (now - window_start);
     shown_ms = (now - window_start) / window_frames;
     shown_update = unsigned(sum_update / window_frames / 1000u);
@@ -498,7 +528,7 @@ void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
   }
   const uint64_t w0 = now_us();
   while (pb_busy()) {}
-  while (pb_finished()) {}
+  present();
   last_wait = now_us() - w0;
   if (!g_shown) { pb_show_front_screen(); g_shown = true; }
   g_in_frame = false;

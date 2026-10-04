@@ -292,6 +292,12 @@ void set_exact_texture_bind(bool v) noexcept { g_use_exact_texture_bind = v; }
 // looked at. Filled lazily from the address space on the checked path, so
 // every guest access is a table load, an add and the byte swap.
 static uint8_t* g_page_host[65536];
+#if defined(CC_FAST) && !defined(CC_XBOX_DRIVER)
+static const uint32_t g_watch_store = [] {
+  const char* e = std::getenv("CC_WATCH_STORE");
+  return e ? uint32_t(std::strtoul(e, nullptr, 16)) : 0x80000000u;
+}();
+#endif
 static const void* g_page_owner = nullptr;
 #endif
 struct Machine {
@@ -781,6 +787,16 @@ struct Machine {
       }
     }
   }
+#if defined(CC_FAST) && !defined(CC_XBOX_DRIVER)
+  // Host store watch (CC_WATCH_STORE=<hex address>): every store within 8
+  // bytes of it is logged with the most recently entered generated function.
+  __attribute__((noinline)) void watch_store(uint32_t a, unsigned n, uint64_t v) {
+    static unsigned hits = 0;
+    ++hits;
+    cc_elog("WSTORE #%u %08x n=%u v=%llx in %s lr=%08x\n", hits, a, n, (unsigned long long)v,
+            g_sample_fn.load(std::memory_order_relaxed), g_sample_lr.load(std::memory_order_relaxed));
+  }
+#endif
 #ifdef CC_WATCH_ADDR
   __attribute__((noinline)) void watch_hit(uint32_t a) {
     static unsigned hits = 0;
@@ -959,6 +975,9 @@ struct Machine {
   }
   __attribute__((always_inline)) void store(uint32_t a, unsigned n, uint64_t v) {
     tick(a);
+#if defined(CC_FAST) && !defined(CC_XBOX_DRIVER)
+    if (__builtin_expect(a - g_watch_store + 8u < 16u, 0)) watch_store(a, n, v);
+#endif
 #ifdef CC_FAST
     {
       uint8_t* b = g_page_host[a >> 16];
@@ -985,6 +1004,9 @@ struct Machine {
   }
   __attribute__((always_inline)) void store_stack(uint32_t a, unsigned n, uint64_t v) {
     tick(a);
+#if defined(CC_FAST) && !defined(CC_XBOX_DRIVER)
+    if (__builtin_expect(a - g_watch_store + 8u < 16u, 0)) watch_store(a, n, v);
+#endif
 #ifdef CC_FAST
     {
       uint8_t* b = g_page_host[a >> 16];
@@ -1388,6 +1410,72 @@ static simde__m128i simde_mm_setzero_si128() { return simde__m128i{}; }
 static uint8_t* raw_addr021(Machine& base,uint32_t a) { auto* p=base.fast_host(a,16,3); if(!p) p=base.memory.contiguous(a,16,3); if(!p) base.fail(Error::memory,a); return p; }
 #define REX_RAW_ADDR(a) raw_addr021(base,uint32_t(a))
 using PPCRegister = Register;
+#if defined(CC_FAST) && !defined(CC_XBOX_DRIVER)
+// Host exact profiler (CC_FPROF=1, frame window CC_SAMPLE_FROM/CC_SAMPLE_TO):
+// every generated function's entry and exit is timed with the TSC on a
+// shadow stack; at exit it prints self and inclusive (first-activation)
+// time and the call count per function. Native port code is counted in the
+// generated function that called it.
+struct CcProfFn {
+  const char* name;
+  uint64_t self = 0, incl = 0, calls = 0;
+  uint32_t depth = 0;
+  bool listed = false;
+  CcProfFn* next = nullptr;
+};
+struct CcProfFrame { CcProfFn* fn; uint64_t t0, child; };
+extern bool g_fprof_live;
+void cc_fprof_list(CcProfFn* f);
+inline thread_local CcProfFrame g_fprof_stack[2048];
+inline thread_local int g_fprof_sp = 0;
+struct CcProfScope {
+  CcProfFrame* fr = nullptr;
+  explicit CcProfScope(CcProfFn& f) {
+    if (__builtin_expect(!g_fprof_live, 1) || g_fprof_sp >= 2048) return;
+    if (!f.listed) cc_fprof_list(&f);
+    fr = &g_fprof_stack[g_fprof_sp++];
+    fr->fn = &f; fr->child = 0; ++f.depth; ++f.calls;
+    fr->t0 = __builtin_ia32_rdtsc();
+  }
+  ~CcProfScope() {
+    if (!fr) return;
+    const uint64_t dt = __builtin_ia32_rdtsc() - fr->t0;
+    CcProfFn* f = fr->fn;
+    f->self += dt - (fr->child < dt ? fr->child : dt);
+    if (--f->depth == 0) f->incl += dt;
+    --g_fprof_sp;
+    if (g_fprof_sp > 0) g_fprof_stack[g_fprof_sp - 1].child += dt;
+  }
+};
+#define CC_FPROF_SCOPE(name) static CcProfFn cc_pf{#name}; CcProfScope cc_ps(cc_pf)
+bool g_fprof_live = false;
+static const bool g_fprof_on = std::getenv("CC_FPROF") != nullptr;
+static CcProfFn* g_fprof_head = nullptr;
+void cc_fprof_list(CcProfFn* f) { f->listed = true; f->next = g_fprof_head; g_fprof_head = f; }
+namespace {
+struct CcProfReport {
+  ~CcProfReport() {
+    if (!g_fprof_on) return;
+    std::vector<CcProfFn*> v;
+    uint64_t total = 0;
+    for (CcProfFn* f = g_fprof_head; f; f = f->next) { v.push_back(f); total += f->self; }
+    if (!total) return;
+    std::sort(v.begin(), v.end(), [](CcProfFn* a, CcProfFn* b) { return a->self > b->self; });
+    std::fprintf(stderr, "FPROF total_cycles=%llu functions=%zu\n", (unsigned long long)total, v.size());
+    for (size_t i = 0; i < v.size() && i < 120; ++i)
+      std::fprintf(stderr, "FSELF %6.2f%% incl %6.2f%% calls %10llu %s\n", 100.0 * double(v[i]->self) / double(total),
+                   100.0 * double(v[i]->incl) / double(total), (unsigned long long)v[i]->calls, v[i]->name);
+    std::sort(v.begin(), v.end(), [](CcProfFn* a, CcProfFn* b) { return a->incl > b->incl; });
+    for (size_t i = 0; i < v.size() && i < 200; ++i)
+      std::fprintf(stderr, "FINCL %6.2f%% self %6.2f%% calls %10llu %s\n", 100.0 * double(v[i]->incl) / double(total),
+                   100.0 * double(v[i]->self) / double(total), (unsigned long long)v[i]->calls, v[i]->name);
+  }
+};
+CcProfReport g_fprof_report;
+}  // namespace
+#else
+#define CC_FPROF_SCOPE(name) do {} while (0)
+#endif
 #if defined(CC_FAST) && !defined(CC_NO_VIEW)
 // Play build register view. Each generated function runs on a view of the
 // guest registers in which the stack pointer r1, the callee-saved r14-r31
@@ -1685,7 +1773,7 @@ struct CcView {
 [[maybe_unused]] static inline void __restfpr_31(CcView&, Machine&) {}
 #define DEFINE_REX_FUNC_VIEW(name) \
   static inline __attribute__((always_inline)) void name##_v(CcView& ctx, Machine& base); \
-  static void name(Context& cc_c, Machine& base) { CcView cc_v(cc_c); name##_v(cc_v, base); cc_c.r1 = cc_v.r1; } \
+  static void name(Context& cc_c, Machine& base) { CC_FPROF_SCOPE(name); CcView cc_v(cc_c); name##_v(cc_v, base); cc_c.r1 = cc_v.r1; } \
   static inline __attribute__((always_inline)) void name##_v([[maybe_unused]] CcView& ctx, [[maybe_unused]] Machine& base)
 // Split functions (prefix/suffix slices that the harness resumes with the
 // previous slice's registers) keep every register in the Context: their

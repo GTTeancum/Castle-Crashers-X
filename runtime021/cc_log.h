@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <windows.h>
+#include <xboxkrnl/xboxkrnl.h>
 // Monotonic nanoseconds without libc++ chrono (whose out-of-line clock
 // functions are absent from the prebuilt nxdk libc++ on this machine).
 static inline unsigned long long cc_monotonic_ns() {
@@ -23,6 +24,7 @@ static inline void cc_vlog(const char* fmt, va_list ap) {
   char buf[512];
   vsnprintf(buf, sizeof(buf), fmt, ap);
   debugPrint("%s", buf);
+  DbgPrint("%s", buf);  // debug channel (XBDM debug strings on a development console)
 }
 #ifdef CC_FAST
 // Play build: informational lines are dropped (the debug console sits

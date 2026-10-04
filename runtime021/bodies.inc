@@ -94,9 +94,28 @@ static void sub_8209BDD8(Context& ctx, Machine& base) {
   const uint32_t size = ctx.r4.u32, lr = uint32_t(ctx.lr);
   sub_8209BDD8_exact(ctx, base);
   if (ctx.r3.u32) g_heap_live[ctx.r3.u32] = {size, lr};
+  // Host oracle aid (CC_HEAP_ZERO=1): new blocks are zeroed, so stale bytes
+  // (the padding of copied script values, which the game fills from
+  // uninitialised stack temporaries) cannot carry into later allocations
+  // and differ between two otherwise identical runs.
+  static const bool zero = std::getenv("CC_HEAP_ZERO") != nullptr;
+  if (zero && ctx.r3.u32) {
+    uint32_t k = 0;
+    for (; k + 4u <= size; k += 4u) base.store(ctx.r3.u32 + k, 4, 0u);
+    for (; k < size; ++k) base.store(ctx.r3.u32 + k, 1, 0u);
+  }
 }
 static void sub_8209BF18(Context& ctx, Machine& base) {
-  g_heap_live.erase(ctx.r4.u32);
+  // CC_HEAP_ZERO=1 also clears a block before it is freed.
+  static const bool zero = std::getenv("CC_HEAP_ZERO") != nullptr;
+  const auto it = g_heap_live.find(ctx.r4.u32);
+  if (zero && it != g_heap_live.end()) {
+    const uint32_t p = ctx.r4.u32, size = it->second.first;
+    uint32_t k = 0;
+    for (; k + 4u <= size; k += 4u) base.store(p + k, 4, 0u);
+    for (; k < size; ++k) base.store(p + k, 1, 0u);
+  }
+  if (it != g_heap_live.end()) g_heap_live.erase(it);
   sub_8209BF18_exact(ctx, base);
 }
 #endif
@@ -270,8 +289,20 @@ static void sub_82082390(Context& ctx, Machine& base) {
 }
 #endif
 #include "generated/sub_8208BE40.inc"
+#ifdef CC_FAST
+#define sub_8208AB98 sub_8208AB98_exact
+#endif
 #include "generated/sub_8208AB98.inc"
+#ifdef CC_FAST
+#undef sub_8208AB98
+#endif
+#ifdef CC_FAST
+#define sub_820936B0 sub_820936B0_exact
+#endif
 #include "generated/sub_820936B0.inc"
+#ifdef CC_FAST
+#undef sub_820936B0
+#endif
 #include "generated/sub_82094530.inc"
 #include "generated/sub_82094420.inc"
 #include "generated/sub_820772B0.inc"
@@ -874,7 +905,13 @@ static void __imp__RtlInitializeCriticalSection(Context& ctx, Machine& base) {
 #include "generated/sub_8209C340.inc"
 #include "generated/sub_8209CED0.inc"
 #include "generated/sub_82084BE8.inc"
+#ifdef CC_FAST
+#define sub_82079A00 sub_82079A00_exact
+#endif
 #include "generated/sub_82079A00.inc"
+#ifdef CC_FAST
+#undef sub_82079A00
+#endif
 #include "generated/sub_8207A0D0.inc"
 #include "generated/sub_82079F38.inc"
 #include "generated/sub_820867B8.inc"
@@ -1253,6 +1290,18 @@ static void sub_8209A728(Context& ctx, Machine& base) {
 #else
 static uint32_t cc_direct_level() { return 0u; }
 #endif
+// The play build skips the "Sign In To Xbox LIVE" notice after the game-mode
+// book (see the sub_82053BC8 wrapper); host CC_LIVE_NOTICE=1 keeps it.
+[[maybe_unused]] static bool cc_skip_live_notice() {
+#if !defined(CC_FAST)
+  return false;
+#elif !defined(CC_XBOX_DRIVER)
+  static const bool keep = std::getenv("CC_LIVE_NOTICE") != nullptr;
+  return !keep;
+#else
+  return true;
+#endif
+}
 #include "generated/sub_8209B458.inc"
 #include "generated/sub_820A7668.inc"
 
@@ -2135,7 +2184,11 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   // windows of the scripted run (menu, level start, tavern, tavern later),
   // shown on screen once each window completes.
   {
-    static const unsigned lo[4] = {1800u, 5800u, 7300u, 8800u};
+    // With a direct level (make LEVEL=<n>, usually with FOURP=1) the windows
+    // sit in the level's fights instead.
+    static const unsigned lo_run[4] = {1800u, 5800u, 7300u, 8800u};
+    static const unsigned lo_level[4] = {6600u, 7400u, 8200u, 9000u};
+    const unsigned* const lo = cc_direct_level() ? lo_level : lo_run;
     static uint64_t last = 0, sum_f[4], sum_u[4], sum_r[4];
     static unsigned n[4];
     const uint64_t now = ::cc_xbox_clock(1000000u);
@@ -2170,6 +2223,48 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     }
     const long f = long(g_frame_delay_calls + 1u);
     g_sample_on.store(f >= from && f < to, std::memory_order_relaxed);
+#ifdef CC_FAST
+    g_fprof_live = g_fprof_on && f >= from && f < to;
+#endif
+  }
+  // Host state check (CC_STATE_HASH=<n>): every n frames, a hash of each
+  // writable guest region except the one holding the current stack, so two
+  // runs (native vs exact code paths) can be compared region by region.
+  {
+    static const long every = [] { const char* e = std::getenv("CC_STATE_HASH"); return e ? std::strtol(e, nullptr, 10) : 0L; }();
+    const uint32_t f = g_frame_delay_calls + 1u;
+    if (every > 0 && f % uint32_t(every) == 0u) {
+      const cc::xbox::Region* rg = base.memory.regions();
+      uint64_t all = 0;
+      for (size_t i = 0; i < base.memory.region_count(); ++i) {
+        if (!(rg[i].access & 2u) || !rg[i].host) continue;
+        if (ctx.r1.u32 >= rg[i].guest && ctx.r1.u32 - rg[i].guest < rg[i].bytes) continue;
+        // Script values {u32 type, u32 payload, u8 in-use, 3 padding bytes}
+        // are copied as three words, so their padding carries whatever stale
+        // stack bytes the source temporary had; a word whose word 8 bytes
+        // earlier looks like a value type keeps only its in-use byte.
+        uint64_t h = 0x9E3779B97F4A7C15ull ^ rg[i].bytes;
+        const uint8_t* p = rg[i].host;
+        size_t n = rg[i].bytes, k = 0;
+        auto be32 = [p](size_t at) { return (uint32_t(p[at]) << 24) | (uint32_t(p[at + 1]) << 16) | (uint32_t(p[at + 2]) << 8) | p[at + 3]; };
+        auto is_type = [](uint32_t t) { return t == 0x80000000u || (t != 0u && t <= 0x40000u && (t & (t - 1u)) == 0u); };
+        for (; k + 4u <= n; k += 4u) {
+          uint32_t w = be32(k);
+          if (k >= 8u && is_type(be32(k - 8u))) w &= 0xFF000000u;
+          h = (h ^ w) * 0x100000001B3ull; h ^= h >> 29;
+        }
+        for (; k < n; ++k) h = (h ^ p[k]) * 0x100000001B3ull;
+        all = (all ^ h) * 0x9E3779B97F4A7C15ull;
+        cc_log("STATE frame=%u guest=%08x bytes=%08x hash=%016llx%c", f, rg[i].guest, rg[i].bytes, (unsigned long long)h, 10);
+        // CC_STATE_DUMP=<dir>: the region's bytes to <dir>/<frame>_<guest>.bin
+        if (const char* dir = std::getenv("CC_STATE_DUMP")) {
+          char path[512];
+          std::snprintf(path, sizeof(path), "%s/%u_%08x.bin", dir, f, rg[i].guest);
+          if (FILE* fp = std::fopen(path, "wb")) { std::fwrite(p, 1, n, fp); std::fclose(fp); }
+        }
+      }
+      cc_log("STATEALL frame=%u hash=%016llx%c", f, (unsigned long long)all, 10);
+    }
   }
   if (std::getenv("CC_WORKSET") && (g_frame_delay_calls + 1u) % 1000u == 0u)
     cc_log("RASTER frame=%u count=%u seconds=%.3f update=%.3f render=%.3f%c", g_frame_delay_calls + 1u, g_raster_count, g_raster_seconds, g_update_seconds, g_render_seconds, 10);
@@ -5663,7 +5758,13 @@ static void sub_82062990(Context& ctx, Machine& base) {
 #include "generated/sub_82092AA8.inc"
 #include "generated/sub_82091D78.inc"
 #include "generated/sub_82091D00.inc"
+#ifdef CC_FAST
+#define sub_8207BAE8 sub_8207BAE8_exact
+#endif
 #include "generated/sub_8207BAE8.inc"
+#ifdef CC_FAST
+#undef sub_8207BAE8
+#endif
 #include "generated/sub_820D5130.inc"
 #include "generated/sub_820D5200.inc"
 #include "generated/sub_820D52B8.inc"
@@ -5915,16 +6016,40 @@ static void sub_820A89F8(Context& ctx, Machine& base) {
 #include "generated/sub_82086680.inc"
 #include "generated/sub_82086778.inc"
 #include "generated/sub_820866D0.inc"
+#ifdef CC_FAST
+#define sub_82089F70 sub_82089F70_exact
+#endif
 #include "generated/sub_82089F70.inc"
+#ifdef CC_FAST
+#undef sub_82089F70
+#endif
+#ifdef CC_FAST
+#define sub_8208C2A0 sub_8208C2A0_exact
+#endif
 #include "generated/sub_8208C2A0.inc"
+#ifdef CC_FAST
+#undef sub_8208C2A0
+#endif
+#ifdef CC_FAST
+#define sub_8208B520 sub_8208B520_exact
+#endif
 #include "generated/sub_8208B520.inc"
+#ifdef CC_FAST
+#undef sub_8208B520
+#endif
 #include "generated/sub_8207A290.inc"
 #include "generated/sub_8207A358.inc"
 #include "generated/sub_820820D8.inc"
 #include "generated/sub_820867C8.inc"
 #include "generated/sub_820867D0.inc"
 #include "generated/sub_82085FA8.inc"
+#ifdef CC_FAST
+#define sub_82089C00 sub_82089C00_exact
+#endif
 #include "generated/sub_82089C00.inc"
+#ifdef CC_FAST
+#undef sub_82089C00
+#endif
 #ifdef CC_FAST
 #define sub_82085078 sub_82085078_exact
 #endif
@@ -5956,8 +6081,20 @@ static void sub_82085078(Context& ctx, Machine& base) {
   ctx.r3.u64 = 0u;
 }
 #endif
+#ifdef CC_FAST
+#define sub_8208B438 sub_8208B438_exact
+#endif
 #include "generated/sub_8208B438.inc"
+#ifdef CC_FAST
+#undef sub_8208B438
+#endif
+#ifdef CC_FAST
+#define sub_8207A908 sub_8207A908_exact
+#endif
 #include "generated/sub_8207A908.inc"
+#ifdef CC_FAST
+#undef sub_8207A908
+#endif
 #include "generated/sub_82081C08.inc"
 #include "generated/sub_82081920.inc"
 #include "generated/sub_8207C948.inc"
@@ -6011,8 +6148,9 @@ static void sub_82085078(Context& ctx, Machine& base) {
 // re-lays the list out, vertically centred, 30 px apart. The play build
 // drops the Xbox LIVE Game (387), Leaderboards (597), Achievements (598),
 // Unlock Full Game (601, trial only) and Download Content (600) items at
-// the append, and afterwards moves the remaining four down by the 60 px the
-// centring took away, so the last item stays where Return to Arcade was.
+// the append, and afterwards moves the remaining four up 10 px, which
+// centres the block between the logo's bottom (y 134) and the top of the
+// "A Select" prompt (y 413), as measured on the console (user, 2026-10-03).
 // The verification build runs the exact code unchanged.
 #ifdef CC_FAST
 static bool g_menu_trim_active = false;
@@ -6036,14 +6174,14 @@ static void sub_820623C0(Context& ctx, Machine& base) {
   sub_820623C0_exact(ctx, base);
   g_menu_trim_active = false;
   // Items: count u16 at +4, pointers from +20 (slot i at (i+5)*4); each
-  // item's y is the float at +8. Shift by the four removed slots' centring.
+  // item's y is the float at +8 (screen pixels, down positive).
   const uint32_t count = uint32_t(base.load(menu + 4u, 2));
   for (uint32_t i = 0; i < count && i < 16u; ++i) {
     const uint32_t item = uint32_t(base.load(menu + (i + 5u) * 4u, 4));
     if (!item) continue;
     uint32_t bits = uint32_t(base.load(item + 8u, 4));
     float y; std::memcpy(&y, &bits, 4);
-    y += 60.0f;
+    y -= 10.0f;
     std::memcpy(&bits, &y, 4);
     base.store(item + 8u, 4, bits);
   }
@@ -6156,19 +6294,43 @@ static void sub_82079BE0(Context& ctx, Machine& base) {
 #include "generated/sub_8206F988.inc"
 #include "generated/sub_820A3DF8.inc"
 #include "generated/sub_820B6070.inc"
+#ifdef CC_FAST
+#define sub_8208BF38 sub_8208BF38_exact
+#endif
 #include "generated/sub_8208BF38.inc"
+#ifdef CC_FAST
+#undef sub_8208BF38
+#endif
+#ifdef CC_FAST
+#define sub_8207AF80 sub_8207AF80_exact
+#endif
 #include "generated/sub_8207AF80.inc"
+#ifdef CC_FAST
+#undef sub_8207AF80
+#endif
 #include "generated/sub_8208FB88.inc"
 #include "generated/sub_820875B0.inc"
 #include "generated/sub_820975D8.inc"
 #include "generated/sub_82096FC8.inc"
 #include "generated/sub_820878E0.inc"
+#ifdef CC_FAST
+#define sub_82082700 sub_82082700_exact
+#endif
 #include "generated/sub_82082700.inc"
+#ifdef CC_FAST
+#undef sub_82082700
+#endif
 #include "generated/sub_82087358.inc"
 #include "generated/sub_82087F70.inc"
 #include "generated/sub_82071280.inc"
 #include "generated/sub_82086FF0.inc"
+#ifdef CC_FAST
+#define sub_8207B150 sub_8207B150_exact
+#endif
 #include "generated/sub_8207B150.inc"
+#ifdef CC_FAST
+#undef sub_8207B150
+#endif
 #include "generated/sub_82089778.inc"
 #ifdef CC_FAST
 #define sub_8206F918 sub_8206F918_exact
@@ -6205,7 +6367,13 @@ static void sub_8206F918(Context& ctx, Machine& base) {
 #include "generated/sub_82082848.inc"
 #include "generated/sub_82087AD8.inc"
 #include "generated/sub_82097560.inc"
+#ifdef CC_FAST
+#define sub_82082670 sub_82082670_exact
+#endif
 #include "generated/sub_82082670.inc"
+#ifdef CC_FAST
+#undef sub_82082670
+#endif
 #include "generated/sub_8208AFC8.inc"
 #include "generated/sub_820868D8.inc"
 #include "generated/sub_820879A0.inc"
@@ -6215,8 +6383,20 @@ static void sub_8206F918(Context& ctx, Machine& base) {
 #include "generated/sub_820877A0.inc"
 #include "generated/sub_82089668.inc"
 #include "generated/sub_82088CF0.inc"
+#ifdef CC_FAST
+#define sub_82082890 sub_82082890_exact
+#endif
 #include "generated/sub_82082890.inc"
+#ifdef CC_FAST
+#undef sub_82082890
+#endif
+#ifdef CC_FAST
+#define sub_82082BB0 sub_82082BB0_exact
+#endif
 #include "generated/sub_82082BB0.inc"
+#ifdef CC_FAST
+#undef sub_82082BB0
+#endif
 #include "generated/sub_8207E048.inc"
 #ifdef CC_FAST
 #define sub_82082488 sub_82082488_exact
@@ -6280,21 +6460,11 @@ static void sub_82082488(Context& ctx, Machine& base) {
 //    active function's pool (VM[(VM[10180] + 2513) * 4] -> +140 -> +0), or
 //    the script's own pool ([r3+4] -> +0) when none is active
 // VM = [[r3+0]+76]+156. Float values pass through f0 as in the original.
-static void sub_8207AA50(Context& ctx, Machine& base) {
-#ifndef CC_XBOX_DRIVER
-  static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;
-  if (walk_exact) { sub_8207AA50_exact(ctx, base); return; }
-#else
-  #ifdef CC_WALK_EXACT_BUILD
-  sub_8207AA50_exact(ctx, base); return;  // Xbox bisect build
-#endif
-  static_cast<void>(&sub_8207AA50_exact);
-#endif
-  const uint32_t as = ctx.r3.u32, out = ctx.r4.u32, data = ctx.r5.u32, posp = ctx.r6.u32;
-  uint32_t pos = REX_LOAD_U32(posp);
+// The decode with the position in a host variable (also used directly by the
+// native interpreter, runtime021/as_ops.inc).
+static void cc_as_decode(Context& ctx, Machine& base, uint32_t as, uint32_t out, uint32_t data, uint32_t& pos) {
   const uint32_t type = REX_LOAD_U8(data + pos);
   ++pos;
-  REX_STORE_U32(posp, pos);
   auto b = [&](uint32_t k) { return uint32_t(REX_LOAD_U8(data + pos + k)); };
   auto vm_of = [&]() { return REX_LOAD_U32(REX_LOAD_U32(REX_LOAD_U32(as + 0u) + 76u) + 156u); };
   auto pool_id = [&](uint32_t idx2) {
@@ -6310,7 +6480,7 @@ static void sub_8207AA50(Context& ctx, Machine& base) {
       const uint32_t buf = ctx.r1.u32 + 96u;
       ctx.r3.u64 = buf; ctx.r4.u64 = data + pos; ctx.lr = 0x8207AACCu;
       sub_82053A00(ctx, base);
-      REX_STORE_U32(posp, REX_LOAD_U32(posp) + REX_LOAD_U32(buf) + 1u);
+      pos = pos + REX_LOAD_U32(buf) + 1u;
       ctx.r3.u64 = REX_LOAD_U32(vm_of() + 10316u); ctx.r4.u64 = buf + 4u; ctx.lr = 0x8207AAF8u;
       sub_8209D948(ctx, base);
       REX_STORE_U16(out + 4u, ctx.r3.u16);
@@ -6319,7 +6489,7 @@ static void sub_8207AA50(Context& ctx, Machine& base) {
     }
     case 1: {
       const uint32_t bits = (b(0) << 24) | (b(1) << 16) | (b(2) << 8) | b(3);
-      REX_STORE_U32(posp, pos + 4u);
+      pos += 4u;
       REX_STORE_U32(out + 0u, 16u);
       ctx.fpscr.disableFlushMode();
       PPCRegister temp{};
@@ -6331,21 +6501,21 @@ static void sub_8207AA50(Context& ctx, Machine& base) {
     }
     case 3: REX_STORE_U32(out + 0u, 0x80000000u); REX_STORE_U32(out + 4u, 0u); return;
     case 4:
-      REX_STORE_U32(posp, pos + 1u);
+      pos += 1u;
       REX_STORE_U32(out + 0u, 4u);
       REX_STORE_U32(out + 4u, REX_LOAD_U32(vm_of() + 30476u));
       return;
     case 5: {
       const uint32_t v = b(0);
       REX_STORE_U32(out + 0u, 2u);
-      REX_STORE_U32(posp, pos + 1u);
+      pos += 1u;
       REX_STORE_U8(out + 4u, v == 1u ? 1u : 0u);
       return;
     }
     case 6: {
       const uint64_t bits = (uint64_t(b(3)) << 56) | (uint64_t(b(2)) << 48) | (uint64_t(b(1)) << 40) | (uint64_t(b(0)) << 32) |
                             (uint64_t(b(7)) << 24) | (uint64_t(b(6)) << 16) | (uint64_t(b(5)) << 8) | uint64_t(b(4));
-      REX_STORE_U32(posp, pos + 8u);
+      pos += 8u;
       REX_STORE_U32(out + 0u, 16u);
       ctx.fpscr.disableFlushMode();
       ctx.f0.u64 = bits;
@@ -6357,33 +6527,60 @@ static void sub_8207AA50(Context& ctx, Machine& base) {
     }
     case 7: {
       const uint32_t v = (b(3) << 24) | (b(2) << 16) | (b(1) << 8) | b(0);
-      REX_STORE_U32(posp, pos + 4u);
+      pos += 4u;
       REX_STORE_U32(out + 0u, 4u);
       REX_STORE_U32(out + 4u, v);
       return;
     }
     case 8: {
       const uint32_t idx = b(0);
-      REX_STORE_U32(posp, pos + 1u);
+      pos += 1u;
       pool_id((idx << 1) & 0x1FEu);
       return;
     }
     case 9: {
       const uint32_t idx = (b(1) << 8) | b(0);
-      REX_STORE_U32(posp, pos + 2u);
+      pos += 2u;
       pool_id((idx << 1) & 0x1FFFEu);
       return;
     }
     default: return;  // 2 and anything above 9: nothing more
   }
 }
+static void sub_8207AA50(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;
+  if (walk_exact) { sub_8207AA50_exact(ctx, base); return; }
+#else
+  #ifdef CC_WALK_EXACT_BUILD
+  sub_8207AA50_exact(ctx, base); return;  // Xbox bisect build
+#endif
+  static_cast<void>(&sub_8207AA50_exact);
+#endif
+  const uint32_t posp = ctx.r6.u32;
+  uint32_t pos = REX_LOAD_U32(posp);
+  cc_as_decode(ctx, base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, pos);
+  REX_STORE_U32(posp, pos);
+}
 #endif
 #include "generated/sub_820814A0.inc"
 #include "generated/sub_82083900.inc"
 #include "generated/sub_820813F8.inc"
+#ifdef CC_FAST
+#define sub_8207B630 sub_8207B630_exact
+#endif
 #include "generated/sub_8207B630.inc"
+#ifdef CC_FAST
+#undef sub_8207B630
+#endif
 #include "generated/sub_82079B48.inc"
+#ifdef CC_FAST
+#define sub_8207B8B8 sub_8207B8B8_exact
+#endif
 #include "generated/sub_8207B8B8.inc"
+#ifdef CC_FAST
+#undef sub_8207B8B8
+#endif
 #include "generated/sub_8208C670.inc"
 #include "generated/sub_82086818.inc"
 #include "generated/sub_820B02B0.inc"
@@ -6418,7 +6615,13 @@ static void sub_820B0F18(Context& ctx, Machine& base) { base.hooked_fast(1, ctx)
 #include "generated/sub_82083F50.inc"
 #include "generated/sub_820837C0.inc"
 #include "generated/sub_820922B8.inc"
+#ifdef CC_FAST
+#define sub_8208ADE8 sub_8208ADE8_exact
+#endif
 #include "generated/sub_8208ADE8.inc"
+#ifdef CC_FAST
+#undef sub_8208ADE8
+#endif
 #include "generated/sub_8208AFB8.inc"
 #include "generated/sub_820868A8.inc"
 #include "generated/sub_8208A688.inc"
@@ -7593,8 +7796,8 @@ static void __imp__XamInputGetState(Context& ctx, Machine& base) {
   // (g_frame_delay_calls). This is injected input for the diagnostic, never faked game state; the
   // original code reads it through the same boundary a real pad would use.
   // Script rows: first/last frame (inclusive), buttons, left stick X/Y.
-  // Boot -> title (START) -> menu (A) -> story book (A) -> Live notice (A)
-  // -> character select (A join, START confirm) -> level: walk right,
+  // Boot -> title (START) -> menu (A) -> story book (A) -> Live notice (A;
+  // dropped where the play build skips the notice) -> character select -> level: walk right,
   // four light attacks (X), jump (A), walk down-left, heavy attack (Y),
   // walk up-right, three light attacks, walk right to the next room.
   struct InputRow { uint32_t first, last, buttons; int16_t lx, ly; };
@@ -7618,6 +7821,9 @@ static void __imp__XamInputGetState(Context& ctx, Machine& base) {
   for (const InputRow &row : k_script) {
     if (g_frame_delay_calls < row.first || g_frame_delay_calls > row.last) continue;
     if (cc_direct_level() && row.first >= 6500u) continue;  // level-1 walk-through rows
+    // The DOWN and A that landed on the notice (no effect there; on the
+    // character select they would change player 1's knight and confirm it).
+    if ((row.first == 4500u || row.first == 5000u) && cc_skip_live_notice()) continue;
     buttons |= row.buttons;
     if (row.lx || row.ly)
       thumbs = (uint32_t(uint16_t(row.lx)) << 16) | uint16_t(row.ly);
@@ -8083,7 +8289,34 @@ static void sub_820D8370(Context& ctx, Machine& base) {
 #include "generated/sub_8206C1D0.inc"
 #include "generated/sub_82078FE8.inc"
 #include "generated/sub_8206DD58.inc"
+#ifdef CC_FAST
+#define sub_82053BC8 sub_82053BC8_exact
+#endif
 #include "generated/sub_82053BC8.inc"
+#ifdef CC_FAST
+#undef sub_82053BC8
+// Front-end SetMenu (exact sub_82053BC8: menu system r3, menu index r4;
+// the current index is the u16 at +52). The game-mode book's handler
+// sub_82063758 stores the chosen mode in the u16 at +12 (0, 1 or 3) and
+// then starts it right away for a player signed in to Xbox LIVE (bit
+// player in [[0x8225E61C]+104]) through sub_82063C00 / sub_82063F18 /
+// sub_82063DC8, or otherwise opens menu 18, "Sign In To Xbox LIVE to post
+// your score to the leaderboards". The original Xbox has no leaderboards,
+// so the play build takes the signed-in path for everyone (user,
+// 2026-10-03). Host CC_LIVE_NOTICE=1 keeps the notice (the scripted host
+// run's inputs and reference frames were recorded with it).
+static void sub_82053BC8(Context& ctx, Machine& base) {
+  if (cc_skip_live_notice() && ctx.r4.u32 == 18u && uint32_t(ctx.lr) == 0x82063BF4u) {
+    switch (base.load(ctx.r3.u32 + 12u, 2)) {
+      case 0u: ctx.lr = 0x82063BE4u; sub_82063C00(ctx, base); return;
+      case 1u: ctx.lr = 0x82063940u; sub_82063F18(ctx, base); return;
+      case 3u: ctx.lr = 0x82063AC8u; sub_82063DC8(ctx, base); return;
+      default: break;
+    }
+  }
+  sub_82053BC8_exact(ctx, base);
+}
+#endif
 // PORT POLICY, revised 2026-09-27: Xbox Live stays stubbed, but at the
 // network layer ("this console is offline") instead of at the Live
 // singleton. The game's local-player bookkeeping (profile manager, player
@@ -8716,6 +8949,10 @@ static void sub_82077FD8(Context& ctx, Machine& base) {
 static void sub_82067020(Context& ctx, Machine& base) {
   g_text_ids[g_text_ids_next % 64u] = {ctx.r3.u32, ctx.r6.u32};
   ++g_text_ids_next;
+#ifndef CC_XBOX_DRIVER
+  if (std::getenv("CC_TEXT_LOG"))  // host: which screen builds which text item
+    cc_elog("TEXT frame=%u id=%u obj=%08x parent=%08x lr=%08x\n", g_frame_delay_calls, ctx.r6.u32, ctx.r3.u32, ctx.r4.u32, uint32_t(ctx.lr));
+#endif
   sub_82067020_exact(ctx, base);
 }
 // Menu append: while the main menu is being built, dropped items are not
@@ -8801,7 +9038,13 @@ static void sub_82065F78(Context& ctx, Machine& base) {
 #include "generated/sub_820B0BA8.inc"
 #include "generated/sub_821282A8.inc"
 #include "generated/sub_82085EC0.inc"
+#ifdef CC_FAST
+#define sub_82095788 sub_82095788_exact
+#endif
 #include "generated/sub_82095788.inc"
+#ifdef CC_FAST
+#undef sub_82095788
+#endif
 #include "generated/sub_82095700.inc"
 #include "generated/sub_82099258.inc"
 #include "generated/sub_82099118.inc"
@@ -9021,3 +9264,7 @@ static void __imp__RtlInitAnsiString(Context& ctx, Machine& base) {
 #include "generated/sub_820B73C8.inc"
 #include "generated/sub_820B64E0.inc"
 #include "generated/sub_820AA488.inc"
+#ifdef CC_FAST
+// Native ActionScript interpreter (play build): runtime021/as_native.inc.
+#include "as_native.inc"
+#endif

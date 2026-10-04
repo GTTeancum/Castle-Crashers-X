@@ -1,0 +1,10 @@
+    case 0x1Cu: return cc_as_op_1C(ctx, base, o);
+    case 0x1Du: return cc_as_op_1D(ctx, base, o);
+    case 0x23u: return cc_as_op_23(ctx, base, o);
+    case 0x3Cu: return cc_as_op_3C(ctx, base, o);
+    case 0x41u: return cc_as_op_41(ctx, base, o);
+    case 0x4Eu: return cc_as_op_4E(ctx, base, o);
+    case 0x4Fu: return cc_as_op_4F(ctx, base, o);
+    case 0x88u: return cc_as_op_88(ctx, base, o);
+    case 0xA2u: return cc_as_op_A2(ctx, base, o);
+    case 0xA3u: return cc_as_op_A3(ctx, base, o);
