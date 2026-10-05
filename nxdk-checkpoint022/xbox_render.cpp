@@ -42,10 +42,12 @@ struct Texture {
 
 bool g_init = false, g_failed = false, g_in_frame = false, g_shown = false;
 // Submissions share one open push-buffer block: pbkit's pb_end kicks the GPU
-// (write-combine flush with a busy wait, then the DMA put), which per sprite
-// and per counter segment cost hundreds of kicks a frame on the console. The
-// block is kicked every 32 submissions, before any wait for the GPU and before
-// pbkit's own drawing calls.
+// (write-combine flush with a busy wait, an uncached GPU register read, then
+// the DMA put), which per sprite and per counter segment cost hundreds of
+// kicks a frame on the console. The block is kicked every 128 submissions,
+// before any wait for the GPU and before pbkit's own drawing calls (pbkit
+// rewinds to the 512 KB push buffer's head every frame, so a longer open
+// block only delays when the GPU starts on it; it waits ~0.1 ms a frame).
 uint32_t* g_open = nullptr;
 unsigned g_open_n = 0;
 uint32_t* xr_begin() { return g_open ? g_open : pb_begin(); }
@@ -57,7 +59,7 @@ void xr_flush() {
 }
 void xr_end(uint32_t* p) {
   g_open = p;
-  if (++g_open_n >= 32u) xr_flush();
+  if (++g_open_n >= 128u) xr_flush();
 }
 // pbkit keeps three framebuffers and shows one queued frame per vertical
 // blank; it only refuses a fourth queued frame, so a game finishing frames
@@ -334,13 +336,37 @@ void draw_digit(int x, int y, unsigned d, DWORD color) {
   if (m & 0x20) pb_fill_quad(x, y + 2, 2, 7, color);        // f
   if (m & 0x40) pb_fill_quad(x + 2, y + 9, 8, 2, color);    // g
 }
-// Microseconds from the CPU cycle counter, for the timing counters.
+// Microseconds from the kernel's performance counter, for the per-frame
+// timing counters (scaled by the counter's frequency in Hz: an integer MHz
+// divisor read a 3.375 MHz counter 12.5% high). Each call costs ~0.5 us on
+// the console (a port read in the kernel), so per-draw timing uses the CPU's
+// time-stamp counter instead.
 uint64_t now_us() {
   static uint64_t freq = 0;
-  if (!freq) freq = KeQueryPerformanceFrequency() / 1000000u;
-  return KeQueryPerformanceCounter() / freq;
+  if (!freq) freq = KeQueryPerformanceFrequency();
+  const uint64_t c = KeQueryPerformanceCounter();
+  return (c / freq) * 1000000u + (c % freq) * 1000000u / freq;
 }
-uint64_t g_draw_us = 0;
+inline uint64_t cycles() {
+  uint32_t lo, hi;
+  asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
+  return (uint64_t(hi) << 32) | lo;
+}
+// Draw hand-off time this frame in CPU cycles, converted to microseconds at
+// the frame end with the cycle rate measured against now_us() (733 MHz on
+// the console; the measured rate also holds under emulation).
+uint64_t g_draw_cycles = 0;
+uint64_t draw_cycles_to_us(uint64_t c) {
+  static uint64_t c0 = 0, u0 = 0, per_us = 733;
+  const uint64_t cn = cycles(), un = now_us();
+  if (!c0) { c0 = cn; u0 = un; }
+  else if (un - u0 >= 1000000u) {  // re-measured each second
+    per_us = (cn - c0) / (un - u0);
+    if (!per_us) per_us = 1;
+    c0 = cn; u0 = un;
+  }
+  return c / per_us;
+}
 // Hexadecimal digit (0-15) in the same seven-segment style.
 void draw_hex_digit(int x, int y, unsigned d, DWORD color) {
   static const uint8_t seg[16] = {0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07,
@@ -374,6 +400,13 @@ void* cc_xr_alloc_gpu(uint32_t bytes) {
 
 // kind: 100 port DXT5 (standard blocks, contiguous), 1 A8R8G8B8 BE, 5 A4R4G4B4 BE.
 void cc_xr_bind(uint32_t key, const void* data, uint32_t w, uint32_t h, int kind) {
+  // Rebinding the texture already current this frame (consecutive sprites
+  // mostly share one) changes nothing: g_cur would be rebuilt from the same
+  // inputs, and a converted texture has had this frame's sample check.
+  static struct { uint32_t key, w, h, frame; const void* data; int kind; } last{};
+  if (g_have_tex && key == last.key && data == last.data && w == last.w && h == last.h && kind == last.kind &&
+      last.frame == g_frames)
+    return;
   g_have_tex = false;
   if (!data || !w || !h || w > 4096 || h > 4096) return;
   if (kind == 100) {
@@ -382,21 +415,20 @@ void cc_xr_bind(uint32_t key, const void* data, uint32_t w, uint32_t h, int kind
     g_cur.format = 0x0000002Au | (NV097_SET_TEXTURE_FORMAT_COLOR_L_DXT45_A8R8G8B8 << 8) |
                    (1u << 16) | (log2u(w) << 20) | (log2u(h) << 24);
     g_have_tex = true;
-    return;
+  } else if (kind == 1 || kind == 5) {
+    if (const Texture* t = converted(key, static_cast<const uint8_t*>(data), w, h, kind)) {
+      g_cur = *t;
+      g_have_tex = true;
+    }
   }
-  if (kind != 1 && kind != 5) return;
-  if (const Texture* t = converted(key, static_cast<const uint8_t*>(data), w, h, kind)) {
-    g_cur = *t;
-    g_have_tex = true;
-  }
+  if (g_have_tex) { last.key = key; last.w = w; last.h = h; last.frame = g_frames; last.data = data; last.kind = kind; }
 }
 
 // One draw of the game's: prim 13 quad list, 4 triangle list, 5 strip;
 // vertices are big-endian {x, y, z, u, v, argb} with the given stride.
 void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t stride, uint32_t blend) {
   if (!init() || !vertices || stride < 24 || !count) return;
-  const uint64_t t0 = now_us();
-  struct Tally { uint64_t t0; ~Tally() { g_draw_us += now_us() - t0; } } tally{t0};
+  struct Tally { uint64_t t0; ~Tally() { g_draw_cycles += cycles() - t0; } } tally{cycles()};
   uint32_t op;
   if (prim == 13) op = NV097_SET_BEGIN_END_OP_QUADS;
   else if (prim == 4) op = NV097_SET_BEGIN_END_OP_TRIANGLES;
@@ -502,8 +534,8 @@ void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
   static unsigned window_frames = 0, shown_fps = 0, shown_ms = 0;
   static uint64_t sum_update = 0, sum_render = 0, sum_draw = 0, sum_wait = 0, last_wait = 0;
   static unsigned shown_update = 0, shown_render = 0, shown_draw = 0, shown_wait = 0;
-  sum_update += update_us; sum_render += render_us; sum_draw += g_draw_us; sum_wait += last_wait;
-  g_draw_us = 0;
+  sum_update += update_us; sum_render += render_us; sum_draw += draw_cycles_to_us(g_draw_cycles); sum_wait += last_wait;
+  g_draw_cycles = 0;
   // Longest frame of the window (frame end to frame end).
   static uint64_t last_end_us = 0, max_frame_us = 0;
   {
