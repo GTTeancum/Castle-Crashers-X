@@ -7266,7 +7266,144 @@ static void sub_82084DB8(Context& ctx, Machine& base) {
 #include "generated/sub_82085540.inc"
 #include "generated/sub_820867F0.inc"
 #include "generated/sub_8208F9E8.inc"
+#ifdef CC_FAST
+#define sub_82085890 sub_82085890_exact
+#endif
 #include "generated/sub_82085890.inc"
+#ifdef CC_FAST
+#undef sub_82085890
+// MSB-first bit cursor over a SWF record as the game's readers keep it
+// (sub_82095700 unsigned, sub_82095788 signed, and the inline single-bit
+// reads): byte position pos from p, bits left in the current byte (8..1);
+// a byte is read when its first bit is. The readers test bits through the
+// mask table at 0x820146B0, which holds 1 << i for i = 0..31 (checked once
+// by cc_swf_mask_ok). A signed field of n bits takes bit n-1 as its sign;
+// n = 0 reads 0 and moves nothing.
+struct CcSwfBits {
+  uint32_t p, pos, bits, cpos = ~0u, cur = 0u;
+  uint32_t bit(Machine& base) {
+    if (pos != cpos) { cpos = pos; cur = REX_LOAD_U8(p + pos); }
+    const uint32_t b = (cur >> (bits - 1u)) & 1u;
+    if (--bits == 0u) { bits = 8u; ++pos; }
+    return b;
+  }
+  uint32_t ubits(Machine& base, uint32_t n) {
+    uint32_t v = 0u;
+    for (uint32_t i = 0; i < n; ++i) v = (v << 1) | bit(base);
+    return v;
+  }
+  int32_t sbits(Machine& base, uint32_t n) {
+    if (n == 0u) return 0;
+    const uint32_t v = ubits(base, n);
+    return int32_t(((v >> (n - 1u)) & 1u) && n < 32u ? v | (~0u << n) : v);
+  }
+};
+static bool cc_swf_mask_check(Machine& base) {
+  for (uint32_t i = 0; i < 32u; ++i)
+    if (REX_LOAD_U32(0x820146B0u + 4u * i) != (1u << i)) return false;
+  return true;
+}
+static inline bool cc_swf_mask_ok(Machine& base) {
+  static const bool ok = cc_swf_mask_check(base);
+  return ok;
+}
+// SWF MATRIX record reader (exact sub_82085890: matrix r3, record r4; r3 =
+// bytes read, a partly read last byte included). HasScale is bit 7 of byte
+// 0, tested in place; the cursor then starts at bit 6. With it, a 5-bit
+// count n and two signed n-bit fields, each converted to float and
+// multiplied by the float at 0x820425E0, go to +16 / +20. One bit
+// HasRotate: the same with the float at 0x820425DC into +24 / +28. Then a
+// count n and, only when n is nonzero, two fields as plain floats into
+// +32 / +36. Bytes +12..+14 are cleared; fields not present keep their
+// values. Conversions as compiled: int -> double -> float, the product in
+// double rounded to float. Switches: CC_PLACE_EXACT=1 (host) /
+// CC_PLACE_EXACT_BUILD (Xbox) run the exact body; CC_ORACLE=1 or
+// CC_PLACE_ORACLE=1 run it after the native decode and compare.
+static CC_HOT_FN void sub_82085890(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  static const bool exact = std::getenv("CC_PLACE_EXACT") != nullptr;
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr || std::getenv("CC_PLACE_ORACLE") != nullptr;
+#elif defined(CC_PLACE_EXACT_BUILD)
+  constexpr bool exact = true;
+#else
+  constexpr bool exact = false;
+#endif
+  if (exact || !cc_swf_mask_ok(base)) { sub_82085890_exact(ctx, base); return; }
+  const uint32_t m = ctx.r3.u32, rec = ctx.r4.u32;
+  ctx.fpscr.disableFlushMode();
+  auto f32 = [](uint32_t b) { float f; __builtin_memcpy(&f, &b, 4); return f; };
+  auto bits = [](float f) { uint32_t b; __builtin_memcpy(&b, &f, 4); return b; };
+  auto scaled = [](int32_t v, float c) { const float f = float(double(int64_t(v))); return float(double(f) * double(c)); };
+  CcSwfBits b{rec, 0u, 7u};
+  uint32_t out[6] = {};
+  bool have[3] = {false, false, false};  // scale, rotate, translate
+  int32_t last = 0;  // the last field converted
+  bool converted = false;
+  auto field = [&](uint32_t n) { last = b.sbits(base, n); converted = true; return last; };
+  if (REX_LOAD_U8(rec) & 0x80u) {
+    const float c = f32(REX_LOAD_U32(0x820425E0u));
+    const uint32_t n = b.ubits(base, 5u);
+    out[0] = bits(scaled(field(n), c));
+    out[1] = bits(scaled(field(n), c));
+    have[0] = true;
+  }
+  if (b.bit(base)) {
+    const float c = f32(REX_LOAD_U32(0x820425DCu));
+    const uint32_t n = b.ubits(base, 5u);
+    out[2] = bits(scaled(field(n), c));
+    out[3] = bits(scaled(field(n), c));
+    have[1] = true;
+  }
+  if (const uint32_t n = b.ubits(base, 5u)) {
+    out[4] = bits(float(double(int64_t(field(n)))));
+    out[5] = bits(float(double(int64_t(field(n)))));
+    have[2] = true;
+  }
+  const uint32_t used = b.bits < 8u ? b.pos + 1u : b.pos;
+  // The original's stack frame as it leaves it (frame F = r1 - 144: back
+  // chain, bits left +80, position +84, the last converted field as int64
+  // at +88; the unsigned reader's save of r31 at F - 8). The game later
+  // copies uninitialised stack words into heap objects (the 8-byte keys of
+  // the tree nodes sub_82099B48 builds carry 2 padding bytes), so these
+  // dead bytes are written as the original writes them.
+  auto stack_frame = [&]() {
+    const uint32_t r1 = ctx.r1.u32, f = r1 - 144u;
+    REX_STORE_U64(f - 8u, ctx.r31.u64);
+    REX_STORE_U32(f, r1);
+    REX_STORE_U32(f + 80u, b.bits);
+    REX_STORE_U32(f + 84u, b.pos);
+    if (converted) REX_STORE_U64(f + 88u, uint64_t(int64_t(last)));
+  };
+#ifndef CC_XBOX_DRIVER
+  if (oracle) {
+    uint32_t before[6];
+    for (int k = 0; k < 6; ++k) before[k] = REX_LOAD_U32(m + 16u + 4u * uint32_t(k));
+    sub_82085890_exact(ctx, base);
+    for (int k = 0; k < 6; ++k) {
+      const uint32_t want = have[k / 2] ? out[k] : before[k];
+      const uint32_t got = REX_LOAD_U32(m + 16u + 4u * uint32_t(k));
+      if (got != want) cc_oracle_mismatch("sub_82085890", k, got, want);
+    }
+    if (ctx.r3.u32 != used) cc_oracle_mismatch("sub_82085890", 6, ctx.r3.u32, used);
+    for (uint32_t k = 12u; k < 15u; ++k)
+      if (REX_LOAD_U8(m + k) != 0u) cc_oracle_mismatch("sub_82085890", int(k), REX_LOAD_U8(m + k), 0u);
+    const uint32_t f = ctx.r1.u32 - 144u;
+    if (REX_LOAD_U32(f + 80u) != b.bits) cc_oracle_mismatch("sub_82085890 stack", 80, REX_LOAD_U32(f + 80u), b.bits);
+    if (REX_LOAD_U32(f + 84u) != b.pos) cc_oracle_mismatch("sub_82085890 stack", 84, REX_LOAD_U32(f + 84u), b.pos);
+    if (converted && REX_LOAD_U64(f + 88u) != uint64_t(int64_t(last)))
+      cc_oracle_mismatch("sub_82085890 stack", 88, uint32_t(REX_LOAD_U64(f + 88u)), uint32_t(last));
+    if (REX_LOAD_U32(f) != ctx.r1.u32) cc_oracle_mismatch("sub_82085890 stack", 0, REX_LOAD_U32(f), ctx.r1.u32);
+    if (REX_LOAD_U64(f - 8u) != ctx.r31.u64) cc_oracle_mismatch("sub_82085890 stack", -8, uint32_t(REX_LOAD_U64(f - 8u)), ctx.r31.u32);
+    return;
+  }
+#endif
+  stack_frame();
+  for (int k = 0; k < 6; ++k)
+    if (have[k / 2]) REX_STORE_U32(m + 16u + 4u * uint32_t(k), out[k]);
+  REX_STORE_U8(m + 12u, 0u); REX_STORE_U8(m + 13u, 0u); REX_STORE_U8(m + 14u, 0u);
+  ctx.r3.u64 = used;
+}
+#endif
 #include "generated/sub_82079970.inc"
 #include "generated/sub_82083F50.inc"
 #include "generated/sub_820837C0.inc"
