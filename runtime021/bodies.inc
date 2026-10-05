@@ -5915,12 +5915,16 @@ static void sub_820C1980(Context& ctx, Machine& base) {
   // The game's final draw call (r3 device, r4 primitive, r5 vertex count,
   // r6 vertices, r7 stride): the Xbox renderer draws it from here.
 #ifdef CC_XBOX_DRIVER
+  // Vertices and the device's blend word through the page table (the
+  // checked lookups are the fallback for spans that cross a 64 KiB page).
   const uint32_t count = ctx.r5.u32, stride = ctx.r7.u32;
   if (count && stride && count <= 65536u / stride) {
-    const uint8_t* v = base.memory.contiguous(ctx.r6.u32, size_t(count) * stride, 1);
-    uint64_t blend = 0;
-    base.memory.load_be(ctx.r3.u32 + 10552u, 4, blend);
-    if (v) ::cc_xr_draw(ctx.r4.u32, count, v, stride, uint32_t(blend));
+    const uint8_t* v = cc_obj_host(ctx.r6.u32, count * stride);
+    if (!v) v = base.memory.contiguous(ctx.r6.u32, size_t(count) * stride, 1);
+    uint32_t blend = 0;
+    if (const uint8_t* d = cc_obj_host(ctx.r3.u32 + 10552u, 4u)) blend = cc_hb32(d);
+    else { uint64_t b = 0; base.memory.load_be(ctx.r3.u32 + 10552u, 4, b); blend = uint32_t(b); }
+    if (v) ::cc_xr_draw(ctx.r4.u32, count, v, stride, blend);
   }
 #endif
 #ifndef CC_XBOX_DRIVER
@@ -6089,16 +6093,45 @@ static void sub_820A9308(Context& ctx, Machine& base) {
 }
 #endif
 #endif
-static void cc_tex_stream_on_bind(Context& ctx, Machine& base, uint32_t record);
+// Fields of the game's texture record read at a bind: the pixel pointer +36
+// (the texture's identity), width +16, height +20 and format code +24. False
+// when the record is null or +36 is unreadable (the bind then does nothing);
+// the other fields read as 0 when unreadable.
+struct CcTexRec { uint32_t data, w, h, fmt; };
+static inline bool cc_tex_record(Machine& base, uint32_t record, CcTexRec& r) {
+  if (!record) return false;
+  if (const uint8_t* p = cc_obj_host(record + 16u, 24u)) {
+    r.w = cc_hb32(p); r.h = cc_hb32(p + 4u); r.fmt = cc_hb32(p + 8u); r.data = cc_hb32(p + 20u);
+    return true;
+  }
+  uint64_t d = 0, w = 0, h = 0, f = 0;
+  if (base.memory.load_be(record + 36u, 4, d) != cc::xbox::MemoryError::ok) return false;
+  base.memory.load_be(record + 16u, 4, w);
+  base.memory.load_be(record + 20u, 4, h);
+  base.memory.load_be(record + 24u, 4, f);
+  r = CcTexRec{uint32_t(d), uint32_t(w), uint32_t(h), uint32_t(f)};
+  return true;
+}
+static const CcDxtTexture* cc_tex_stream_on_bind(Context& ctx, Machine& base, uint32_t data, bool& ran);
 #define sub_820A89F8 sub_820A89F8_exact
 #include "generated/sub_820A89F8.inc"
 #undef sub_820A89F8
-static void cc_xr_on_bind(Machine& base, uint32_t record);
+static void cc_xr_on_bind(Machine& base, const CcTexRec& rec, const CcDxtTexture* t);
 static void sub_820A89F8(Context& ctx, Machine& base) {
   // Texture bind (r4 = the game's texture record): make sure a streamed
-  // texture's pixels are resident before the exact bind runs.
-  cc_tex_stream_on_bind(ctx, base, ctx.r4.u32);
-  cc_xr_on_bind(base, ctx.r4.u32);
+  // texture's pixels are resident before the exact bind runs, then hand it
+  // to the Xbox renderer.
+  CcTexRec rec;
+  if (cc_tex_record(base, ctx.r4.u32, rec)) {
+    bool ran = false;
+    const CcDxtTexture* t = cc_tex_stream_on_bind(ctx, base, rec.data, ran);
+    bool ok = true;
+    if (ran) {
+      ok = cc_tex_record(base, ctx.r4.u32, rec);
+      t = ok ? cc_dxt_lookup(rec.data) : nullptr;
+    }
+    if (ok) cc_xr_on_bind(base, rec, t);
+  }
   // The exact bind programs the Xbox 360's device per sprite (vertex and
   // pixel shader, vertex declaration, render states, sampler registers)
   // for a draw path the play build no longer runs (sub_820C1980's body is
@@ -7134,22 +7167,29 @@ static uint32_t cc_tex_rasterize_impl(Context& ctx, Machine& base, uint32_t job,
 }
 // Hand the bound texture to the Xbox renderer: streamed DXT5 textures from
 // the texture cache zone, other formats (the A4R4G4B4 font atlas) from the
-// game's own block.
-static void cc_xr_on_bind([[maybe_unused]] Machine& base, [[maybe_unused]] uint32_t record) {
+// game's own block. t: the record's streamed texture (cc_dxt_lookup of
+// rec.data, as returned by cc_tex_stream_on_bind), or nullptr. The host
+// address of the last pixel span is kept: guest regions are mapped once and
+// never move, and consecutive binds mostly repeat the texture.
+static void cc_xr_on_bind([[maybe_unused]] Machine& base, [[maybe_unused]] const CcTexRec& rec,
+                          [[maybe_unused]] const CcDxtTexture* t) {
 #ifdef CC_XBOX_DRIVER
-  uint64_t data = 0, w = 0, h = 0, fmt = 0;
-  if (!record || base.memory.load_be(record + 36u, 4, data) != cc::xbox::MemoryError::ok) return;
-  base.memory.load_be(record + 16u, 4, w);
-  base.memory.load_be(record + 20u, 4, h);
-  base.memory.load_be(record + 24u, 4, fmt);
-  if (const CcDxtTexture* t = cc_find_dxt_texture(uint32_t(data))) {
-    const uint8_t* q = t->cache ? base.memory.contiguous(t->cache, size_t(t->w) * t->h, 1) : nullptr;
-    ::cc_xr_bind(uint32_t(data), q, t->w, t->h, 100);
+  static uint32_t last_a = 0, last_n = 0;
+  static const uint8_t* last_q = nullptr;
+  auto span = [&](uint32_t a, size_t n) -> const uint8_t* {
+    if (a == last_a && n == last_n && last_q) return last_q;
+    const uint8_t* q = base.memory.contiguous(a, n, 1);
+    if (q) { last_a = a; last_n = uint32_t(n); last_q = q; }
+    return q;
+  };
+  if (t) {
+    const uint8_t* q = t->cache ? span(t->cache, size_t(t->w) * t->h) : nullptr;
+    ::cc_xr_bind(rec.data, q, t->w, t->h, 100);
     return;
   }
-  const uint32_t bpp = fmt == 1u ? 4u : (fmt == 5u ? 2u : 0u);
-  const uint8_t* q = bpp ? base.memory.contiguous(uint32_t(data), size_t(w) * h * bpp, 1) : nullptr;
-  ::cc_xr_bind(uint32_t(data), q, uint32_t(w), uint32_t(h), int(fmt));
+  const uint32_t bpp = rec.fmt == 1u ? 4u : (rec.fmt == 5u ? 2u : 0u);
+  const uint8_t* q = bpp ? span(rec.data, size_t(rec.w) * rec.h * bpp) : nullptr;
+  ::cc_xr_bind(rec.data, q, rec.w, rec.h, int(rec.fmt));
 #endif
 }
 // ---- Baked texture pack ----------------------------------------------------
@@ -7325,14 +7365,23 @@ static void cc_bake_record(Machine& base, const uint8_t* snapshot, uint32_t job_
   g_bake_writer.records.push_back(std::move(r));
 }
 #endif
-static void cc_tex_stream_on_bind(Context& ctx, Machine& base, uint32_t record) {
-  uint64_t data = 0;
-  if (!record || base.memory.load_be(record + 36u, 4, data) != cc::xbox::MemoryError::ok) return;
-  CcDxtTexture* t = nullptr;
-  t = cc_dxt_lookup(uint32_t(data));
-  if (!t) return;
+// Make a streamed texture (pixel pointer `data`) resident at its bind.
+// Returns its entry, or nullptr; `ran` is set when the pixels had to be
+// produced (swap, pack or rasterizer, which runs guest code), after which
+// the caller looks the record and the entry up again.
+static void cc_tex_stream_fill(Context& ctx, Machine& base, CcDxtTexture& tr);
+static const CcDxtTexture* cc_tex_stream_on_bind(Context& ctx, Machine& base, uint32_t data, bool& ran) {
+  ran = false;
+  CcDxtTexture* t = cc_dxt_lookup(data);
+  if (!t) return nullptr;
   t->last_use = g_frame_delay_calls;
-  if (t->cache) return;
+  if (t->cache) return t;
+  cc_tex_stream_fill(ctx, base, *t);
+  ran = true;
+  return nullptr;
+}
+static void cc_tex_stream_fill(Context& ctx, Machine& base, CcDxtTexture& tr) {
+  CcDxtTexture* t = &tr;
   if (const uint32_t swapped = cc_tex_swap_in(base, *t)) {
     t->cache = swapped;
     cc_tex_cache_trim(base, t->data);
