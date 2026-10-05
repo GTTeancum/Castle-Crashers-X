@@ -8623,7 +8623,108 @@ static CC_HOT_FN void sub_82066EA8(Context& ctx, Machine& base) {
 #include "generated/sub_8209B9D0.inc"
 #include "generated/sub_820B6B80.inc"
 #include "generated/sub_8209B830.inc"
+#ifdef CC_FAST
+#define sub_820798D8 sub_820798D8_exact
+#endif
 #include "generated/sub_820798D8.inc"
+#ifdef CC_FAST
+#undef sub_820798D8
+// Rotating-buffer sprintf (exact sub_820798D8: format r3, arguments from
+// r4): the CRT's vsprintf (sub_821280E8 -> _output sub_8212C6F0) into the
+// next of four 512-byte buffers at 0x82290288, picked by the signed index
+// byte at 0x82290A88 (read again afterwards, then advanced mod 4); returns
+// that buffer. The formats "%d" (the low word of r4 as int) and "%s" (the
+// string at r4, copied up to its zero byte) are written here; any other
+// format, and "%s" of a null pointer, run the original. The two outer
+// stack frames are left as the original leaves them (return addresses,
+// saved r30/r31, the argument save area, back chains, the string FILE
+// block); _output's own frame is not reproduced.
+// Switches: CC_FORMAT_EXACT=1 (host) / CC_FORMAT_EXACT_BUILD (Xbox) run
+// the original; CC_ORACLE=1 or CC_FORMAT_ORACLE=1 run it after the native
+// text is made and compare buffer, length and result.
+static CC_HOT_FN void sub_820798D8(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  static const bool exact = std::getenv("CC_FORMAT_EXACT") != nullptr;
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr || std::getenv("CC_FORMAT_ORACLE") != nullptr;
+#elif defined(CC_FORMAT_EXACT_BUILD)
+  constexpr bool exact = true;
+#else
+  constexpr bool exact = false;
+#endif
+  const uint32_t fmt = ctx.r3.u32;
+  const uint32_t c1 = REX_LOAD_U8(fmt + 1u);
+  if (exact || REX_LOAD_U8(fmt) != 0x25u || (c1 != 0x64u && c1 != 0x73u) || REX_LOAD_U8(fmt + 2u) != 0u ||
+      (c1 == 0x73u && ctx.r4.u32 == 0u)) {
+    sub_820798D8_exact(ctx, base);
+    return;
+  }
+  // The text: digits of the int, or the string's length (copied below).
+  char num[12];
+  uint32_t len = 0u;
+  if (c1 == 0x64u) {
+    const int32_t v = int32_t(ctx.r4.u32);
+    uint32_t u = v < 0 ? 0u - uint32_t(v) : uint32_t(v);
+    char tmp[10];
+    uint32_t n = 0u;
+    do { tmp[n++] = char(0x30u + u % 10u); u /= 10u; } while (u != 0u);
+    if (v < 0) num[len++] = 0x2D;
+    while (n != 0u) num[len++] = tmp[--n];
+  } else {
+    while (REX_LOAD_U8(ctx.r4.u32 + len) != 0u) ++len;
+  }
+#ifndef CC_XBOX_DRIVER
+  std::vector<uint8_t> want;
+  if (oracle) {
+    want.resize(len);
+    for (uint32_t i = 0; i < len; ++i) want[i] = c1 == 0x64u ? uint8_t(num[i]) : REX_LOAD_U8(ctx.r4.u32 + i);
+    const uint32_t buf0 = (uint32_t(int32_t(int8_t(REX_LOAD_U8(0x82290A88u)))) << 9) + 0x82290288u;
+    sub_820798D8_exact(ctx, base);
+    if (ctx.r3.u32 != buf0) cc_oracle_mismatch("sub_820798D8 buffer", 0, ctx.r3.u32, buf0);
+    for (uint32_t i = 0; i <= len; ++i) {
+      const uint32_t got = REX_LOAD_U8(buf0 + i), w = i < len ? want[i] : 0u;
+      if (got != w) { cc_oracle_mismatch("sub_820798D8 text", int(i), got, w); break; }
+    }
+    return;
+  }
+#endif
+  // Stack as the original leaves it: its frame F0 = r1 - 112 below the
+  // saved return address, r30, r31 and the argument save area, the
+  // va_list at F0 + 80; vsprintf's frame F1 = F0 - 128 with its return
+  // address, saved r31 and the FILE block {ptr, count, base, flags 66} at
+  // F1 + 80 as _output leaves it.
+  const uint32_t r1 = ctx.r1.u32, f0 = r1 - 112u, f1 = f0 - 128u;
+  REX_STORE_U32(r1 - 8u, uint32_t(ctx.lr));
+  REX_STORE_U64(r1 - 24u, ctx.r30.u64);
+  REX_STORE_U64(r1 - 16u, ctx.r31.u64);
+  REX_STORE_U64(r1 + 24u, ctx.r4.u64); REX_STORE_U64(r1 + 32u, ctx.r5.u64);
+  REX_STORE_U64(r1 + 40u, ctx.r6.u64); REX_STORE_U64(r1 + 48u, ctx.r7.u64);
+  REX_STORE_U64(r1 + 56u, ctx.r8.u64); REX_STORE_U64(r1 + 64u, ctx.r9.u64);
+  REX_STORE_U64(r1 + 72u, ctx.r10.u64);
+  REX_STORE_U32(f0, r1);
+  REX_STORE_U32(f0 + 80u, r1 + 24u);
+  const uint32_t idx = uint32_t(int32_t(int8_t(REX_LOAD_U8(0x82290A88u))));
+  const uint32_t buf = (idx << 9) + 0x82290288u;
+  REX_STORE_U32(f0 - 8u, 0x8207993Cu);
+  REX_STORE_U64(f0 - 16u, ctx.r31.u64);
+  REX_STORE_U32(f1, f0);
+  // The text, byte by byte in order (a source inside the buffers reads as
+  // the original's copy does), then the zero byte.
+  if (c1 == 0x64u) {
+    for (uint32_t i = 0; i < len; ++i) REX_STORE_U8(buf + i, uint8_t(num[i]));
+  } else {
+    const uint32_t src = ctx.r4.u32;
+    for (uint32_t i = 0; i < len; ++i) REX_STORE_U8(buf + i, REX_LOAD_U8(src + i));
+  }
+  REX_STORE_U8(buf + len, 0u);
+  REX_STORE_U32(f1 + 80u, buf + len);
+  REX_STORE_U32(f1 + 84u, 0x7FFFFFFFu - len - 1u);
+  REX_STORE_U32(f1 + 88u, buf);
+  REX_STORE_U32(f1 + 92u, 66u);
+  const int32_t now = int32_t(int8_t(REX_LOAD_U8(0x82290A88u)));
+  REX_STORE_U8(0x82290A88u, uint8_t((now + 1) & 3));
+  ctx.r3.u64 = uint32_t(uint32_t(now) << 9) + 0x82290288u;
+}
+#endif
 #include "generated/sub_820B6B90.inc"
 #include "generated/sub_8209BA50.inc"
 #include "generated/sub_821280E8.inc"
