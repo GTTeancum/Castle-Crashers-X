@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Per-second console measurement lines printed next to PERF (called once a
 // second from cc_xr_frame_end in xbox_render.cpp):
+//   FRAME: frames in the second and baked-texture reads (count, KiB) in it.
 //   PMC (make PMC=1): two Pentium III performance counters, rotating through
 //          event pairs one second at a time. The title runs in ring 0, so it
 //          programs PerfEvtSel0/1 (MSR 0x186/0x187) and reads with rdpmc.
 #include <windows.h>
 #include <xboxkrnl/xboxkrnl.h>
 #include <cstdint>
+
+// runtime021 (bridge.cpp): FRAME line counters since the last call, reset:
+// {frames, baked-texture reads, baked-texture bytes}.
+void cc_xbox_frame_stats(uint64_t out[3]);
 
 #ifdef CC_PMC
 namespace {
@@ -46,6 +51,9 @@ void arm(unsigned set) {
 
 // frames: frames completed in the second just ended.
 void cc_xbox_perf_second([[maybe_unused]] unsigned frames) {
+  uint64_t fs[3] = {};
+  cc_xbox_frame_stats(fs);
+  DbgPrint("FRAME frames=%u bake=%u bakeKB=%u\n", unsigned(fs[0]), unsigned(fs[1]), unsigned(fs[2] >> 10));
 #ifdef CC_PMC
   const unsigned n = frames ? frames : 1u;
   if (g_armed) {

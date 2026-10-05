@@ -209,6 +209,10 @@ static uint32_t g_raster_count = 0;
 static double g_update_seconds, g_render_seconds;
 #else
 static uint32_t g_frame_update_us, g_frame_render_us;
+// Console FRAME line (nxdk-checkpoint022/xbox_perf.cpp, once a second):
+// frames and baked-texture reads and bytes, summed until read by
+// cc_xbox_frame_stats (bridge.cpp).
+static uint32_t g_fs_frames, g_fs_bake_reads, g_fs_bake_bytes;
 #endif
 static uint32_t g_tex_swap_ins = 0, g_tex_swap_outs = 0;
 static uint32_t g_bake_hits = 0, g_bake_misses = 0;
@@ -2188,6 +2192,9 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     base.memory.store_be(0x02500108u, 8, 0x01C9000000000000ull + t100ns);
     base.memory.store_be(0x02500110u, 4, uint32_t(t100ns / 10000ull));
   }
+#ifdef CC_XBOX_DRIVER
+  ++g_fs_frames;
+#endif
   cc_audio_frame();
 #ifdef CC_FAST
   cc_menu_text_patch(base);
@@ -7129,8 +7136,30 @@ static void cc_xr_on_bind([[maybe_unused]] Machine& base, [[maybe_unused]] uint3
 // (confirmation). A texture not in the pack is rasterized as before.
 struct CcBakeEntry { uint32_t key0, full, len, w, h, offset; };
 static std::vector<CcBakeEntry> g_bake_index;   // sorted by key0
+static bool g_bake_loaded = false, g_bake_ready = false;
+#ifdef CC_XBOX_DRIVER
+// The Xbox reads the pack with NtReadFile at each entry's offset, straight
+// into the texture's cache block (nxdk's fread copies through its buffer
+// byte by byte, unoptimised).
+static HANDLE g_bake_handle = INVALID_HANDLE_VALUE;
+#else
 static std::FILE* g_bake_file = nullptr;
-static bool g_bake_loaded = false;
+#endif
+static bool cc_bake_pixels(uint8_t* q, uint32_t offset, uint32_t bytes) {
+#ifdef CC_XBOX_DRIVER
+  IO_STATUS_BLOCK io{};
+  LARGE_INTEGER at;
+  at.QuadPart = offset;
+  NTSTATUS st = NtReadFile(g_bake_handle, nullptr, nullptr, nullptr, &io, q, bytes, &at);
+  if (st == STATUS_PENDING) {
+    st = NtWaitForSingleObject(g_bake_handle, FALSE, nullptr);
+    if (NT_SUCCESS(st)) st = io.Status;
+  }
+  return NT_SUCCESS(st) && io.Information == bytes;
+#else
+  return std::fseek(g_bake_file, long(offset), SEEK_SET) == 0 && std::fread(q, 1, bytes, g_bake_file) == bytes;
+#endif
+}
 static uint32_t cc_fnv(uint32_t h, const uint8_t* p, size_t n) {
   for (size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 16777619u; }
   return h;
@@ -7165,14 +7194,22 @@ static void cc_bake_load() {
   if (std::fread(g_bake_index.data(), sizeof(CcBakeEntry), count, f) != count) {
     g_bake_index.clear(); std::fclose(f); return;
   }
+#ifdef CC_XBOX_DRIVER
+  std::fclose(f);
+  g_bake_handle = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS, nullptr);
+  if (g_bake_handle == INVALID_HANDLE_VALUE) { g_bake_index.clear(); return; }
+#else
   g_bake_file = f;
+#endif
+  g_bake_ready = true;
   cc_log("TEXBAKE pack %s: %u textures%c", path, count, 10);
 }
 // Look the job up in the pack (the shape stream must be resident, so this
 // is done when the texture is registered): the entry index, or -1.
 static int32_t cc_bake_find(Machine& base, const uint8_t* job, uint32_t w, uint32_t h) {
   cc_bake_load();
-  if (!g_bake_file || g_bake_index.empty()) return -1;
+  if (!g_bake_ready || g_bake_index.empty()) return -1;
   const uint32_t sp = cc_bake_stream_ptr(job);
   const uint8_t* s64 = base.memory.contiguous(sp, 64u, 1);
   if (!s64) return -1;
@@ -7191,18 +7228,20 @@ static int32_t cc_bake_find(Machine& base, const uint8_t* job, uint32_t w, uint3
 }
 // Read a pack entry's DXT5 pixels into a new cache block (0 on failure).
 static uint32_t cc_bake_read(Machine& base, int32_t entry, uint32_t w, uint32_t h, uint32_t keep) {
-  if (entry < 0 || size_t(entry) >= g_bake_index.size() || !g_bake_file) { ++g_bake_misses; return 0; }
+  if (entry < 0 || size_t(entry) >= g_bake_index.size() || !g_bake_ready) { ++g_bake_misses; return 0; }
   const CcBakeEntry& e = g_bake_index[size_t(entry)];
   const uint32_t cache = cc_texzone_alloc(base, w * h, keep);
   uint8_t* q = base.memory.contiguous(cache, size_t(w) * h, 3);
-  if (!q || std::fseek(g_bake_file, long(e.offset), SEEK_SET) != 0 ||
-      std::fread(q, 1, size_t(w) * h, g_bake_file) != size_t(w) * h) {
+  if (!q || !cc_bake_pixels(q, e.offset, w * h)) {
     cc_texzone_free(cache);
     ++g_bake_misses;
     return 0;
   }
   g_tex_cache_bytes += uint64_t(w) * h;
   ++g_bake_hits;
+#ifdef CC_XBOX_DRIVER
+  ++g_fs_bake_reads; g_fs_bake_bytes += w * h;
+#endif
   return cache;
 }
 // Resolve a texture's pack entry; a packed texture drops its job. At
