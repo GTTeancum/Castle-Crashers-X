@@ -209,6 +209,14 @@ static uint32_t g_raster_count = 0;
 static double g_update_seconds, g_render_seconds;
 #else
 static uint32_t g_frame_update_us, g_frame_render_us;
+// Console FRAME line (nxdk-checkpoint022/xbox_perf.cpp, once a second):
+// frame-to-frame time and its parts outside the game's update and render,
+// in microseconds: {frame, audio mix, frame end (overlay, GPU wait,
+// present), frame-pacing sleep, worker jobs, update, render}; frames, and
+// baked-texture reads and bytes. Summed until read by cc_xbox_frame_stats
+// (bridge.cpp).
+static uint64_t g_fs_us[7];
+static uint32_t g_fs_frames, g_fs_bake_reads, g_fs_bake_bytes;
 #endif
 static uint32_t g_tex_swap_ins = 0, g_tex_swap_outs = 0;
 static uint32_t g_bake_hits = 0, g_bake_misses = 0;
@@ -2188,7 +2196,18 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     base.memory.store_be(0x02500108u, 8, 0x01C9000000000000ull + t100ns);
     base.memory.store_be(0x02500110u, 4, uint32_t(t100ns / 10000ull));
   }
+#ifdef CC_XBOX_DRIVER
+  const uint64_t fs_t0 = ::cc_xbox_clock(1000000u);
+  {
+    static uint64_t last = 0;
+    if (last) { g_fs_us[0] += fs_t0 - last; ++g_fs_frames; }
+    last = fs_t0;
+  }
+#endif
   cc_audio_frame();
+#ifdef CC_XBOX_DRIVER
+  g_fs_us[1] += ::cc_xbox_clock(1000000u) - fs_t0;
+#endif
 #ifdef CC_FAST
   cc_menu_text_patch(base);
 #endif
@@ -2226,7 +2245,12 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     last = now;
   }
 #endif
-  ::cc_xr_frame_end(g_frame_update_us, g_frame_render_us);
+  g_fs_us[5] += g_frame_update_us; g_fs_us[6] += g_frame_render_us;
+  {
+    const uint64_t t = ::cc_xbox_clock(1000000u);
+    ::cc_xr_frame_end(g_frame_update_us, g_frame_render_us);
+    g_fs_us[2] += ::cc_xbox_clock(1000000u) - t;
+  }
   g_frame_update_us = g_frame_render_us = 0;
 #if defined(CC_FAST) && !defined(CC_BENCH)
   // Play build: honour the game's own frame pacing (it asks to sleep the
@@ -2234,7 +2258,11 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   // asks for its 2 ms minimum; skip that.
   {
     const uint64_t interval = uint64_t(0) - base.load(ctx.r5.u32, 8);
-    if (interval > 20000u) ::cc_xbox_sleep_100ns(interval);
+    if (interval > 20000u) {
+      const uint64_t t = ::cc_xbox_clock(1000000u);
+      ::cc_xbox_sleep_100ns(interval);
+      g_fs_us[3] += ::cc_xbox_clock(1000000u) - t;
+    }
   }
 #endif
 #endif
@@ -2270,6 +2298,18 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
       for (size_t i = 0; i < base.memory.region_count(); ++i) {
         if (!(rg[i].access & 2u) || !rg[i].host) continue;
         if (ctx.r1.u32 >= rg[i].guest && ctx.r1.u32 - rg[i].guest < rg[i].bytes) continue;
+#ifdef CC_FLAT_WINDOW
+        // Flat guest window: the 360 command ring (0x0200F140, 2 MiB) is no
+        // longer one 256 KiB block repeated over its 2 MiB, so its bytes
+        // differ from the aliased layout; nothing reads them (a run with
+        // CC_GFX_ALIAS=none on the page-table build changes only these
+        // hashes). The surfaces' uncommitted interiors read as zero (they
+        // were zero throughout in the aliased layout too).
+        if (rg[i].guest - 0x0200F140u < 0x200000u) continue;
+        const uint32_t g0 = rg[i].guest;
+        bool holes = false;
+        for (const cc_win::Range& hr : cc_win::kHoles) holes |= hr.lo < g0 + rg[i].bytes && g0 < hr.hi;
+#endif
         // Script values {u32 type, u32 payload, u8 in-use, 3 padding bytes}
         // are copied as three words, so their padding carries whatever stale
         // stack bytes the source temporary had; a word whose word 8 bytes
@@ -2277,16 +2317,28 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
         uint64_t h = 0x9E3779B97F4A7C15ull ^ rg[i].bytes;
         const uint8_t* p = rg[i].host;
         size_t n = rg[i].bytes, k = 0;
+#ifdef CC_FLAT_WINDOW
+        auto byte = [p, g0, holes](size_t at) -> uint32_t { return holes && cc_win::in_hole(g0 + uint32_t(at)) ? 0u : p[at]; };
+        auto be32 = [byte](size_t at) { return (byte(at) << 24) | (byte(at + 1) << 16) | (byte(at + 2) << 8) | byte(at + 3); };
+#else
         auto be32 = [p](size_t at) { return (uint32_t(p[at]) << 24) | (uint32_t(p[at + 1]) << 16) | (uint32_t(p[at + 2]) << 8) | p[at + 3]; };
+#endif
         auto is_type = [](uint32_t t) { return t == 0x80000000u || (t != 0u && t <= 0x40000u && (t & (t - 1u)) == 0u); };
         for (; k + 4u <= n; k += 4u) {
           uint32_t w = be32(k);
           if (k >= 8u && is_type(be32(k - 8u))) w &= 0xFF000000u;
           h = (h ^ w) * 0x100000001B3ull; h ^= h >> 29;
         }
+#ifdef CC_FLAT_WINDOW
+        for (; k < n; ++k) h = (h ^ byte(k)) * 0x100000001B3ull;
+#else
         for (; k < n; ++k) h = (h ^ p[k]) * 0x100000001B3ull;
+#endif
         all = (all ^ h) * 0x9E3779B97F4A7C15ull;
         cc_log("STATE frame=%u guest=%08x bytes=%08x hash=%016llx%c", f, rg[i].guest, rg[i].bytes, (unsigned long long)h, 10);
+#ifdef CC_FLAT_WINDOW
+        if (holes) continue;  // no dump of a region with uncommitted pages
+#endif
         // CC_STATE_DUMP=<dir>: the region's bytes to <dir>/<frame>_<guest>.bin
         if (const char* dir = std::getenv("CC_STATE_DUMP")) {
           char path[512];
@@ -2327,7 +2379,15 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   // dedicated scratch stack below the main thread's, exactly as the
   // worker's own stack would be. Nothing here is synthesized: only the
   // scheduling point is modeled.
+#ifdef CC_XBOX_DRIVER
+  {
+    const uint64_t t = ::cc_xbox_clock(1000000u);
+    cc_drain_workers(base, ctx.r13.u32);
+    g_fs_us[4] += ::cc_xbox_clock(1000000u) - t;
+  }
+#else
   cc_drain_workers(base, ctx.r13.u32);
+#endif
   base.trace_one_frame = false;
 #ifndef CC_FAST
   // Diagnostics only: on the Xbox cc_log scrolls the framebuffer text,
@@ -7105,8 +7165,30 @@ static void cc_xr_on_bind([[maybe_unused]] Machine& base, [[maybe_unused]] uint3
 // (confirmation). A texture not in the pack is rasterized as before.
 struct CcBakeEntry { uint32_t key0, full, len, w, h, offset; };
 static std::vector<CcBakeEntry> g_bake_index;   // sorted by key0
+static bool g_bake_loaded = false, g_bake_ready = false;
+#ifdef CC_XBOX_DRIVER
+// The Xbox reads the pack with NtReadFile at each entry's offset, straight
+// into the texture's cache block (nxdk's fread copies through its buffer
+// byte by byte, unoptimised).
+static HANDLE g_bake_handle = INVALID_HANDLE_VALUE;
+#else
 static std::FILE* g_bake_file = nullptr;
-static bool g_bake_loaded = false;
+#endif
+static bool cc_bake_pixels(uint8_t* q, uint32_t offset, uint32_t bytes) {
+#ifdef CC_XBOX_DRIVER
+  IO_STATUS_BLOCK io{};
+  LARGE_INTEGER at;
+  at.QuadPart = offset;
+  NTSTATUS st = NtReadFile(g_bake_handle, nullptr, nullptr, nullptr, &io, q, bytes, &at);
+  if (st == STATUS_PENDING) {
+    st = NtWaitForSingleObject(g_bake_handle, FALSE, nullptr);
+    if (NT_SUCCESS(st)) st = io.Status;
+  }
+  return NT_SUCCESS(st) && io.Information == bytes;
+#else
+  return std::fseek(g_bake_file, long(offset), SEEK_SET) == 0 && std::fread(q, 1, bytes, g_bake_file) == bytes;
+#endif
+}
 static uint32_t cc_fnv(uint32_t h, const uint8_t* p, size_t n) {
   for (size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 16777619u; }
   return h;
@@ -7141,14 +7223,22 @@ static void cc_bake_load() {
   if (std::fread(g_bake_index.data(), sizeof(CcBakeEntry), count, f) != count) {
     g_bake_index.clear(); std::fclose(f); return;
   }
+#ifdef CC_XBOX_DRIVER
+  std::fclose(f);
+  g_bake_handle = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS, nullptr);
+  if (g_bake_handle == INVALID_HANDLE_VALUE) { g_bake_index.clear(); return; }
+#else
   g_bake_file = f;
+#endif
+  g_bake_ready = true;
   cc_log("TEXBAKE pack %s: %u textures%c", path, count, 10);
 }
 // Look the job up in the pack (the shape stream must be resident, so this
 // is done when the texture is registered): the entry index, or -1.
 static int32_t cc_bake_find(Machine& base, const uint8_t* job, uint32_t w, uint32_t h) {
   cc_bake_load();
-  if (!g_bake_file || g_bake_index.empty()) return -1;
+  if (!g_bake_ready || g_bake_index.empty()) return -1;
   const uint32_t sp = cc_bake_stream_ptr(job);
   const uint8_t* s64 = base.memory.contiguous(sp, 64u, 1);
   if (!s64) return -1;
@@ -7167,18 +7257,20 @@ static int32_t cc_bake_find(Machine& base, const uint8_t* job, uint32_t w, uint3
 }
 // Read a pack entry's DXT5 pixels into a new cache block (0 on failure).
 static uint32_t cc_bake_read(Machine& base, int32_t entry, uint32_t w, uint32_t h, uint32_t keep) {
-  if (entry < 0 || size_t(entry) >= g_bake_index.size() || !g_bake_file) { ++g_bake_misses; return 0; }
+  if (entry < 0 || size_t(entry) >= g_bake_index.size() || !g_bake_ready) { ++g_bake_misses; return 0; }
   const CcBakeEntry& e = g_bake_index[size_t(entry)];
   const uint32_t cache = cc_texzone_alloc(base, w * h, keep);
   uint8_t* q = base.memory.contiguous(cache, size_t(w) * h, 3);
-  if (!q || std::fseek(g_bake_file, long(e.offset), SEEK_SET) != 0 ||
-      std::fread(q, 1, size_t(w) * h, g_bake_file) != size_t(w) * h) {
+  if (!q || !cc_bake_pixels(q, e.offset, w * h)) {
     cc_texzone_free(cache);
     ++g_bake_misses;
     return 0;
   }
   g_tex_cache_bytes += uint64_t(w) * h;
   ++g_bake_hits;
+#ifdef CC_XBOX_DRIVER
+  ++g_fs_bake_reads; g_fs_bake_bytes += w * h;
+#endif
   return cache;
 }
 // Resolve a texture's pack entry; a packed texture drops its job. At

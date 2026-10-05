@@ -3,6 +3,7 @@
 #include "../runtime008/fixtures.h"
 #include "selftest.h"
 #include "cc_log.h"
+#include "guest_window.h"
 #ifdef CC_XBOX_DRIVER
 #include <hal/video.h>
 void* cc_xr_alloc_gpu(uint32_t bytes);
@@ -476,22 +477,63 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   const long image_size=std::ftell(stream);
   std::fseek(stream,0,SEEK_SET);
   CHECK(image_size>0);
+  constexpr uint32_t kImageBytes = 0x2d0000u;
+  CHECK(uint32_t(image_size)==kImageBytes);
+  constexpr uint32_t kHeapBytes = 0xE00000;  // game heap: level 1 high-water 13.3 MiB (retail budget)
+  // Retail sizes of the guest arenas mapped further down (see there).
+  constexpr uint32_t kCrtHeapBytes = 0x100000, kMainPoolBytes = 0x480000, kPhysBytes = 0x480000;
+  constexpr uint32_t kPhysSmallBytes = 0x100000, kTexStubBytes = 0x180000;
+#ifdef CC_FLAT_WINDOW
+  // Play build: every guest region below lives in the flat guest window
+  // (guest_window.h), so the window is reserved and these ranges committed
+  // before anything is mapped. Not committed: the texture cache zone (GPU
+  // memory of its own) and the interiors of the 360 device's two surfaces.
+  {
+    const cc_win::Range ranges[] = {
+      {0x30000u, 0x40000u},                                            // guest stack
+      {0x60000u, 0x71000u + kHeapBytes},                               // TLS, heap allocator, game heap
+      {0x02000000u, cc_win::kSurfaceA},                                // graphics arena below the surfaces
+      {cc_win::kSurfaceA + cc_win::kSurfaceBytes, cc_win::kSurfaceB},  // between them
+      {cc_win::kSurfaceB + cc_win::kSurfaceBytes, 0x02502000u},        // arena tail, platform globals, thread state
+      {0x04000000u, 0x04000000u + kCrtHeapBytes},
+      {0x10000000u, 0x10000000u + kMainPoolBytes},
+      {0x12000000u, 0x12000000u + kPhysBytes},
+      {0x1D000000u, 0x1D000000u + kTexStubBytes},
+      {0x1E000000u, 0x1E000000u + kPhysSmallBytes},
+      {cc_win::kImageGuest, cc_win::kImageGuest + kImageBytes},
+    };
+    if (!cc_win::open(ranges, uint32_t(std::size(ranges)))) {
+      cc_elog("FAIL flat guest window unavailable\n");
+#ifdef CC_XBOX_DRIVER
+      cc_xr_show_fail(3u, uint32_t(cc_win::kBase));
+#endif
+      cc_fail_exit();
+    }
+  }
+  uint8_t* const image_host = cc_win::ptr(cc_win::kImageGuest);
+  CHECK(std::fread(image_host,1,kImageBytes,stream)==kImageBytes);
+  std::fclose(stream);
+  uint8_t* const stack_host = cc_win::ptr(0x30000u);
+#else
   std::vector<uint8_t> image(static_cast<size_t>(image_size));
   CHECK(std::fread(image.data(),1,image.size(),stream)==image.size());
   std::fclose(stream);
-  CHECK(image.size()==0x2d0000u);
+  uint8_t* const image_host = image.data();
   std::array<uint8_t,0x10000> stack{};
+  uint8_t* const stack_host = stack.data();
+#endif
   std::array<uint8_t,0x1000> tls{};
   std::array<uint8_t,0x1000> allocator{};
-  constexpr uint32_t kHeapBytes = 0xE00000;  // game heap: level 1 high-water 13.3 MiB (retail budget)
 #ifndef CC_FAST
   std::vector<uint8_t> heap(kHeapBytes);
 #endif
+#ifndef CC_FLAT_WINDOW
   std::array<uint8_t,0x1000> platform_globals{};
   std::array<uint8_t,0x1000> thread_state{};
+#endif
   AddressSpace m;
-  CHECK(m.map(0x82000000,uint32_t(image.size()),image.data(),3)==cc::xbox::MemoryError::ok);
-  CHECK(m.map(0x30000,stack.size(),stack.data(),3)==cc::xbox::MemoryError::ok);
+  CHECK(m.map(0x82000000,kImageBytes,image_host,3)==cc::xbox::MemoryError::ok);
+  CHECK(m.map(0x30000,0x10000u,stack_host,3)==cc::xbox::MemoryError::ok);
 #ifdef CC_FAST
   // Play build: TLS (0x68000), the heap allocator (0x70000) and the game
   // heap (0x71000) live in one host block laid out like guest memory, with
@@ -500,13 +542,18 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // heap allocation, free and TLS read took the checked path (on the console
   // ~500k accesses per 300 frames in four-player fights). The gap fillers
   // are memory the game never uses.
-  static std::vector<uint8_t> low_block;
-  low_block.assign(0x11000u + kHeapBytes, 0);
-  CHECK(m.map(0x60000,0x8000,low_block.data(),3)==cc::xbox::MemoryError::ok);
-  CHECK(m.map(0x68000,tls.size(),low_block.data()+0x8000,3)==cc::xbox::MemoryError::ok);
-  CHECK(m.map(0x69000,0x7000,low_block.data()+0x9000,3)==cc::xbox::MemoryError::ok);
-  CHECK(m.map(0x70000,allocator.size(),low_block.data()+0x10000,3)==cc::xbox::MemoryError::ok);
-  CHECK(m.map(0x71000,uint32_t(low_block.size()-0x11000u),low_block.data()+0x11000,3)==cc::xbox::MemoryError::ok);
+#ifdef CC_FLAT_WINDOW
+  uint8_t* const low_block = cc_win::ptr(0x60000u);
+#else
+  static std::vector<uint8_t> low_block_storage;
+  low_block_storage.assign(0x11000u + kHeapBytes, 0);
+  uint8_t* const low_block = low_block_storage.data();
+#endif
+  CHECK(m.map(0x60000,0x8000,low_block,3)==cc::xbox::MemoryError::ok);
+  CHECK(m.map(0x68000,tls.size(),low_block+0x8000,3)==cc::xbox::MemoryError::ok);
+  CHECK(m.map(0x69000,0x7000,low_block+0x9000,3)==cc::xbox::MemoryError::ok);
+  CHECK(m.map(0x70000,allocator.size(),low_block+0x10000,3)==cc::xbox::MemoryError::ok);
+  CHECK(m.map(0x71000,kHeapBytes,low_block+0x11000,3)==cc::xbox::MemoryError::ok);
 #else
   CHECK(m.map(0x68000,tls.size(),tls.data(),3)==cc::xbox::MemoryError::ok);
   CHECK(m.map(0x70000,allocator.size(),allocator.data(),3)==cc::xbox::MemoryError::ok);
@@ -520,17 +567,24 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // block repeated over its 2 MiB.
   // Default on (identical instruction and memory-op counts with and without
   // aliasing: the game never reads these back). CC_GFX_ALIAS=none disables.
+  // Flat window (play build): no aliasing (the MMU cannot alias at these
+  // byte offsets); every piece sits at its own window address, the ring is
+  // committed in full and the surfaces' interior pages are not committed.
+#ifdef CC_FLAT_WINDOW
+  const bool alias_surfaces = false, alias_ring = false;
+#else
   const char* gfx_alias_env = std::getenv("CC_GFX_ALIAS");
   const std::string gfx_alias = gfx_alias_env ? gfx_alias_env : "surfaces,ring";
   const bool alias_surfaces = gfx_alias.find("surfaces") != std::string::npos;
   const bool alias_ring = gfx_alias.find("ring") != std::string::npos;
+#endif
   static std::vector<uint8_t> graphics_heap;
   {
     // Pieces are packed into one compact backing block; aliased ranges share
     // storage, so only the distinct bytes are allocated (5 MiB -> ~2.1 MiB).
     struct Piece { uint32_t lo, len; int share; };  // share: -1 own storage, else index
     constexpr uint32_t ring_lo = 0x0200F140u, ring_len = 0x200000u;
-    constexpr uint32_t surf_a = 0x02211770u, surf_b = 0x02344FA0u, surf_len = 0x12C000u;
+    constexpr uint32_t surf_a = cc_win::kSurfaceA, surf_b = cc_win::kSurfaceB, surf_len = cc_win::kSurfaceBytes;
     std::vector<Piece> pieces = {
       {0x02000000u, ring_lo - 0x02000000u, -1},
       {ring_lo + ring_len, surf_a - (ring_lo + ring_len), -1},
@@ -551,16 +605,26 @@ static void renderer_caller_prefix_controls(const char* image_path) {
     size_t total = 0;
     for (size_t i = 0; i < pieces.size(); ++i)
       if (pieces[i].share < 0) { offset[i] = total; total += pieces[i].len; }
+#ifdef CC_FLAT_WINDOW
+    for (size_t i = 0; i < pieces.size(); ++i)
+      CHECK(m.map(pieces[i].lo, pieces[i].len, cc_win::ptr(pieces[i].lo), 3) == cc::xbox::MemoryError::ok);
+#else
     graphics_heap.assign(total, 0);
     for (size_t i = 0; i < pieces.size(); ++i) {
       const size_t off = pieces[i].share < 0 ? offset[i] : offset[size_t(pieces[i].share)];
       CHECK(m.map(pieces[i].lo, pieces[i].len, graphics_heap.data() + off, 3) == cc::xbox::MemoryError::ok);
     }
+#endif
     cc_log("graphics_arena backing=%uK surfaces_aliased=%d ring_aliased=%d\n",
            unsigned(total >> 10), int(alias_surfaces), int(alias_ring));
   }
+#ifdef CC_FLAT_WINDOW
+  CHECK(m.map(0x02500000,0x1000u,cc_win::ptr(0x02500000u),3)==cc::xbox::MemoryError::ok);
+  CHECK(m.map(0x02501000,0x1000u,cc_win::ptr(0x02501000u),3)==cc::xbox::MemoryError::ok);
+#else
   CHECK(m.map(0x02500000,uint32_t(platform_globals.size()),platform_globals.data(),3)==cc::xbox::MemoryError::ok);
   CHECK(m.map(0x02501000,uint32_t(thread_state.size()),thread_state.data(),3)==cc::xbox::MemoryError::ok);
+#endif
 
   // Same narrow process fixture as startup_full_controls. Everything the game
   // publishes after this point must come from original translated code.
@@ -630,29 +694,54 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // arena starves it and the loader retries forever. 8 MiB covers the
   // observed intro assets; exhaustion still fails closed.
   // Retail 64 MB budget (TODO.md): 20 KB used by level 1 of 1 MiB reserved.
-  static std::vector<uint8_t> heap_arena(0x100000);
+#ifdef CC_FLAT_WINDOW
+  CHECK(m.map(0x04000000u,kCrtHeapBytes,cc_win::ptr(0x04000000u),3)==cc::xbox::MemoryError::ok);
+#else
+  static std::vector<uint8_t> heap_arena(kCrtHeapBytes);
   CHECK(m.map(0x04000000u,uint32_t(heap_arena.size()),heap_arena.data(),3)==cc::xbox::MemoryError::ok);
+#endif
   // Guest arena backing the single observed MmAllocatePhysicalMemoryEx main
   // pool (16 MiB + guard page) requested by exact sub_8209BC98 after Init.
   // Retail budget: the game reserves 16 MiB but uses 3.9 MiB (high-water)
   // once SOUNDS.PAK's unused MP3 data is stripped; only 4.5 MiB is backed and
   // any access beyond it fails closed.
-  static std::vector<uint8_t> main_pool_arena(0x480000);
-  CHECK(m.map(0x10000000u,uint32_t(main_pool_arena.size()),main_pool_arena.data(),3)==cc::xbox::MemoryError::ok);
+#ifdef CC_FLAT_WINDOW
+  uint8_t* const main_pool_host = cc_win::ptr(0x10000000u);
+#else
+  static std::vector<uint8_t> main_pool_arena(kMainPoolBytes);
+  uint8_t* const main_pool_host = main_pool_arena.data();
+#endif
+  CHECK(m.map(0x10000000u,kMainPoolBytes,main_pool_host,3)==cc::xbox::MemoryError::ok);
   // Cursor arena backing the smaller observed physical blocks (font/texture
   // memory allocated write-combined by the exact font loader).
   // Retail budget: fonts, rasterizer scratch and pak/sound buffers (the
   // texture cache and small blocks have zones of their own below).
-  static std::vector<uint8_t> phys_arena(0x00480000);  // level 1 high-water 3.3 MiB
-  CHECK(m.map(0x12000000u,uint32_t(phys_arena.size()),phys_arena.data(),3)==cc::xbox::MemoryError::ok);
+  // Level 1 high-water 3.3 MiB.
+#ifdef CC_FLAT_WINDOW
+  uint8_t* const phys_host = cc_win::ptr(0x12000000u);
+#else
+  static std::vector<uint8_t> phys_arena(kPhysBytes);
+  uint8_t* const phys_host = phys_arena.data();
+#endif
+  CHECK(m.map(0x12000000u,kPhysBytes,phys_host,3)==cc::xbox::MemoryError::ok);
   // Small-block zone of the same allocator (<= 4 KiB blocks), kept apart so
   // they cannot fragment the large-block arena.
-  static std::vector<uint8_t> phys_small_arena(0x00100000);  // high-water 0.26 MiB
+  // High-water 0.26 MiB.
+#ifdef CC_FLAT_WINDOW
+  CHECK(m.map(0x1E000000u,kPhysSmallBytes,cc_win::ptr(0x1E000000u),3)==cc::xbox::MemoryError::ok);
+#else
+  static std::vector<uint8_t> phys_small_arena(kPhysSmallBytes);
   CHECK(m.map(0x1E000000u,uint32_t(phys_small_arena.size()),phys_small_arena.data(),3)==cc::xbox::MemoryError::ok);
+#endif
   // Texture stub zone: the loader's full-size texture blocks, each cut to a
   // 16-byte stub once recorded (the largest transient block is 2 MiB).
-  static std::vector<uint8_t> tex_stub_arena(0x00180000);  // high-water 1.07 MiB
+  // High-water 1.07 MiB.
+#ifdef CC_FLAT_WINDOW
+  CHECK(m.map(0x1D000000u,kTexStubBytes,cc_win::ptr(0x1D000000u),3)==cc::xbox::MemoryError::ok);
+#else
+  static std::vector<uint8_t> tex_stub_arena(kTexStubBytes);
   CHECK(m.map(0x1D000000u,uint32_t(tex_stub_arena.size()),tex_stub_arena.data(),3)==cc::xbox::MemoryError::ok);
+#endif
   // Texture cache zone (buddy allocator, 6 MiB) for the DXT5 texture cache.
 #ifdef CC_XBOX_DRIVER
   // The NV2A samples the cache directly: physically contiguous memory.
@@ -1279,9 +1368,9 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // byte-for-byte to fonts\synjUnicode_20.xpr at file offset 0x28834). The
   // main pool has also received its first original writes.
   {
-    size_t first_phys=phys_arena.size(), first_pool=main_pool_arena.size();
-    for (size_t i=0;i<phys_arena.size();++i) if (phys_arena[i]) { first_phys=i; break; }
-    for (size_t i=0;i<main_pool_arena.size();++i) if (main_pool_arena[i]) { first_pool=i; break; }
+    size_t first_phys=kPhysBytes, first_pool=kMainPoolBytes;
+    for (size_t i=0;i<kPhysBytes;++i) if (phys_host[i]) { first_phys=i; break; }
+    for (size_t i=0;i<kMainPoolBytes;++i) if (main_pool_host[i]) { first_pool=i; break; }
     cc_log("arena_scan first_phys=%08x first_pool=%08x\n",
            unsigned(first_phys),unsigned(first_pool));
     CHECK(first_phys==0x2828u);
@@ -1290,11 +1379,11 @@ static void renderer_caller_prefix_controls(const char* image_path) {
       0xab,0xbb,0xee,0xee,0xde,0xee,0xbc,0xcc,0x67,0x77,0x00,0x00,0x00,0x00,0x00,0x00
     };
     for (unsigned i=0;i<16u;++i)
-      CHECK(phys_arena[0x2828u+i]==glyph_probe[i]);
+      CHECK(phys_host[0x2828u+i]==glyph_probe[i]);
   }
 }
 
-static void captured_startup_boundary(const char* path) {
+[[maybe_unused]] static void captured_startup_boundary(const char* path) {
   std::FILE* stream=std::fopen(path,"rb");
   CHECK(stream!=nullptr);
   std::fseek(stream,0,SEEK_END);
@@ -1377,7 +1466,11 @@ int main(int argc,char** argv) {
   startup_full_controls(argv[2]);
 #endif
   renderer_caller_prefix_controls(argv[2]);
+#ifndef CC_FLAT_WINDOW
+  // A second address space at the 360's own addresses: not reachable
+  // through the flat window of the play build.
   captured_startup_boundary(argv[1]);
+#endif
   cc_log("PASS update_boundary assertions=%llu full_synthetic_update=ok startup_full=820701D0..return renderer_prefix=82070AC8..before_820A7990 manager_writer=820701D0@82070434 workers=5 lookup_entries=613 originals=8209CC98,8209DE50,82097720,820915F0,820772B0 platform_init_prefix=820A7990..before_820BEFD0 graphics_init_chain=820BEFD0..return gfx_workers=2 resources=3 output_published=1 next_host_graphics_boundary=platform_renderer_init_returned_820A7990_complete next_real_capture_boundary=8225E62C\n",
               (unsigned long long)assertions);
   return 0;
