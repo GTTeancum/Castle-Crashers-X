@@ -6422,7 +6422,13 @@ static CC_HOT_FN void sub_8206F918(Context& ctx, Machine& base) {
 #include "generated/sub_8208B7F8.inc"
 #include "generated/sub_820877A0.inc"
 #include "generated/sub_82089668.inc"
+#ifdef CC_FAST
+#define sub_82088CF0 sub_82088CF0_exact  // native CharToFunc: runtime021/as_ops_call.inc
+#endif
 #include "generated/sub_82088CF0.inc"
+#ifdef CC_FAST
+#undef sub_82088CF0
+#endif
 #ifdef CC_FAST
 #define sub_82082890 sub_82082890_exact
 #endif

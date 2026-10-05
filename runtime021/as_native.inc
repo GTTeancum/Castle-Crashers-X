@@ -613,6 +613,9 @@ static CC_HOT_FN void sub_8207B630(Context& ctx, Machine& base) {
   REX_STORE_U32(s + 4u, 0u);
 }
 
+// Var assignment (as_ops_var.inc).
+static uint32_t cc_as_var_assign(Context& ctx, Machine& base, uint32_t var, uint32_t v);
+
 // Error report of CallCustomFunction: format fmt with the function's name
 // (id 0 -> the string table's +12, else [table+28][id]) and, when set_r5,
 // r5 (otherwise r5 stays as the last call left it, as in the original).
@@ -675,9 +678,8 @@ static CC_HOT_FN void sub_8207B150(Context& ctx, Machine& base) {
     REX_STORE_U32(var + 4u, kAsUndef);
   }
   for (uint32_t k = 0; int32_t(k) < int32_t(argc); ++k) {
-    ctx.r3.u64 = fn; ctx.r5.u64 = REX_LOAD_U32(argv + k * 4u); ctx.r4.u64 = REX_LOAD_U32(fn + 48u + k * 8u);
-    ctx.lr = 0x8207B30Cu;
-    sub_8208BF38(ctx, base);
+    const uint32_t v = REX_LOAD_U32(argv + k * 4u);
+    ctx.r3.u64 = cc_as_var_assign(ctx, base, REX_LOAD_U32(fn + 48u + k * 8u), v);  // sub_8208BF38(fn, Var, arg)
   }
   const uint32_t code = REX_LOAD_U32(fn + 36u);
   if (code == 0u) return;

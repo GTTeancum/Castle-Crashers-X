@@ -24,7 +24,7 @@ static CC_HOT_FN inline uint32_t cc_as_game_heap(Context& ctx, Machine& base, ui
 // float}; objects 1, 64, 128, 512, 1024, 16384, 32768 -> type 1 with +0 the
 // value's object (counted, 4096 or 8192 payload, else 0) and
 // sub_82066EA8(+0, 1), even for 0; anything else -> undefined, returns 0.
-static CC_HOT_FN inline uint32_t cc_as_var_assign(Context& ctx, Machine& base, uint32_t var, uint32_t v) {
+static CC_HOT_FN uint32_t cc_as_var_assign(Context& ctx, Machine& base, uint32_t var, uint32_t v) {
   if (REX_LOAD_U32(var + 0u) != 0u && (REX_LOAD_U32(var + 4u) & kAsRef) != 0u)
     cc_as_unref_obj(ctx, base, var + 0u, 0x8208BF9Cu, 0x8208BFA8u);
   REX_STORE_U32(var + 0u, 0u);
@@ -42,20 +42,15 @@ static CC_HOT_FN inline uint32_t cc_as_var_assign(Context& ctx, Machine& base, u
       return 1u;
     case 4u:
       REX_STORE_U32(var + 4u, 4u);
-      ctx.r3.u64 = v; ctx.lr = 0x8208C020u;
-      sub_82082BB0(ctx, base);
-      REX_STORE_U32(var + 8u, ctx.r3.u32);
+      REX_STORE_U32(var + 8u, cc_as_toint(ctx, base, v));  // sub_82082BB0
       return 1u;
     case 8u: case 32u:
       REX_STORE_U32(var + 4u, 8u);
-      ctx.r3.u64 = v; ctx.lr = 0x8208C05Cu;
-      sub_82082890(ctx, base);
-      REX_STORE_U16(var + 8u, ctx.r3.u16);
+      REX_STORE_U16(var + 8u, uint16_t(cc_as_tostr_id(ctx, base, v)));  // sub_82082890
       return 1u;
     case 16u: {
       REX_STORE_U32(var + 4u, 16u);
-      ctx.r3.u64 = v; ctx.lr = 0x8208C044u;
-      sub_82082700(ctx, base);
+      ctx.f1.f64 = cc_as_tonum(ctx, base, v);  // sub_82082700
       ctx.fpscr.disableFlushMode();
       PPCRegister temp{};
       temp.f32 = float(ctx.f1.f64);
