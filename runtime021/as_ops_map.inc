@@ -8,7 +8,7 @@
 // pass over the n old entries carries (id, value) past every entry with a
 // greater id (swapping), and the carried pair lands in entry n. Only the
 // u16 id and the value of each 8-byte entry are written.
-static void sub_820936B0(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_820936B0(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_820936B0);
   CC_FPROF_SCOPE(sub_820936B0_native);
   const uint32_t map = ctx.r3.u32;

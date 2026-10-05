@@ -483,15 +483,35 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   std::array<uint8_t,0x10000> stack{};
   std::array<uint8_t,0x1000> tls{};
   std::array<uint8_t,0x1000> allocator{};
-  std::vector<uint8_t> heap(0xE00000);  // game heap: level 1 high-water 13.3 MiB (retail budget)
+  constexpr uint32_t kHeapBytes = 0xE00000;  // game heap: level 1 high-water 13.3 MiB (retail budget)
+#ifndef CC_FAST
+  std::vector<uint8_t> heap(kHeapBytes);
+#endif
   std::array<uint8_t,0x1000> platform_globals{};
   std::array<uint8_t,0x1000> thread_state{};
   AddressSpace m;
   CHECK(m.map(0x82000000,uint32_t(image.size()),image.data(),3)==cc::xbox::MemoryError::ok);
   CHECK(m.map(0x30000,stack.size(),stack.data(),3)==cc::xbox::MemoryError::ok);
+#ifdef CC_FAST
+  // Play build: TLS (0x68000), the heap allocator (0x70000) and the game
+  // heap (0x71000) live in one host block laid out like guest memory, with
+  // the gaps of 0x60000..0x7FFFF filled, so both 64 KiB pages take the page
+  // table's direct path. Mapped separately they were mixed pages, and every
+  // heap allocation, free and TLS read took the checked path (on the console
+  // ~500k accesses per 300 frames in four-player fights). The gap fillers
+  // are memory the game never uses.
+  static std::vector<uint8_t> low_block;
+  low_block.assign(0x11000u + kHeapBytes, 0);
+  CHECK(m.map(0x60000,0x8000,low_block.data(),3)==cc::xbox::MemoryError::ok);
+  CHECK(m.map(0x68000,tls.size(),low_block.data()+0x8000,3)==cc::xbox::MemoryError::ok);
+  CHECK(m.map(0x69000,0x7000,low_block.data()+0x9000,3)==cc::xbox::MemoryError::ok);
+  CHECK(m.map(0x70000,allocator.size(),low_block.data()+0x10000,3)==cc::xbox::MemoryError::ok);
+  CHECK(m.map(0x71000,uint32_t(low_block.size()-0x11000u),low_block.data()+0x11000,3)==cc::xbox::MemoryError::ok);
+#else
   CHECK(m.map(0x68000,tls.size(),tls.data(),3)==cc::xbox::MemoryError::ok);
   CHECK(m.map(0x70000,allocator.size(),allocator.data(),3)==cc::xbox::MemoryError::ok);
   CHECK(m.map(0x71000,uint32_t(heap.size()),heap.data(),3)==cc::xbox::MemoryError::ok);
+#endif
   // Graphics arena 0x02000000..0x02500000. The device init places the 2 MiB
   // command ring at 0x0200F140 and two 640x480x32 surfaces (0x12C000 each)
   // at 0x02211770 and 0x02344FA0. Only the 360 GPU consumes them; the port

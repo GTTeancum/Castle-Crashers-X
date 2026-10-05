@@ -25,7 +25,7 @@
 //    update stack popped, the result OR-ed into the flags; flag 2 ends the
 //    walk.
 // Afterwards the +152 mode and every open depth entry pop a renderer state.
-static void sub_8208A7A0(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_8208A7A0(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8208A7A0);
   CC_FPROF_SCOPE(sub_8208A7A0_native);
   const uint32_t clip = ctx.r3.u32, st = ctx.r4.u32, rnd = ctx.r5.u32;
@@ -142,7 +142,7 @@ static void sub_8208A7A0(Context& ctx, Machine& base) {
 }
 
 // fctidz / fcfid as the recompiled code computes them.
-static inline int64_t cc_render_fctidz(double f) {
+static CC_HOT_FN inline int64_t cc_render_fctidz(double f) {
   return std::isnan(f) ? int64_t(0x8000000000000000ULL) : (f > double(LLONG_MAX)) ? LLONG_MAX : simde_mm_cvttsd_si64(simde_mm_load_sd(&f));
 }
 
@@ -158,7 +158,7 @@ static inline int64_t cc_render_fctidz(double f) {
 // from the state's current colour (+(+10048 + 596) * 16, floats truncated:
 // ((((a << 8) | r) << 8 | g) << 8) | b with a at +0) and 4 points; the
 // ninth and later arguments sit at the frame's +84 / +92 / +100.
-static void sub_820855D8(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_820855D8(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_820855D8);
   CC_FPROF_SCOPE(sub_820855D8_native);
   const uint32_t spr = ctx.r3.u32, st = ctx.r4.u32, rnd = ctx.r5.u32, stop = ctx.r6.u32;

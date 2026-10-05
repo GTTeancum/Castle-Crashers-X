@@ -39,14 +39,38 @@ struct Texture {
 };
 
 bool g_init = false, g_failed = false, g_in_frame = false, g_shown = false;
+// Submissions share one open push-buffer block: pbkit's pb_end kicks the GPU
+// (write-combine flush with a busy wait, then the DMA put), which per sprite
+// and per counter segment cost hundreds of kicks a frame on the console. The
+// block is kicked every 32 submissions, before any wait for the GPU and before
+// pbkit's own drawing calls.
+uint32_t* g_open = nullptr;
+unsigned g_open_n = 0;
+uint32_t* xr_begin() { return g_open ? g_open : pb_begin(); }
+void xr_flush() {
+  if (!g_open) return;
+  pb_end(g_open);
+  g_open = nullptr;
+  g_open_n = 0;
+}
+void xr_end(uint32_t* p) {
+  g_open = p;
+  if (++g_open_n >= 32u) xr_flush();
+}
 // pbkit keeps three framebuffers and shows one queued frame per vertical
 // blank; it only refuses a fourth queued frame, so a game finishing frames
 // faster than the display would draw into the buffer still on screen
 // (parts of the menus flickered). present() queues at most one frame per
 // vertical blank, which keeps the buffer being drawn off screen.
+// Frames are also held to 30 per second (two vertical blanks each): the
+// game's Flash movies are authored at 30 fps (menus, levels, characters)
+// and advance one frame per game frame, so at 60 the menus ran at double
+// speed; the 360 version is reported to run at 30. Slower frames show at the
+// next vertical blank as before.
+constexpr DWORD kPresentVblanks = 2;
 DWORD g_present_vbl = 0;
 void present() {
-  if (pb_get_vbl_counter() == g_present_vbl) pb_wait_for_vbl();
+  while (pb_get_vbl_counter() - g_present_vbl < kPresentVblanks) pb_wait_for_vbl();
   while (pb_finished()) {}
   g_present_vbl = pb_get_vbl_counter();
 }
@@ -65,41 +89,41 @@ void upload_shaders() {
   static const uint32_t program[] = {
 #include "vs.inl"
   };
-  auto* p = pb_begin();
+  auto* p = xr_begin();
   p = pb_push1(p, NV097_SET_TRANSFORM_PROGRAM_START, 0);
   p = pb_push1(p, NV097_SET_TRANSFORM_EXECUTION_MODE,
                NV097_SET_TRANSFORM_EXECUTION_MODE_MODE_PROGRAM |
                    (NV097_SET_TRANSFORM_EXECUTION_MODE_RANGE_MODE_PRIV << 2));
   p = pb_push1(p, NV097_SET_TRANSFORM_PROGRAM_CXT_WRITE_EN, 0);
   p = pb_push1(p, NV097_SET_TRANSFORM_PROGRAM_LOAD, 0);
-  pb_end(p);
+  xr_end(p);
   for (size_t i = 0; i < sizeof(program) / sizeof(program[0]); i += 4) {
-    p = pb_begin();
+    p = xr_begin();
     pb_push(p++, NV097_SET_TRANSFORM_PROGRAM, 4);
     std::memcpy(p, program + i, 16);
     p += 4;
-    pb_end(p);
+    xr_end(p);
   }
-  p = pb_begin();
+  p = xr_begin();
 #include "ps.inl"
-  pb_end(p);
+  xr_end(p);
 }
 
 void set_attributes() {
-  auto* p = pb_begin();
+  auto* p = xr_begin();
   pb_push(p++, NV097_SET_VERTEX_DATA_ARRAY_FORMAT, 16);
   for (int i = 0; i < 16; ++i) *p++ = NV097_SET_VERTEX_DATA_ARRAY_FORMAT_TYPE_F;
-  pb_end(p);
+  xr_end(p);
   struct Attribute { uint32_t index, components, offset; };
   const Attribute attrs[] = {{0, 4, 0}, {3, 4, 16}, {9, 2, 32}};
   for (const Attribute& a : attrs) {
-    p = pb_begin();
+    p = xr_begin();
     p = pb_push1(p, NV097_SET_VERTEX_DATA_ARRAY_FORMAT + 4 * a.index,
                  NV097_SET_VERTEX_DATA_ARRAY_FORMAT_TYPE_F | (a.components << 4) |
                      (sizeof(GpuVertex) << 8));
     p = pb_push1(p, NV097_SET_VERTEX_DATA_ARRAY_OFFSET + 4 * a.index,
                  physical(reinterpret_cast<const uint8_t*>(g_vb) + a.offset));
-    pb_end(p);
+    xr_end(p);
   }
 }
 
@@ -138,13 +162,14 @@ uint32_t* push_white(uint32_t* p) {
 
 void begin_frame() {
   g_ps = PushedState();
+  xr_flush();
   pb_reset();
   pb_target_back_buffer();
   pb_erase_depth_stencil_buffer(0, 0, 640, 480);
   pb_fill(0, 0, 640, 480, 0xff000000);
   upload_shaders();
   set_attributes();
-  auto* p = pb_begin();
+  auto* p = xr_begin();
   p = pb_push1(p, NV097_SET_DEPTH_TEST_ENABLE, 0);
   p = pb_push1(p, NV097_SET_DEPTH_MASK, 0);
   p = pb_push1(p, NV097_SET_STENCIL_TEST_ENABLE, 0);
@@ -155,7 +180,7 @@ void begin_frame() {
   p = pb_push1(p, NV097_SET_BLEND_EQUATION, NV097_SET_BLEND_EQUATION_V_FUNC_ADD);
   p = pb_push1(p, NV097_SET_COLOR_MASK, 0x01010101);
   for (unsigned i = 1; i < 4; ++i) p = pb_push1(p, NV097_SET_TEXTURE_CONTROL0 + 64 * i, 0);
-  pb_end(p);
+  xr_end(p);
   g_vb_used = 0;
   g_in_frame = true;
 }
@@ -254,7 +279,7 @@ void flush_overlay() {
       o.uv[0] = o.uv[1] = 0.0f;
     }
   }
-  auto* p = pb_begin();
+  auto* p = xr_begin();
   g_ps = PushedState();
   p = push_white(p);
   p = pb_push1(p, NV097_SET_BLEND_FUNC_SFACTOR, NV097_SET_BLEND_FUNC_SFACTOR_V_ONE);
@@ -266,7 +291,7 @@ void flush_overlay() {
     p = pb_push1(p, 0x40000000 | NV097_DRAW_ARRAYS, ((n - 1) << 24) | (g_vb_used + first));
   }
   p = pb_push1(p, NV097_SET_BEGIN_END, NV097_SET_BEGIN_END_OP_END);
-  pb_end(p);
+  xr_end(p);
   g_vb_used += count;
   g_rect_count = 0;
 }
@@ -360,11 +385,12 @@ void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t st
     GpuVertex& o = out[i];
     o.pos[0] = bef(v); o.pos[1] = bef(v + 4); o.pos[2] = 0.0f; o.pos[3] = 1.0f;
     const uint32_t argb = be32(v + 20);
-    o.col[0] = float((argb >> 16) & 255) / 255.0f; o.col[1] = float((argb >> 8) & 255) / 255.0f;
-    o.col[2] = float(argb & 255) / 255.0f; o.col[3] = float(argb >> 24) / 255.0f;
+    constexpr float k = 1.0f / 255.0f;
+    o.col[0] = float((argb >> 16) & 255) * k; o.col[1] = float((argb >> 8) & 255) * k;
+    o.col[2] = float(argb & 255) * k; o.col[3] = float(argb >> 24) * k;
     o.uv[0] = bef(v + 12) * su; o.uv[1] = bef(v + 16) * sv;
   }
-  auto* p = pb_begin();
+  auto* p = xr_begin();
   const void* tex = g_have_tex ? g_cur.gpu : static_cast<const void*>(g_white);
   const uint32_t fmt = g_have_tex ? g_cur.format : 0u;
   const uint32_t rect = g_have_tex ? ((g_cur.w << 16) | g_cur.h) ^ (g_cur.pitch << 3) : 0u;
@@ -397,7 +423,7 @@ void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t st
     p = pb_push1(p, 0x40000000 | NV097_DRAW_ARRAYS, ((n - 1) << 24) | (g_vb_used + first));
   }
   p = pb_push1(p, NV097_SET_BEGIN_END, NV097_SET_BEGIN_END_OP_END);
-  pb_end(p);
+  xr_end(p);
   g_vb_used += count;
   ++g_draws;
 }
@@ -407,7 +433,7 @@ void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t st
 // block reused).
 void cc_xr_gpu_idle() {
   if (!g_in_frame) return;
-  while (pb_busy()) {}
+  xr_flush(); while (pb_busy()) {}
 }
 
 // Harness failure on the Xbox: show the error code and guest address as
@@ -421,7 +447,7 @@ void cc_xr_show_fail(uint32_t code, uint32_t addr) {
   draw_number(16, 310, code, 0xFFFFFFFF);
   for (int k = 0; k < 8; ++k) draw_hex_digit(80 + k * 15, 310, (addr >> (28 - 4 * k)) & 15u, 0xFFFFFF40);
   flush_overlay();
-  while (pb_busy()) {}
+  xr_flush(); while (pb_busy()) {}
   present();
   if (!g_shown) { pb_show_front_screen(); g_shown = true; }
   g_in_frame = false;
@@ -527,7 +553,7 @@ void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
     flush_overlay();
   }
   const uint64_t w0 = now_us();
-  while (pb_busy()) {}
+  xr_flush(); while (pb_busy()) {}
   present();
   last_wait = now_us() - w0;
   if (!g_shown) { pb_show_front_screen(); g_shown = true; }

@@ -16,7 +16,7 @@ static void cc_as_decode(Context& ctx, Machine& base, uint32_t s, uint32_t out, 
 //    (VM[(VM[10180] + 2513) * 4] -> +140 -> +0), else the script's own
 //    ([S+4] -> +0); pos += 1 / 2
 //  anything else: 0.
-static uint32_t cc_as_name(Context& ctx, Machine& base, uint32_t s, uint32_t data, uint32_t& pos) {
+static CC_HOT_FN uint32_t cc_as_name(Context& ctx, Machine& base, uint32_t s, uint32_t data, uint32_t& pos) {
   const uint32_t t = REX_LOAD_U8(data + pos);
   ++pos;
   if (t == 0u) {
@@ -44,7 +44,7 @@ static uint32_t cc_as_name(Context& ctx, Machine& base, uint32_t s, uint32_t dat
   const uint32_t tbl = act ? REX_LOAD_U32(REX_LOAD_U32(act + 140u)) : REX_LOAD_U32(REX_LOAD_U32(s + 4u));
   return REX_LOAD_U16(tbl + idx2);
 }
-static void sub_8207A908(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_8207A908(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8207A908);
   CC_FPROF_SCOPE(sub_8207A908_native);
   const uint32_t posp = ctx.r5.u32;
@@ -56,7 +56,7 @@ static void sub_8207A908(Context& ctx, Machine& base) {
 
 // ToBoolean (exact sub_82082670: value r3): bool -> its byte; number ->
 // != 0.0; int, 512, 1024, 16384, 0x40000 -> payload != 0; else false.
-static inline uint32_t cc_as_tobool(Context& ctx, Machine& base, uint32_t v) {
+static CC_HOT_FN inline uint32_t cc_as_tobool(Context& ctx, Machine& base, uint32_t v) {
   const uint32_t t = REX_LOAD_U32(v);
   switch (t) {
     case 2u: return REX_LOAD_U8(v + 4u);
@@ -73,7 +73,7 @@ static inline uint32_t cc_as_tobool(Context& ctx, Machine& base, uint32_t v) {
     default: return 0u;
   }
 }
-static void sub_82082670(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_82082670(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_82082670);
   CC_FPROF_SCOPE(sub_82082670_native);
   ctx.r3.u64 = cc_as_tobool(ctx, base, ctx.r3.u32);
@@ -83,7 +83,7 @@ static void sub_82082670(Context& ctx, Machine& base) {
 // (length rec.len): a pool slot (sub_82082488), decoded into (Push item
 // decode), its object's reference count raised inline when the object
 // (count nonzero) reports a counted type through slot 40, then pushed.
-static uint32_t cc_as_op_96(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_96(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_96);
   if (o.len == 0u) return 0u;
   uint32_t pos = 0;
@@ -107,7 +107,7 @@ static uint32_t cc_as_op_96(Context& ctx, Machine& base, const CcAsOp& o) {
 
 // Pop (exact sub_8207CDA0, ops 0x17 and 0x9E): the top value's reference
 // released and its slot freed.
-static uint32_t cc_as_op_17(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_17(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_17);
   const uint32_t p = cc_as_pool(base, o.s);
   const uint32_t v = cc_as_pop(base, p);
@@ -117,14 +117,14 @@ static uint32_t cc_as_op_17(Context& ctx, Machine& base, const CcAsOp& o) {
 }
 
 // Jump (exact sub_82081598, op 0x99): the signed LE u16 at data.
-static inline uint32_t cc_as_branch(Machine& base, uint32_t data) {
+static CC_HOT_FN inline uint32_t cc_as_branch(Machine& base, uint32_t data) {
   return uint32_t(int32_t(int16_t(uint16_t(REX_LOAD_U8(data) | (REX_LOAD_U8(data + 1u) << 8)))));
 }
 static uint32_t cc_as_op_99(Context&, Machine& base, const CcAsOp& o) { return cc_as_branch(base, o.data); }
 
 // If (exact sub_82081920, op 0x9D): pop, release, ToBoolean; true takes
 // the branch offset at data. The slot is freed.
-static uint32_t cc_as_op_9D(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_9D(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_9D);
   const uint32_t p = cc_as_pool(base, o.s);
   const uint32_t v = cc_as_pop(base, p);
@@ -137,7 +137,7 @@ static uint32_t cc_as_op_9D(Context& ctx, Machine& base, const CcAsOp& o) {
 
 // Return (exact sub_8207E308, op 0x3E): pop, release, the slot's 12 bytes
 // copied to the return slot (r6), the slot freed.
-static uint32_t cc_as_op_3E(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_3E(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_3E);
   const uint32_t p = cc_as_pool(base, o.s);
   const uint32_t v = cc_as_pop(base, p);
@@ -152,7 +152,7 @@ static uint32_t cc_as_op_3E(Context& ctx, Machine& base, const CcAsOp& o) {
 
 // Variable read into a new slot, referenced and pushed (the tail shared by
 // A0 and A1): sub_82082488, GetVariable sub_8207AF80(S, id, slot).
-static inline void cc_as_push_var(Context& ctx, Machine& base, uint32_t s, uint32_t id, uint32_t lr_alloc,
+static CC_HOT_FN inline void cc_as_push_var(Context& ctx, Machine& base, uint32_t s, uint32_t id, uint32_t lr_alloc,
                                   uint32_t lr_get, uint32_t lr_ref) {
   ctx.r3.u64 = cc_as_pool(base, s); ctx.lr = lr_alloc;
   sub_82082488(ctx, base);
@@ -166,7 +166,7 @@ static inline void cc_as_push_var(Context& ctx, Machine& base, uint32_t s, uint3
 
 // GetVariable with an inline name (exact sub_82081C08, op 0xA0): name from
 // data (inline name decode), value pushed. Returns 1.
-static uint32_t cc_as_op_A0(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_A0(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_A0);
   uint32_t pos = 0;
   const uint32_t id = cc_as_name(ctx, base, o.s, o.data, pos);
@@ -177,7 +177,7 @@ static uint32_t cc_as_op_A0(Context& ctx, Machine& base, const CcAsOp& o) {
 // Push one item then GetVariable inline (exact sub_82081CD8, op 0xA1): a
 // decoded item pushed (referenced), then a name from the same data and its
 // variable's value pushed. Returns 1.
-static uint32_t cc_as_op_A1(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_A1(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_A1);
   uint32_t pos = 0;
   ctx.r3.u64 = cc_as_pool(base, o.s); ctx.lr = 0x82081D10u;
@@ -199,7 +199,7 @@ static uint32_t cc_as_op_A1(Context& ctx, Machine& base, const CcAsOp& o) {
 // an active function (VM function stack) the variable is set through
 // sub_8208C2A0(function, id, temp), else through the current clip's slot
 // 16 (r4 id, r5 temp). Returns 1.
-static uint32_t cc_as_op_A4(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_A4(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_A4);
   CcFrame frame(ctx, base, 144u);
   const uint32_t tmp = ctx.r1.u32 + 88u;
@@ -223,7 +223,7 @@ static uint32_t cc_as_op_A4(Context& ctx, Machine& base, const CcAsOp& o) {
 
 // Pop with release as the call handlers do it: returns the slot (re-read
 // from the stack after the release).
-static inline uint32_t cc_as_pop_release(Context& ctx, Machine& base, uint32_t s, uint32_t lr_a, uint32_t lr_b) {
+static CC_HOT_FN inline uint32_t cc_as_pop_release(Context& ctx, Machine& base, uint32_t s, uint32_t lr_a, uint32_t lr_b) {
   const uint32_t p = cc_as_pool(base, s);
   const uint32_t v = cc_as_pop(base, p);
   cc_as_unref(ctx, base, v, lr_a, lr_b);
@@ -236,7 +236,7 @@ static inline uint32_t cc_as_pop_release(Context& ctx, Machine& base, uint32_t s
 // current clip's slot 20 runs the call (r4 VM, r5 name id (ToString id
 // sub_82082890), r6 argc, r7 args, r8 result slot, r9 stop byte). The
 // result is referenced and pushed, the argument and name slots freed.
-static uint32_t cc_as_op_3D(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_3D(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_3D);
   CcFrame frame(ctx, base, 240u);
   const uint32_t args = ctx.r1.u32 + 80u;
@@ -280,7 +280,7 @@ static uint32_t cc_as_op_3D(Context& ctx, Machine& base, const CcAsOp& o) {
 // answers slot 24 and is gone (count 0) or its slot 140 changed across the
 // call, the stop byte is set. Unless stopped, the result is referenced and
 // pushed; argument, name and object slots are freed.
-static uint32_t cc_as_op_52(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_52(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_52);
   CcFrame frame(ctx, base, 272u);
   const uint32_t r1 = ctx.r1.u32;
@@ -359,7 +359,7 @@ static uint32_t cc_as_op_52(Context& ctx, Machine& base, const CcAsOp& o) {
 
 // Native opcode table: handled = false sends the opcode to its guest
 // handler.
-static uint32_t cc_as_native_op(Context& ctx, Machine& base, const CcAsOp& o, bool& handled) {
+static CC_HOT_FN uint32_t cc_as_native_op(Context& ctx, Machine& base, const CcAsOp& o, bool& handled) {
   handled = true;
   switch (o.op) {
     case 0x96u: return cc_as_op_96(ctx, base, o);

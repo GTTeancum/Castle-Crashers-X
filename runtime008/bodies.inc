@@ -210,7 +210,7 @@ static void cc_oracle_mismatch(const char* fn, int slot, uint32_t exact, uint32_
 // clamped to [0, 255] (a NaN becomes 255). Rounding as compiled: the
 // multiplier scaled by 1/255 (0x8204257C) is rounded to float, the
 // multiply-add is fused, the result rounded to float.
-static void cc_colour_native(Machine& base, Context& ctx, uint32_t out[4]) {
+static CC_HOT_FN void cc_colour_native(Machine& base, Context& ctx, uint32_t out[4]) {
   ctx.fpscr.disableFlushMode();
   auto f32 = [](uint32_t b) { float f; __builtin_memcpy(&f, &b, 4); return double(f); };
   auto bits = [](double v) { const float f = float(v); uint32_t b; __builtin_memcpy(&b, &f, 4); return b; };
@@ -226,7 +226,7 @@ static void cc_colour_native(Machine& base, Context& ctx, uint32_t out[4]) {
     out[i] = bits(v);
   }
 }
-static void sub_82084100(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_82084100(Context& ctx, Machine& base) {
 #ifdef CC_SPRITE_EXACT_BUILD
   if (true) { sub_82084100_exact(ctx, base); return; }  // Xbox bisect build
 #endif
@@ -273,7 +273,7 @@ static void cc_oracle_mismatch(const char* fn, int slot, uint32_t exact, uint32_
 // order per corner; the same order is kept here so the results are
 // bit-identical (constants 0x82042564 = 0.05, 0x82042574 = 0.01,
 // 0x82042578 = 2000).
-static void cc_corners_native(Context& ctx, Machine& base, uint32_t out[4][3]) {
+static CC_HOT_FN void cc_corners_native(Context& ctx, Machine& base, uint32_t out[4][3]) {
   ctx.fpscr.disableFlushMode();
   auto f32 = [](uint32_t b) { float f; __builtin_memcpy(&f, &b, 4); return double(f); };
   auto bits = [](double v) { const float f = float(v); uint32_t b; __builtin_memcpy(&b, &f, 4); return b; };
@@ -297,7 +297,7 @@ static void cc_corners_native(Context& ctx, Machine& base, uint32_t out[4][3]) {
   out[3][1] = bits(std::fma(ty, c05, r(std::fma(c05x, x0, r(b01 * y1)))));
   for (int i = 0; i < 4; ++i) out[i][2] = zb;
 }
-static void sub_82085110(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_82085110(Context& ctx, Machine& base) {
 #ifdef CC_SPRITE_EXACT_BUILD
   if (true) { sub_82085110_exact(ctx, base); return; }  // Xbox bisect build
 #endif
@@ -348,7 +348,7 @@ static void sub_82085110(Context& ctx, Machine& base) {
 // float, the second product fused, the sum rounded). The byte at
 // 0x8228A7B4 selects an extra fix-up call (sub_82085C70) that the harness
 // never runs; that path keeps the exact body. Returns out in r3.
-static void cc_matmul_native(Machine& base, Context& ctx, uint32_t A, uint32_t B, uint32_t out[6]) {
+static CC_HOT_FN void cc_matmul_native(Machine& base, Context& ctx, uint32_t A, uint32_t B, uint32_t out[6]) {
   ctx.fpscr.disableFlushMode();
   auto f32 = [](uint32_t b) { float f; __builtin_memcpy(&f, &b, 4); return double(f); };
   auto bits = [](double v) { const float f = float(v); uint32_t b; __builtin_memcpy(&b, &f, 4); return b; };
@@ -372,7 +372,7 @@ static void cc_matmul_native(Machine& base, Context& ctx, uint32_t A, uint32_t B
   out[2] = bits(f11 * k20); out[3] = bits(f10 * k20);
   out[4] = bits(f9 * k20); out[5] = bits(f8 * k20);
 }
-static void sub_82085AD8(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_82085AD8(Context& ctx, Machine& base) {
 #ifdef CC_SPRITE_EXACT_BUILD
   if (true) { sub_82085AD8_exact(ctx, base); return; }  // Xbox bisect build
 #endif
@@ -408,7 +408,7 @@ static void sub_82085AD8(Context& ctx, Machine& base) {
 // becomes (flag ? previous entry x matrix : matrix): floats +0, +4, +8,
 // bytes +12..14, floats +16..36 (byte 15 untouched). The combined form is
 // sub_82085AD8's result ({100, 100, 0}, zero bytes, product).
-static void sub_82086090(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_82086090(Context& ctx, Machine& base) {
 #ifdef CC_SPRITE_EXACT_BUILD
   if (true) { sub_82086090_exact(ctx, base); return; }  // Xbox bisect build
 #endif
@@ -479,9 +479,9 @@ static void sub_82086090(Context& ctx, Machine& base) {
 // recognised from the original code (read once per method address from the
 // mapped image, cached); no hand-written wrapper is such a method.
 struct CcLeaf { uint32_t fn; uint8_t kind; int32_t imm; };  // kind 0 unknown, 1 not a leaf, 2.. leaf
-static CcLeaf g_leaf_cache[1024];
+static CcLeaf g_leaf_cache[4096];
 static inline const CcLeaf& cc_leaf_info(Machine& base, uint32_t fn) {
-  CcLeaf& e = g_leaf_cache[(fn >> 2) & 1023u];
+  CcLeaf& e = g_leaf_cache[((fn >> 2) ^ (fn >> 14)) & 4095u];
   if (e.fn == fn && e.kind) return e;
   e.fn = fn; e.kind = 1; e.imm = 0;
   if (fn >= 0x82000000u && fn < 0x822D0000u) {
@@ -500,39 +500,91 @@ static inline const CcLeaf& cc_leaf_info(Machine& base, uint32_t fn) {
   }
   return e;
 }
-static inline bool cc_leaf_method(Machine& base, uint32_t fn, uint32_t obj, uint64_t& r3) {
-  switch (fn) {
-    case 0x820867D0u: r3 = REX_LOAD_U16(obj + 100u) != 0u ? 1u : 0u; return true;  // u16 +100 != 0
-    case 0x82086818u: r3 = (REX_LOAD_U8(obj + 140u) >> 2) & 1u; return true;    // bit 2 of byte +140
-    default: break;
-  }
+// Generated function for a guest address (the dispatch table), or nullptr
+// for addresses only the full dispatch switch knows. Defined in bridge.cpp.
+static CcGenFn cc_dispatch_lookup(uint32_t a);
+// Per-call-site cache of the last two methods seen there: the leaf kind
+// (kinds 2-6 above; 7 and 8 the two hand-checked methods below) or the
+// generated function to call. A site that alternates between two classes
+// (sprite / clip children) keeps both; a miss decodes the method once.
+struct CcVEnt { uint32_t key; uint8_t kind; int32_t imm; CcGenFn fn; };
+struct CcVSite { CcVEnt e[2]; };
+static __attribute__((noinline)) void cc_vsite_fill(Machine& base, uint32_t fn, CcVEnt& v) {
+  v.key = fn; v.imm = 0; v.fn = nullptr;
+  if (fn == 0x820867D0u) { v.kind = 7; return; }  // u16 +100 != 0
+  if (fn == 0x82086818u) { v.kind = 8; return; }  // bit 2 of byte +140
   const CcLeaf& e = cc_leaf_info(base, fn);
-  const uint32_t a = obj + uint32_t(e.imm);
-  switch (e.kind) {
-    case 2: r3 = uint64_t(int64_t(e.imm)); return true;             // sign-extended like li
-    case 3: r3 = REX_LOAD_U32(a); return true;
-    case 4: r3 = REX_LOAD_U16(a); return true;
-    case 5: r3 = uint64_t(int64_t(int16_t(REX_LOAD_U16(a)))); return true;
-    case 6: r3 = REX_LOAD_U8(a); return true;
-    default: return false;
+  v.kind = e.kind; v.imm = e.imm;
+  if (v.kind == 1) v.fn = cc_dispatch_lookup(fn);
+}
+#ifndef CC_XBOX_DRIVER
+// Host census of method calls per call site (CC_VCALL_STATS=1): calls,
+// misses of the site cache and the leaf kind, by return address.
+struct CcVcStat { uint64_t calls = 0, misses = 0; uint32_t kind = 0; };
+static std::unordered_map<uint32_t, CcVcStat>* g_vc_stats = nullptr;
+static const bool g_vc_on = std::getenv("CC_VCALL_STATS") != nullptr;
+namespace {
+struct CcVcReport {
+  ~CcVcReport() {
+    if (!g_vc_stats) return;
+    std::vector<std::pair<uint64_t, uint32_t>> v;
+    uint64_t total = 0;
+    for (const auto& [lr, st] : *g_vc_stats) { v.push_back({st.calls, lr}); total += st.calls; }
+    std::sort(v.begin(), v.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
+    std::fprintf(stderr, "VCALL total=%llu sites=%zu\n", (unsigned long long)total, v.size());
+    for (size_t i = 0; i < v.size() && i < 30; ++i) {
+      const CcVcStat& st = (*g_vc_stats)[v[i].second];
+      std::fprintf(stderr, "VCALL lr=%08X calls=%llu misses=%llu kind=%u\n", v[i].second, (unsigned long long)st.calls,
+                   (unsigned long long)st.misses, st.kind);
+    }
   }
-}
-static inline uint32_t cc_vcall_ic(Context& ctx, Machine& base, uint32_t obj, uint32_t slot, uint32_t lr,
-                                   uint32_t& ic_key, CcGenFn& ic_fn) {
+} g_vc_report;
+}  // namespace
+#endif
+static inline __attribute__((always_inline)) uint32_t cc_vcall_site(Context& ctx, Machine& base, uint32_t obj, uint32_t slot, uint32_t lr, CcVSite& s) {
   const uint32_t fn = REX_LOAD_U32(REX_LOAD_U32(obj) + slot);
-  uint64_t r3 = 0;
-  if (cc_leaf_method(base, fn, obj, r3)) { ctx.r3.u64 = r3; return uint32_t(r3); }
-  ctx.r3.u64 = obj;
-  ctx.lr = lr;
-  if (fn == ic_key) ic_fn(ctx, base);
-  else cc_dispatch_cached(fn, ctx, base, ic_key, ic_fn);
-  return ctx.r3.u32;
+#ifndef CC_XBOX_DRIVER
+  if (g_vc_on) {
+    if (!g_vc_stats) g_vc_stats = new std::unordered_map<uint32_t, CcVcStat>();
+    CcVcStat& st = (*g_vc_stats)[lr];
+    ++st.calls;
+    if (fn != s.e[0].key && fn != s.e[1].key) ++st.misses;
+  }
+#endif
+  if (__builtin_expect(fn != s.e[0].key, 0)) {
+    if (fn == s.e[1].key) {
+      const CcVEnt t = s.e[0]; s.e[0] = s.e[1]; s.e[1] = t;
+    } else {
+      s.e[1] = s.e[0];
+      cc_vsite_fill(base, fn, s.e[0]);
+    }
+  }
+  const CcVEnt& v = s.e[0];
+#ifndef CC_XBOX_DRIVER
+  if (g_vc_on) (*g_vc_stats)[lr].kind = v.kind;
+#endif
+  const uint32_t a = obj + uint32_t(v.imm);
+  uint64_t r3;
+  switch (v.kind) {
+    case 2: r3 = uint64_t(int64_t(v.imm)); break;  // sign-extended like li
+    case 3: r3 = REX_LOAD_U32(a); break;
+    case 4: r3 = REX_LOAD_U16(a); break;
+    case 5: r3 = uint64_t(int64_t(int16_t(REX_LOAD_U16(a)))); break;
+    case 6: r3 = REX_LOAD_U8(a); break;
+    case 7: r3 = REX_LOAD_U16(obj + 100u) != 0u ? 1u : 0u; break;
+    case 8: r3 = (REX_LOAD_U8(obj + 140u) >> 2) & 1u; break;
+    default:
+      ctx.r3.u64 = obj;
+      ctx.lr = lr;
+      if (v.fn) v.fn(ctx, base); else dispatch(fn, ctx, base);
+      return ctx.r3.u32;
+  }
+  ctx.r3.u64 = r3;
+  return uint32_t(r3);
 }
-// One inline cache per call site, like the generated code's indirect calls
-// (a shared cache would miss on every alternation of targets).
 #define cc_vcall(CTX, BASE, OBJ, SLOT, LR) ([&]() -> uint32_t { \
-    static uint32_t cc_vic_key = 0; static CcGenFn cc_vic_fn = nullptr; \
-    return cc_vcall_ic(CTX, BASE, OBJ, SLOT, LR, cc_vic_key, cc_vic_fn); }())
+    static CcVSite cc_vs{}; \
+    return cc_vcall_site(CTX, BASE, OBJ, SLOT, LR, cc_vs); }())
 // Native frame for a walker: the exact walkers open a stack frame before
 // their calls; callees then use the stack below it.
 struct CcFrame {
@@ -553,7 +605,7 @@ struct CcFrame {
 // the node's iterator method (slot 156 on the node, then on each child);
 // returns 0 as soon as a child that is "active" (slot 44) has bit 0 of byte
 // +140 clear, else bit 0 of the node's own byte +140.
-static void sub_8208AF08(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_8208AF08(Context& ctx, Machine& base) {
 #ifndef CC_XBOX_DRIVER
   static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
   if (walk_exact) { sub_8208AF08_exact(ctx, base); return; }
@@ -639,7 +691,7 @@ static void sub_820A8DD8(Context& ctx, Machine& base) {
 // sub_820E4EB0) read only f1 and non-volatile registers after the call.
 struct CcTrigMemo { uint64_t key[512]; uint64_t val[512]; bool used[512]; };
 static CcTrigMemo g_trig_memo[2];
-static inline void cc_trig_memo(Context& ctx, Machine& base, unsigned which, void (*exact)(Context&, Machine&)) {
+static CC_HOT_FN inline void cc_trig_memo(Context& ctx, Machine& base, unsigned which, void (*exact)(Context&, Machine&)) {
   const uint64_t in = ctx.f1.u64;
   const unsigned h = unsigned(uint32_t(in ^ (in >> 29) ^ (in >> 41)) * 0x9E3779B1u) >> 23;  // 9 bits
   CcTrigMemo& m = g_trig_memo[which];

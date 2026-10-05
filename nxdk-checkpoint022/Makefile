@@ -17,7 +17,7 @@ SRCS = \
   $(CURDIR)/../runtime006/bridge.cpp \
   $(CURDIR)/../xbox-runtime/guest_memory.cpp
 NXDK_DIR ?= $(CURDIR)/../../buildkit/sources/nxdk
-CXXFLAGS += -std=c++20 -O2 -march=pentium3 -fno-exceptions -fno-rtti -ffp-contract=off -fno-fast-math
+CXXFLAGS += -std=c++20 -O2 -march=pentium3 -fomit-frame-pointer -fno-exceptions -fno-rtti -ffp-contract=off -fno-fast-math
 CXXFLAGS += -DCC_XBOX_DRIVER
 # Play build: no verification counters (~16% faster; CHECKs report, not stop)
 CXXFLAGS += -DCC_FAST
@@ -46,6 +46,18 @@ endif
 ifneq ($(FOURP),)
 CXXFLAGS += -DCC_SCRIPT_4P
 endif
+# Hot-code grouping (.text$hot; hung the console at boot, off by default): make HOT=1
+ifneq ($(HOT),)
+CXXFLAGS += -DCC_HOT_CODE
+endif
+# Console census of slow-path memory pages: make SLOWSTATS=1
+ifneq ($(SLOWSTATS),)
+CXXFLAGS += -DCC_SLOW_STATS
+endif
+# Console op census: make OPSTATS=1
+ifneq ($(OPSTATS),)
+CXXFLAGS += -DCC_OP_STATS
+endif
 ifneq ($(BENCH),)
 CXXFLAGS += -DCC_BENCH
 endif
@@ -66,6 +78,9 @@ endif
 # The boundary harness keeps its guest stack/TLS arenas as C++ stack
 # arrays (up to 64 KiB each); give the XBE a 1 MiB thread stack.
 LDFLAGS += -stack:0x100000
+# Linker map (symbol addresses) for the console profiler
+# (tools/xbox_console.py profile, tools/xbox_symbolize.py).
+LDFLAGS += -map:$(CURDIR)/main.map
 # Newer clang defaults the bare i386-pc-win32 triple to an ancient MSVC
 # compatibility level where char16_t/char32_t are not keywords; pin a modern
 # level so nxdk's libc++ headers compile (build-infrastructure flag only).

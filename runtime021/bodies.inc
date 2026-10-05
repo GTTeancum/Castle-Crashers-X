@@ -90,8 +90,28 @@ static std::map<uint32_t, std::pair<uint32_t, uint32_t>> g_heap_live;  // ptr ->
 #ifndef CC_XBOX_DRIVER
 #undef sub_8209BDD8
 #undef sub_8209BF18
+// Host census (CC_HEAP_WALK=1): free-list nodes before the chosen block
+// (alloc) / the insertion point (free), averaged per 2000 calls.
+static uint64_t g_hw_alloc_calls, g_hw_alloc_nodes, g_hw_free_calls, g_hw_free_nodes;
+static void cc_heap_walk_census(Machine& base, uint32_t heap, uint32_t stop_addr, bool is_free, uint32_t need) {
+  static const bool on = std::getenv("CC_HEAP_WALK") != nullptr;
+  if (!on) return;
+  uint64_t n = 0;
+  uint64_t v = 0; base.memory.load_be(heap + 16u, 4, v);
+  for (uint32_t b = uint32_t(v); b && n < 100000; ++n) {
+    if (is_free) { if (b >= stop_addr) break; }
+    else { uint64_t sz = 0; base.memory.load_be(b + 8u, 4, sz); if (int32_t(uint32_t(sz)) >= int32_t(need)) break; }
+    uint64_t nx = 0; base.memory.load_be(b + 12u, 4, nx); b = uint32_t(nx);
+  }
+  if (is_free) { ++g_hw_free_calls; g_hw_free_nodes += n; } else { ++g_hw_alloc_calls; g_hw_alloc_nodes += n; }
+  if ((g_hw_alloc_calls + g_hw_free_calls) % 200000u == 0u)
+    std::fprintf(stderr, "HEAPWALK calls=%llu alloc_avg=%.1f free_avg=%.1f\n", (unsigned long long)(g_hw_alloc_calls + g_hw_free_calls),
+                 double(g_hw_alloc_nodes) / double(g_hw_alloc_calls ? g_hw_alloc_calls : 1),
+                 double(g_hw_free_nodes) / double(g_hw_free_calls ? g_hw_free_calls : 1));
+}
 static void sub_8209BDD8(Context& ctx, Machine& base) {
   const uint32_t size = ctx.r4.u32, lr = uint32_t(ctx.lr);
+  cc_heap_walk_census(base, ctx.r3.u32, 0u, false, size + 16u);
   sub_8209BDD8_exact(ctx, base);
   if (ctx.r3.u32) g_heap_live[ctx.r3.u32] = {size, lr};
   // Host oracle aid (CC_HEAP_ZERO=1): new blocks are zeroed, so stale bytes
@@ -106,6 +126,7 @@ static void sub_8209BDD8(Context& ctx, Machine& base) {
   }
 }
 static void sub_8209BF18(Context& ctx, Machine& base) {
+  cc_heap_walk_census(base, ctx.r3.u32, ctx.r4.u32, true, 0u);
   // CC_HEAP_ZERO=1 also clears a block before it is freed.
   static const bool zero = std::getenv("CC_HEAP_ZERO") != nullptr;
   const auto it = g_heap_live.find(ctx.r4.u32);
@@ -222,7 +243,7 @@ static std::set<uint32_t> g_committed_pages;
 // the value or 0). Fewer than 4 entries: linear scan; otherwise the
 // original's binary search, probe for probe (unsigned index arithmetic
 // kept as compiled, so even a malformed map reads the same entries).
-static uint32_t cc_asmap_find(Machine& base, uint32_t map, uint32_t key) {
+static CC_HOT_FN uint32_t cc_asmap_find(Machine& base, uint32_t map, uint32_t key) {
   const uint32_t n = REX_LOAD_U32(map + 0u), e = REX_LOAD_U32(map + 4u);
   if (n < 4u) {
     for (uint32_t i = 0; i < n; ++i)
@@ -247,7 +268,7 @@ static uint32_t cc_asmap_find(Machine& base, uint32_t map, uint32_t key) {
 // ActionScript Var read (shared by the locals and member lookups): Var
 // {+0 object, +4 type, +8 payload} -> out value {type, payload}; object type
 // 1 goes through sub_8206F918(out, object); unknown types leave out alone.
-static void cc_as_var_read(Context& ctx, Machine& base, uint32_t var, uint32_t out, uint32_t lr) {
+static CC_HOT_FN void cc_as_var_read(Context& ctx, Machine& base, uint32_t var, uint32_t out, uint32_t lr) {
   const uint32_t type = REX_LOAD_U32(var + 4u);
   switch (type) {
     case 0x80000000u: REX_STORE_U32(out + 0u, 0x80000000u); REX_STORE_U32(out + 4u, 0u); break;
@@ -273,7 +294,7 @@ static void cc_as_var_read(Context& ctx, Machine& base, uint32_t var, uint32_t o
     default: break;
   }
 }
-static void sub_82082390(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_82082390(Context& ctx, Machine& base) {
   const uint32_t r = cc_asmap_find(base, ctx.r3.u32, ctx.r4.u32 & 0xFFFFu);
 #ifndef CC_XBOX_DRIVER
   static const bool oracle = std::getenv("CC_ORACLE") != nullptr;
@@ -325,7 +346,7 @@ static void sub_82082390(Context& ctx, Machine& base) {
 // [child+28]); otherwise its +82 is cleared and, if active (slot 44), it
 // advances (slot 148, r4 = node) and updates (slot 84). The stack entry is
 // popped at the end.
-static void sub_82088A08(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_82088A08(Context& ctx, Machine& base) {
 #ifndef CC_XBOX_DRIVER
   static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
   if (walk_exact) { sub_82088A08_exact(ctx, base); return; }
@@ -409,7 +430,7 @@ static void sub_82088A08(Context& ctx, Machine& base) {
 // into the return value; active children while bit 6 is set, and inactive
 // children with bit 4 of their +86, set bit 0. Without bit 0 the node's
 // bit 4 of +86 is cleared; bit 6 of +140 is cleared and the stack popped.
-static void sub_8208A228(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_8208A228(Context& ctx, Machine& base) {
 #ifndef CC_XBOX_DRIVER
   static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
   if (walk_exact) { sub_8208A228_exact(ctx, base); return; }
@@ -493,7 +514,7 @@ static void sub_8208A228(Context& ctx, Machine& base) {
 // is set it is cleared and sub_82084EE0(node + 104) runs; then every child
 // in the list at +104 (linked through +88) that answers slot 44 is refreshed
 // the same way, depth first.
-static void sub_8208AE78(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_8208AE78(Context& ctx, Machine& base) {
 #ifndef CC_XBOX_DRIVER
   static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
   if (walk_exact) { sub_8208AE78_exact(ctx, base); return; }
@@ -2214,6 +2235,12 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
 #endif
 #endif
   cc_capture_end_frame(base.memory, g_frame_delay_calls + 1u);
+#if defined(CC_XBOX_DRIVER) && defined(CC_SLOW_STATS)
+  if ((g_frame_delay_calls + 1u) % 300u == 0u) cc_slow_dbg();
+#endif
+#if defined(CC_XBOX_DRIVER) && defined(CC_OP_STATS)
+  { void cc_op_dbg(); if ((g_frame_delay_calls + 1u) % 300u == 0u) cc_op_dbg(); }
+#endif
 #ifndef CC_XBOX_DRIVER
   {
     static long from = -1, to = -1;
@@ -6059,7 +6086,7 @@ static void sub_820A89F8(Context& ctx, Machine& base) {
 // Display-list lookup (exact sub_82085078: list r3, id r4): the first node
 // in the list at [r3] (linked through +88) that answers slot 52 and whose
 // slot 72 value matches id in the low 16 bits; 0 when none does.
-static void sub_82085078(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_82085078(Context& ctx, Machine& base) {
 #ifndef CC_XBOX_DRIVER
   static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
   if (walk_exact) { sub_82085078_exact(ctx, base); return; }
@@ -6225,7 +6252,7 @@ static void sub_820623C0(Context& ctx, Machine& base) {
 // ActionScript object member read (exact sub_8208C140: object r3, id r4
 // u16, out r5): the member map at object+4; found -> Var read, returns 1;
 // not found -> 0.
-static void sub_8208C140(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_8208C140(Context& ctx, Machine& base) {
 #ifndef CC_XBOX_DRIVER
   static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;
   if (walk_exact) { sub_8208C140_exact(ctx, base); return; }
@@ -6254,7 +6281,7 @@ static void sub_8208C140(Context& ctx, Machine& base) {
 // type 1 -> sub_8206F918(out, object); bool 2 byte; int 4 word; string 8
 // u16 id; number 16 float), other types leave out alone; returns 1.
 // Not found: 0.
-static void sub_82079BE0(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_82079BE0(Context& ctx, Machine& base) {
 #ifndef CC_XBOX_DRIVER
   static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;
   if (walk_exact) { sub_82079BE0_exact(ctx, base); return; }
@@ -6340,7 +6367,7 @@ static void sub_82079BE0(Context& ctx, Machine& base) {
 #undef sub_8206F918
 // Typed reference (exact sub_8206F918: out r3, object r4): out = {type
 // (slot 40), object}, or {0x80000000, 0} for no object.
-static void sub_8206F918(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_8206F918(Context& ctx, Machine& base) {
 #ifndef CC_XBOX_DRIVER
   static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
   if (walk_exact) { sub_8206F918_exact(ctx, base); return; }
@@ -6408,7 +6435,7 @@ static void sub_8206F918(Context& ctx, Machine& base) {
 // slots of 12 bytes at +5028, in-use byte at slot+8, rover at +20100: the
 // first free slot from the rover on (wrapping), marked used and made the
 // new rover; 0 when all are in use.
-static void sub_82082488(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_82082488(Context& ctx, Machine& base) {
   const uint32_t pool = ctx.r3.u32;
   const uint32_t start = REX_LOAD_U32(pool + 20100u);
   uint32_t i = start;
@@ -6462,7 +6489,7 @@ static void sub_82082488(Context& ctx, Machine& base) {
 // VM = [[r3+0]+76]+156. Float values pass through f0 as in the original.
 // The decode with the position in a host variable (also used directly by the
 // native interpreter, runtime021/as_ops.inc).
-static void cc_as_decode(Context& ctx, Machine& base, uint32_t as, uint32_t out, uint32_t data, uint32_t& pos) {
+static CC_HOT_FN void cc_as_decode(Context& ctx, Machine& base, uint32_t as, uint32_t out, uint32_t data, uint32_t& pos) {
   const uint32_t type = REX_LOAD_U8(data + pos);
   ++pos;
   auto b = [&](uint32_t k) { return uint32_t(REX_LOAD_U8(data + pos + k)); };
@@ -6547,7 +6574,7 @@ static void cc_as_decode(Context& ctx, Machine& base, uint32_t as, uint32_t out,
     default: return;  // 2 and anything above 9: nothing more
   }
 }
-static void sub_8207AA50(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_8207AA50(Context& ctx, Machine& base) {
 #ifndef CC_XBOX_DRIVER
   static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;
   if (walk_exact) { sub_8207AA50_exact(ctx, base); return; }
@@ -7322,7 +7349,7 @@ static void sub_820B1478(Context& ctx, Machine& base) {
 // Reference count step (exact sub_82066EA8: object r3, up r4 byte): for an
 // object whose type (slot 40) has any of the bits 0x7C6C1, the u16 at +24
 // is incremented (up) or decremented and 1 is returned; else 0.
-static void sub_82066EA8(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_82066EA8(Context& ctx, Machine& base) {
 #ifndef CC_XBOX_DRIVER
   static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
   if (walk_exact) { sub_82066EA8_exact(ctx, base); return; }
@@ -9264,6 +9291,9 @@ static void __imp__RtlInitAnsiString(Context& ctx, Machine& base) {
 #include "generated/sub_820B73C8.inc"
 #include "generated/sub_820B64E0.inc"
 #include "generated/sub_820AA488.inc"
+#if defined(CC_XBOX_DRIVER) && defined(CC_OP_STATS)
+void cc_op_dbg();
+#endif
 #ifdef CC_FAST
 // Native ActionScript interpreter (play build): runtime021/as_native.inc.
 #include "as_native.inc"

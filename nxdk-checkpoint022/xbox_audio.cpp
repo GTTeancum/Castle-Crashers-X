@@ -15,7 +15,7 @@
 namespace {
 constexpr int kFrameSamples = 800;               // one 60 Hz frame at 48 kHz
 constexpr int kFrameBytes = kFrameSamples * 4;   // stereo s16
-constexpr unsigned kDma = 20;                    // DMA buffer ring
+constexpr unsigned kDma = 31;                    // DMA buffer ring (the AC97 has 32 descriptors)
 
 uint8_t* g_dma[kDma];
 unsigned g_dma_next = 0;
@@ -67,8 +67,11 @@ void cc_xbox_audio_pump(void (*render)(int16_t* out, int samples)) {
   const DWORD now = GetTickCount();
   const DWORD dt = last_tick ? now - last_tick : 16u;
   last_tick = now;
-  unsigned target = unsigned(dt * 60u / 1000u) + 3u;
-  if (target < 4u) target = 4u;
+  // Margin of 8 buffers (~133 ms) past the last frame's length: the console
+  // has frames of 55-140 ms in four-player fights, which drained the old
+  // 3-buffer margin (music stutter, 2026-10-04).
+  unsigned target = unsigned(dt * 60u / 1000u) + 8u;
+  if (target < 8u) target = 8u;
   if (target > kDma - 2u) target = kDma - 2u;
   const unsigned civ = ac97()[0x114] & 31u;
   const unsigned last = (g_provided - 1u) & 31u;

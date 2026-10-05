@@ -293,6 +293,47 @@ void set_exact_texture_bind(bool v) noexcept { g_use_exact_texture_bind = v; }
 // every guest access is a table load, an add and the byte swap.
 static uint8_t* g_page_host[65536];
 #if defined(CC_FAST) && !defined(CC_XBOX_DRIVER)
+// Host census of guest accesses that miss the page table (CC_SLOW_STATS=1):
+// counts per 64 KiB page, printed at exit.
+static uint64_t g_slow_pages[65536];
+static const bool g_slow_on = std::getenv("CC_SLOW_STATS") != nullptr;
+static inline void cc_slow_census(uint32_t a) { if (g_slow_on) ++g_slow_pages[a >> 16]; }
+namespace {
+struct CcSlowReport {
+  ~CcSlowReport() {
+    if (!g_slow_on) return;
+    std::vector<std::pair<uint64_t, uint32_t>> v;
+    for (uint32_t p = 0; p < 65536u; ++p) if (g_slow_pages[p]) v.push_back({g_slow_pages[p], p});
+    std::sort(v.begin(), v.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
+    for (size_t i = 0; i < v.size() && i < 25; ++i)
+      std::fprintf(stderr, "SLOWPAGE %04X0000 %llu\n", v[i].second, (unsigned long long)v[i].first);
+  }
+} g_slow_report;
+}  // namespace
+#endif
+#if defined(CC_FAST) && defined(CC_XBOX_DRIVER) && defined(CC_SLOW_STATS)
+// Console census of guest accesses that miss the page table (make
+// SLOWSTATS=1): counts per 64 KiB page, the top pages sent to the debug
+// channel every 300 frames (cc_slow_dbg from the frame boundary).
+static uint32_t g_slow_pages[65536];
+static inline void cc_slow_census(uint32_t a) { ++g_slow_pages[a >> 16]; }
+void cc_slow_dbg() {
+  uint32_t top[8] = {}, cnt[8] = {};
+  for (uint32_t p = 0; p < 65536u; ++p) {
+    const uint32_t c = g_slow_pages[p];
+    if (!c) continue;
+    for (int k = 0; k < 8; ++k)
+      if (c > cnt[k]) {
+        for (int j = 7; j > k; --j) { cnt[j] = cnt[j - 1]; top[j] = top[j - 1]; }
+        cnt[k] = c; top[k] = p; break;
+      }
+    g_slow_pages[p] = 0;
+  }
+  DbgPrint("SLOW %04x0000=%u %04x0000=%u %04x0000=%u %04x0000=%u %04x0000=%u %04x0000=%u %04x0000=%u %04x0000=%u\n",
+           top[0], cnt[0], top[1], cnt[1], top[2], cnt[2], top[3], cnt[3], top[4], cnt[4], top[5], cnt[5], top[6], cnt[6], top[7], cnt[7]);
+}
+#endif
+#if defined(CC_FAST) && !defined(CC_XBOX_DRIVER)
 static const uint32_t g_watch_store = [] {
   const char* e = std::getenv("CC_WATCH_STORE");
   return e ? uint32_t(std::strtoul(e, nullptr, 16)) : 0x80000000u;
@@ -1065,6 +1106,9 @@ struct Machine {
     store_slow(a, n, v);
   }
   __attribute__((noinline, cold)) uint64_t load_slow(uint32_t a, unsigned n) {
+#if defined(CC_FAST) && (!defined(CC_XBOX_DRIVER) || defined(CC_SLOW_STATS))
+    cc_slow_census(a);
+#endif
     if (const uint8_t* p = fast_host(a, n, 1u)) {
       fill_page(a);
       refresh_hot(hot_read);
@@ -1076,6 +1120,9 @@ struct Machine {
     return v;
   }
   __attribute__((noinline, cold)) void store_slow(uint32_t a, unsigned n, uint64_t v) {
+#if defined(CC_FAST) && (!defined(CC_XBOX_DRIVER) || defined(CC_SLOW_STATS))
+    cc_slow_census(a);
+#endif
     if (uint8_t* p = fast_host(a, n, 2u)) {
       fill_page(a);
       refresh_hot(hot_write);
@@ -1410,6 +1457,13 @@ static simde__m128i simde_mm_setzero_si128() { return simde__m128i{}; }
 static uint8_t* raw_addr021(Machine& base,uint32_t a) { auto* p=base.fast_host(a,16,3); if(!p) p=base.memory.contiguous(a,16,3); if(!p) base.fail(Error::memory,a); return p; }
 #define REX_RAW_ADDR(a) raw_addr021(base,uint32_t(a))
 using PPCRegister = Register;
+// Native code on the hot path (play build) goes into .text$hot with the
+// hot generated functions (see CC_HOT_SECTION below).
+#ifndef CC_HOT_CODE  // off: grouping hung the console at boot (2026-10-04)
+#define CC_HOT_FN
+#else
+#define CC_HOT_FN __attribute__((section(".text$hot")))
+#endif
 #if defined(CC_FAST) && !defined(CC_XBOX_DRIVER)
 // Host exact profiler (CC_FPROF=1, frame window CC_SAMPLE_FROM/CC_SAMPLE_TO):
 // every generated function's entry and exit is timed with the TSC on a
@@ -1773,13 +1827,13 @@ struct CcView {
 [[maybe_unused]] static inline void __restfpr_31(CcView&, Machine&) {}
 #define DEFINE_REX_FUNC_VIEW(name) \
   static inline __attribute__((always_inline)) void name##_v(CcView& ctx, Machine& base); \
-  static void name(Context& cc_c, Machine& base) { CC_FPROF_SCOPE(name); CcView cc_v(cc_c); name##_v(cc_v, base); cc_c.r1 = cc_v.r1; } \
+  static CC_HOT_SECTION(name) void name(Context& cc_c, Machine& base) { CC_FPROF_SCOPE(name); CcView cc_v(cc_c); name##_v(cc_v, base); cc_c.r1 = cc_v.r1; } \
   static inline __attribute__((always_inline)) void name##_v([[maybe_unused]] CcView& ctx, [[maybe_unused]] Machine& base)
 // Split functions (prefix/suffix slices that the harness resumes with the
 // previous slice's registers) keep every register in the Context: their
 // includes in runtime021/bodies.inc switch to DEFINE_REX_FUNC_PLAIN.
 #define DEFINE_REX_FUNC_PLAIN(name) \
-  static void name([[maybe_unused]] Context &ctx, [[maybe_unused]] Machine &base)
+  static CC_HOT_SECTION(name) void name([[maybe_unused]] Context &ctx, [[maybe_unused]] Machine &base)
 // Per-name choice: names listed in view_plain.inc (CC_PLAIN_<name>) take
 // the plain form, everything else the view.
 #define CC_PROBE() ~, 1
@@ -1793,6 +1847,20 @@ struct CcView {
 #define CC_SEL_1 DEFINE_REX_FUNC_PLAIN
 #define DEFINE_REX_FUNC_SELECT(name) CC_CAT(CC_SEL_, CC_IS_PLAIN(name))(name)
 #include "view_plain.inc"
+// Hot code (console profiles, tools/hot_funcs.py): the listed generated
+// functions and the native code (CC_HOT_FN) share the .text$hot section, so
+// the instructions the game spends its time in sit together instead of
+// spread over 11 MB of generated code.
+#define CC_IS_HOT_I(name) CC_IS_PROBE(CC_HOT_##name)
+#define CC_IS_HOT(name) CC_IS_HOT_I(name)
+#define CC_HOTSEL_0
+#ifndef CC_HOT_CODE
+#define CC_HOTSEL_1
+#else
+#define CC_HOTSEL_1 __attribute__((section(".text$hot")))
+#endif
+#define CC_HOT_SECTION(name) CC_CAT(CC_HOTSEL_, CC_IS_HOT(name))
+#include "hot_funcs.inc"
 #define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
 #define CC_VIEW_ACTIVE 1
 #else
@@ -2097,6 +2165,20 @@ struct CcDispatchEntry { uint32_t address; CcGenFn fn; };
 // cache misses whenever its target alternates, e.g. the ActionScript
 // handler call in the interpreter loops): direct-mapped by address, 64 KB.
 static CcDispatchEntry g_dispatch_l2[8192];
+static CcGenFn cc_dispatch_lookup(uint32_t a) {
+  // The texture bind and quad emitter are kept out of the table (the full
+  // switch carries their non-exact host paths); the play build runs them.
+  if (g_use_exact_texture_bind && a == 0x820A89F8u) return sub_820A89F8;
+  if (g_use_exact_texture_bind && a == 0x820A9308u) return sub_820A9308;
+  size_t lo = 0, hi = sizeof(cc_dispatch_table) / sizeof(cc_dispatch_table[0]);
+  while (lo < hi) {
+    const size_t mid = (lo + hi) / 2;
+    if (cc_dispatch_table[mid].address < a) lo = mid + 1; else hi = mid;
+  }
+  if (lo < sizeof(cc_dispatch_table) / sizeof(cc_dispatch_table[0]) && cc_dispatch_table[lo].address == a)
+    return cc_dispatch_table[lo].fn;
+  return nullptr;
+}
 static void cc_dispatch_cached(uint32_t a, Context &ctx, Machine &base, uint32_t &key, CcGenFn &fn) {
   CcDispatchEntry& l2 = g_dispatch_l2[(a >> 2) & 8191u];
   if (l2.address == a && l2.fn) {
@@ -2115,10 +2197,39 @@ static void cc_dispatch_cached(uint32_t a, Context &ctx, Machine &base, uint32_t
     fn(ctx, base);
     return;
   }
+  if (const CcGenFn f = cc_dispatch_lookup(a)) {  // bind / quad emitter
+    key = a; fn = f;
+    l2.address = a; l2.fn = f;
+    f(ctx, base);
+    return;
+  }
   dispatch(a, ctx, base);
 }
 #endif
+#if defined(CC_FAST) && !defined(CC_XBOX_DRIVER)
+// Host census of the full-switch fallback (CC_DISPATCH_STATS=1): addresses
+// that reach it instead of a direct or table-cached call, printed at exit.
+namespace {
+struct CcDispatchStats {
+  std::unordered_map<uint32_t, uint64_t> n;
+  ~CcDispatchStats() {
+    if (n.empty()) return;
+    std::vector<std::pair<uint64_t, uint32_t>> v;
+    for (const auto& [a, c] : n) v.push_back({c, a});
+    std::sort(v.begin(), v.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
+    for (size_t i = 0; i < v.size() && i < 30; ++i)
+      std::fprintf(stderr, "DISPATCH %08X %llu\n", v[i].second, (unsigned long long)v[i].first);
+  }
+} g_dispatch_stats;
+}  // namespace
+#endif
 static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
+#if defined(CC_FAST) && !defined(CC_XBOX_DRIVER)
+  {
+    static const bool on = std::getenv("CC_DISPATCH_STATS") != nullptr;
+    if (on) ++g_dispatch_stats.n[address];
+  }
+#endif
 #ifndef CC_FAST
   // Verification only: counted dispatches and the tree/owner walks.
   if (++base.result.dispatches > 2000000000u)

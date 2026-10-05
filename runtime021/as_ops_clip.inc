@@ -9,7 +9,7 @@
 // reference (sub_8206F918(out, child)); then the map at clip+204, whose
 // object gives out = {type (slot 40), object}. Found: 1; otherwise out =
 // undefined and 0.
-static void sub_8208B438(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_8208B438(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8208B438);
   CC_FPROF_SCOPE(sub_8208B438_native);
   const uint32_t clip = ctx.r3.u32;
@@ -46,7 +46,7 @@ static void sub_8208B438(Context& ctx, Machine& base) {
 
 // Number result of a clip property method (f1) as the getter stores it:
 // payload float(f1), then type 16.
-static inline void cc_clip_put_num(Context& ctx, Machine& base, uint32_t out) {
+static CC_HOT_FN inline void cc_clip_put_num(Context& ctx, Machine& base, uint32_t out) {
   ctx.fpscr.disableFlushMode();
   PPCRegister temp{};
   temp.f32 = float(ctx.f1.f64);
@@ -62,7 +62,7 @@ static inline void cc_clip_put_num(Context& ctx, Machine& base, uint32_t out) {
 // of byte clip+140 (byte store). 91: string id u16 clip+100 (halfword
 // store). 98: the clip, 102: [clip+96], both as typed references
 // (sub_8206F918).
-static void sub_82089C00(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_82089C00(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_82089C00);
   CC_FPROF_SCOPE(sub_82089C00_native);
   const uint32_t clip = ctx.r3.u32, out = ctx.r5.u32;
@@ -119,7 +119,7 @@ static void sub_82089C00(Context& ctx, Machine& base) {
 // clip's slot 116 (property setter, r4 id u16, r5 value) first; when it
 // returns 0 in its low byte, sub_8208C2A0(clip, id, value) sets the
 // member. r3 is the last call's result.
-static void sub_8208B520(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_8208B520(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8208B520);
   CC_FPROF_SCOPE(sub_8208B520_native);
   const uint32_t clip = ctx.r3.u32;
@@ -144,7 +144,7 @@ static void sub_8208B520(Context& ctx, Machine& base) {
 // ToBoolean to slot 236 (r4). 87: ToNumber / slot 232's f1, times the
 // float at 0x82014740, to slot 220. 91: ToString id (sub_82082890) stored
 // u16 at clip+100. 97: nothing, returns 1.
-static void sub_82089F70(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_82089F70(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_82089F70);
   CC_FPROF_SCOPE(sub_82089F70_native);
   const uint32_t clip = ctx.r3.u32, val = ctx.r5.u32;
@@ -264,7 +264,7 @@ static void sub_82089F70(Context& ctx, Machine& base) {
 // 148 -> 65, 142 -> 66; f = 0), mode 1 only codes 5/26/28 (kind = code, f
 // = current frame u16 clip+144). Returns 1 for ShowFrame (code 1), 66 for
 // code 142, else -1.
-static int32_t cc_clip_tag_step(Context& ctx, Machine& base, uint32_t clip, uint32_t mode, uint32_t flag) {
+static CC_HOT_FN int32_t cc_clip_tag_step(Context& ctx, Machine& base, uint32_t clip, uint32_t mode, uint32_t flag) {
   const uint32_t stream = REX_LOAD_U32(clip + 92u);
   if (stream == 0u) return 0;
   const uint32_t hdr = stream + REX_LOAD_U32(clip + 128u);
@@ -322,7 +322,7 @@ static int32_t cc_clip_tag_step(Context& ctx, Machine& base, uint32_t clip, uint
   if ((kind & 0xFFFFu) == 66u) return 66;
   return -1;
 }
-static void sub_8208AB98(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_8208AB98(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8208AB98);
   CC_FPROF_SCOPE(sub_8208AB98_native);
   const int32_t r = cc_clip_tag_step(ctx, base, ctx.r3.u32, ctx.r4.u32 & 0xFFFFu, ctx.r5.u32 & 0xFFu);
@@ -333,7 +333,7 @@ static void sub_8208AB98(Context& ctx, Machine& base) {
 // clip+128 = the map clip+108 entry for the current frame u16 clip+144;
 // then tag steps sub_8208AB98(clip, mode, 0) until ShowFrame (1, or 255)
 // -> 0, or a 0 result (no stream / end tag) -> -1.
-static void sub_8208ADE8(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_8208ADE8(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8208ADE8);
   CC_FPROF_SCOPE(sub_8208ADE8_native);
   const uint32_t clip = ctx.r3.u32;
@@ -359,7 +359,7 @@ static void sub_8208ADE8(Context& ctx, Machine& base) {
 // reaching 0 restarts at 8 with the next byte. When the result and entry
 // r6-1 share a bit, -entry r6 (64-bit, as the original's neg) is ORed in.
 // Bits left and position written back; r3 = the result.
-static void sub_82095788(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_82095788(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_82095788);
   CC_FPROF_SCOPE(sub_82095788_native);
   constexpr uint32_t tbl = 0x82010000u + 18096u;

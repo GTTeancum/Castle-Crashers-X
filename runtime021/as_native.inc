@@ -28,7 +28,7 @@ static constexpr uint32_t kAsUndef = 0x80000000u;
 #ifndef CC_XBOX_DRIVER
 // Host switch lookup: CC_AS_EXACT=1 selects every recompiled body in this
 // file; CC_EXACT_FNS lists single functions (substring match on the name).
-static bool cc_as_exact_fn(const char* name) {
+static CC_HOT_FN bool cc_as_exact_fn(const char* name) {
   if (std::getenv("CC_AS_EXACT")) return true;
   const char* l = std::getenv("CC_EXACT_FNS");
   return l && std::strstr(l, name) != nullptr;
@@ -41,27 +41,27 @@ static bool cc_as_exact_fn(const char* name) {
 #endif
 
 // VM of a script context: [[[S+0]+76]+156].
-static inline uint32_t cc_as_vm(Machine& base, uint32_t s) {
+static CC_HOT_FN inline uint32_t cc_as_vm(Machine& base, uint32_t s) {
   return REX_LOAD_U32(REX_LOAD_U32(REX_LOAD_U32(s + 0u) + 76u) + 156u);
 }
 static inline uint32_t cc_as_pool(Machine& base, uint32_t s) { return cc_as_vm(base, s) + 10372u; }
 // Clip on top of the VM's update stack.
-static inline uint32_t cc_as_top_clip(Machine& base, uint32_t vm) {
+static CC_HOT_FN inline uint32_t cc_as_top_clip(Machine& base, uint32_t vm) {
   return REX_LOAD_U32(vm + (REX_LOAD_U32(vm + 8248u) + 1998u) * 4u);
 }
 // Value stack pop as every handler does it: count decremented and stored,
 // then the slot pointer read.
-static inline uint32_t cc_as_pop(Machine& base, uint32_t p) {
+static CC_HOT_FN inline uint32_t cc_as_pop(Machine& base, uint32_t p) {
   const uint32_t n = REX_LOAD_U32(p + 5024u) - 1u;
   REX_STORE_U32(p + 5024u, n);
   return REX_LOAD_U32(p + n * 4u);
 }
-static inline void cc_as_push(Machine& base, uint32_t p, uint32_t slot) {
+static CC_HOT_FN inline void cc_as_push(Machine& base, uint32_t p, uint32_t slot) {
   REX_STORE_U32(p + REX_LOAD_U32(p + 5024u) * 4u, slot);
   REX_STORE_U32(p + 5024u, REX_LOAD_U32(p + 5024u) + 1u);
 }
 // Slot returned to the pool: in-use byte and payload cleared.
-static inline void cc_as_free(Machine& base, uint32_t slot) {
+static CC_HOT_FN inline void cc_as_free(Machine& base, uint32_t slot) {
   REX_STORE_U8(slot + 8u, 0u);
   REX_STORE_U32(slot + 4u, 0u);
 }
@@ -69,7 +69,7 @@ static inline void cc_as_free(Machine& base, uint32_t slot) {
 // sequence after a pop): a reference-counted object with a nonzero count
 // first gets its slot-4 method when this is the last reference, then
 // sub_82066EA8(object, 0) decrements the count.
-static inline void cc_as_unref_obj(Context& ctx, Machine& base, uint32_t holder, uint32_t lr_a, uint32_t lr_b) {
+static CC_HOT_FN inline void cc_as_unref_obj(Context& ctx, Machine& base, uint32_t holder, uint32_t lr_a, uint32_t lr_b) {
   // holder: address of the object pointer (slot + 4, or Var + 0)
   const uint32_t obj = REX_LOAD_U32(holder);
   const uint32_t rc = REX_LOAD_U16(obj + 24u);
@@ -80,13 +80,13 @@ static inline void cc_as_unref_obj(Context& ctx, Machine& base, uint32_t holder,
   ctx.lr = lr_b;
   sub_82066EA8(ctx, base);
 }
-static inline void cc_as_unref(Context& ctx, Machine& base, uint32_t slot, uint32_t lr_a, uint32_t lr_b) {
+static CC_HOT_FN inline void cc_as_unref(Context& ctx, Machine& base, uint32_t slot, uint32_t lr_a, uint32_t lr_b) {
   if ((REX_LOAD_U32(slot) & kAsRef) == 0u) return;
   cc_as_unref_obj(ctx, base, slot + 4u, lr_a, lr_b);
 }
 // Reference taken for a value pushed on the stack: sub_82066EA8(object, 1)
 // for a reference-counted object whose count is nonzero.
-static inline void cc_as_ref(Context& ctx, Machine& base, uint32_t slot, uint32_t lr) {
+static CC_HOT_FN inline void cc_as_ref(Context& ctx, Machine& base, uint32_t slot, uint32_t lr) {
   if ((REX_LOAD_U32(slot) & kAsRef) == 0u) return;
   const uint32_t obj = REX_LOAD_U32(slot + 4u);
   if (REX_LOAD_U16(obj + 24u) == 0u) return;
@@ -97,7 +97,7 @@ static inline void cc_as_ref(Context& ctx, Machine& base, uint32_t slot, uint32_
 }
 // Object pointer of a value as the handlers test it: reference-counted
 // types, 4096 and 8192 give the payload; anything else 0.
-static inline uint32_t cc_as_obj_of(Machine& base, uint32_t slot) {
+static CC_HOT_FN inline uint32_t cc_as_obj_of(Machine& base, uint32_t slot) {
   const uint32_t t = REX_LOAD_U32(slot);
   if ((t & kAsRef) != 0u || t == 4096u || t == 8192u) return REX_LOAD_U32(slot + 4u);
   return 0u;
@@ -115,7 +115,7 @@ static uint32_t cc_as_native_op(Context& ctx, Machine& base, const CcAsOp& o, bo
 
 // Guest handler for an opcode (the table at 0x8215A518), called with the
 // record already stored at rec.
-static uint32_t cc_as_guest_op(Context& ctx, Machine& base, uint32_t op, uint32_t s, uint32_t rec,
+static CC_HOT_FN uint32_t cc_as_guest_op(Context& ctx, Machine& base, uint32_t op, uint32_t s, uint32_t rec,
                                uint32_t r6, uint32_t done, uint32_t lr) {
   ctx.r3.u64 = s; ctx.r4.u64 = s; ctx.r5.u64 = rec; ctx.r6.u64 = r6; ctx.r7.u64 = done;
   ctx.lr = lr;
@@ -135,7 +135,7 @@ static uint32_t cc_as_guest_op(Context& ctx, Machine& base, uint32_t op, uint32_
 // Per-opcode choice: true runs the guest handler (host CC_AS_GUEST list or
 // CC_AS_EXACT; opcodes without a native handler fall back by themselves).
 static bool g_as_guest[256];
-static void cc_as_init_switches() {
+static CC_HOT_FN void cc_as_init_switches() {
   static bool done = false;
   if (done) return;
   done = true;
@@ -158,7 +158,51 @@ struct CcAsLoop {
   uint32_t len = 0, data = 0;    // record fields as the original keeps them
   uint32_t r6_clear = 0;         // OnEnterFrame-style loops clear r6+4/+8 per op
 };
-static inline uint32_t cc_as_step(Context& ctx, Machine& base, CcAsLoop& L, uint32_t op, uint32_t lr) {
+#ifdef CC_OP_STATS
+// Console op census (make OPSTATS=1): cycles per opcode excluding nested
+// opcodes (a call's inner instructions count for themselves), reported on
+// the debug channel every 300 frames by cc_op_dbg.
+static uint64_t g_op_cyc[256];
+static uint32_t g_op_cnt[256];
+static uint64_t g_op_child[128];
+static uint64_t g_call_setup, g_call_teardown;
+static uint32_t g_call_n;
+static int g_op_sp = 0;
+void cc_op_dbg() {
+  uint64_t total = 0;
+  for (unsigned i = 0; i < 256u; ++i) total += g_op_cyc[i];
+  char line[600]; int n = std::snprintf(line, sizeof(line), "OPS total_mcyc=%u calls=%u setup_kcyc=%u teardown_kcyc=%u", unsigned(total / 1000000u),
+      g_call_n, unsigned(g_call_setup / 1000u), unsigned(g_call_teardown / 1000u));
+  g_call_n = 0; g_call_setup = 0; g_call_teardown = 0;
+  for (int k = 0; k < 14; ++k) {
+    unsigned best = 256; uint64_t bc = 0;
+    for (unsigned i = 0; i < 256u; ++i) if (g_op_cyc[i] > bc) { bc = g_op_cyc[i]; best = i; }
+    if (best == 256u) break;
+    n += std::snprintf(line + n, sizeof(line) - size_t(n), " %02X:%u%%/%u", best, unsigned(bc * 100u / (total ? total : 1)), g_op_cnt[best]);
+    g_op_cyc[best] = 0; g_op_cnt[best] = 0;
+  }
+  DbgPrint("%s\n", line);
+  for (unsigned i = 0; i < 256u; ++i) { g_op_cyc[i] = 0; g_op_cnt[i] = 0; }
+}
+#endif
+static uint32_t cc_as_step_body(Context& ctx, Machine& base, CcAsLoop& L, uint32_t op, uint32_t lr);
+static CC_HOT_FN inline uint32_t cc_as_step(Context& ctx, Machine& base, CcAsLoop& L, uint32_t op, uint32_t lr) {
+#ifdef CC_OP_STATS
+  const uint64_t t0 = __builtin_ia32_rdtsc();
+  const int me = g_op_sp < 127 ? g_op_sp++ : 127;
+  g_op_child[me] = 0;
+  const uint32_t r = cc_as_step_body(ctx, base, L, op, lr);
+  const uint64_t dt = __builtin_ia32_rdtsc() - t0;
+  if (me == g_op_sp - 1) --g_op_sp;
+  g_op_cyc[op] += dt - (g_op_child[me] < dt ? g_op_child[me] : dt);
+  ++g_op_cnt[op];
+  if (me > 0) g_op_child[me - 1] += dt;
+  return r;
+#else
+  return cc_as_step_body(ctx, base, L, op, lr);
+#endif
+}
+static CC_HOT_FN inline __attribute__((always_inline)) uint32_t cc_as_step_body(Context& ctx, Machine& base, CcAsLoop& L, uint32_t op, uint32_t lr) {
   if (!g_as_guest[op]) {
     const CcAsOp o{L.s, op, L.len, L.data, L.r6, L.done};
     bool handled = false;
@@ -174,7 +218,7 @@ static inline uint32_t cc_as_step(Context& ctx, Machine& base, CcAsLoop& L, uint
 // Instruction fetch: op byte, and for op >= 0x80 the little-endian u16
 // length; a nonzero length moves the data pointer to the bytes after it.
 // Returns the instruction size.
-static inline uint32_t cc_as_fetch(Machine& base, CcAsLoop& L, uint32_t code, uint32_t pc, uint32_t& op) {
+static CC_HOT_FN inline uint32_t cc_as_fetch(Machine& base, CcAsLoop& L, uint32_t code, uint32_t pc, uint32_t& op) {
   op = REX_LOAD_U8(code + pc);
   if (op < 0x80u) return 1u;
   const uint32_t le = REX_LOAD_U8(code + pc + 1u) | (REX_LOAD_U8(code + pc + 2u) << 8);
@@ -186,7 +230,7 @@ static inline uint32_t cc_as_fetch(Machine& base, CcAsLoop& L, uint32_t code, ui
 // Missing handler (never seen in the shipped scripts): the original's
 // error report through the current clip's name (slots 52, 72, 24), the
 // format string fmt and sub_820798D8/sub_8208C5D8.
-static void cc_as_no_handler(Context& ctx, Machine& base, uint32_t s, uint32_t clip, uint32_t fmt,
+static CC_HOT_FN void cc_as_no_handler(Context& ctx, Machine& base, uint32_t s, uint32_t clip, uint32_t fmt,
                              uint32_t a5, uint32_t a6, uint32_t a7) {
   uint32_t name;
   if ((cc_vcall(ctx, base, clip, 52u, 0x8207BBE8u) & 0xFFu) != 0u) {
@@ -209,7 +253,7 @@ static void cc_as_no_handler(Context& ctx, Machine& base, uint32_t s, uint32_t c
 
 // After a loop stopped by its stop byte: sub_8207A0D0(S) and the pool reset
 // sub_82079B48(P).
-static inline void cc_as_stop_reset(Context& ctx, Machine& base, uint32_t s, uint32_t lr_a, uint32_t lr_b) {
+static CC_HOT_FN inline void cc_as_stop_reset(Context& ctx, Machine& base, uint32_t s, uint32_t lr_a, uint32_t lr_b) {
   ctx.r3.u64 = s; ctx.lr = lr_a;
   sub_8207A0D0(ctx, base);
   ctx.r3.u64 = cc_as_pool(base, s); ctx.lr = lr_b;
@@ -221,7 +265,7 @@ static inline void cc_as_stop_reset(Context& ctx, Machine& base, uint32_t s, uin
 // +96); record at frame+104, return slot frame+120 (+4/+8 cleared per op).
 // Stopped: sub_8207A0D0 + pool reset; otherwise S+12 takes S+4 if S+12 is
 // empty and S+4 is set. S+4 is cleared.
-static void sub_8207BAE8(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_8207BAE8(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8207BAE8);
   CC_FPROF_SCOPE(sub_8207BAE8_native);
   cc_as_init_switches();
@@ -260,7 +304,7 @@ static void sub_8207BAE8(Context& ctx, Machine& base) {
 // OnLoad (exact sub_8207B8B8: S r3). Code at S+16 (none: return); S+4
 // takes S+8; same loop and exits as OnEnterFrame (format string -7608),
 // with S+8 as the slot that takes S+4.
-static void sub_8207B8B8(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_8207B8B8(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8207B8B8);
   CC_FPROF_SCOPE(sub_8207B8B8_native);
   cc_as_init_switches();
@@ -303,7 +347,7 @@ static void sub_8207B8B8(Context& ctx, Machine& base) {
 // op 0; a stop byte ends everything with sub_8207A0D0 + pool reset. Then,
 // if S+4 is set and the S+24 lookup had found nothing, sub_820936B0(S+24,
 // f, S+4) stores it; S+4 is cleared.
-static void sub_8207B630(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_8207B630(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8207B630);
   CC_FPROF_SCOPE(sub_8207B630_native);
   cc_as_init_switches();
@@ -357,12 +401,16 @@ finish:
 // update stack, until op 0, Return (62), the end, or the stop byte. Then
 // sub_82079A00(function), the twelve Var slots' objects released and
 // cleared, and both stacks popped.
-static void sub_8207B150(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_8207B150(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8207B150);
   CC_FPROF_SCOPE(sub_8207B150_native);
   cc_as_init_switches();
   const uint32_t s = ctx.r3.u32, id = ctx.r4.u32, argc = ctx.r5.u32, argv = ctx.r6.u32;
   const uint32_t ret = ctx.r7.u32, done = ctx.r8.u32;
+#ifdef CC_OP_STATS
+  uint64_t cc_t0 = __builtin_ia32_rdtsc();
+  ++g_call_n;
+#endif
   CcFrame frame(ctx, base, 272u);
   const uint32_t r1 = ctx.r1.u32;
   uint32_t fn = cc_asmap_find(base, s + 44u, id & 0xFFFFu);
@@ -417,6 +465,9 @@ static void sub_8207B150(Context& ctx, Machine& base) {
   REX_STORE_U32(r1 + 128u, 0u);
   REX_STORE_U16(r1 + 132u, 0u);
   REX_STORE_U32(r1 + 136u, 0u);
+#ifdef CC_OP_STATS
+  g_call_setup += __builtin_ia32_rdtsc() - cc_t0;
+#endif
   CcAsLoop L{s, r1 + 128u, ret, done};
   while (int32_t(pc) < int32_t(int16_t(REX_LOAD_U16(fn + 30u)))) {
     if (REX_LOAD_U8(done) != 0u) break;
@@ -442,6 +493,9 @@ static void sub_8207B150(Context& ctx, Machine& base) {
     pc = r + size + pc;
     if (op_after == 62u) break;
   }
+#ifdef CC_OP_STATS
+  cc_t0 = __builtin_ia32_rdtsc();
+#endif
   ctx.r3.u64 = fn; ctx.lr = 0x8207B4C8u;
   sub_82079A00(ctx, base);
   for (uint32_t i = 0; i < 12u; ++i) {
@@ -461,6 +515,9 @@ static void sub_8207B150(Context& ctx, Machine& base) {
     REX_STORE_U32(vm + 10180u, REX_LOAD_U32(vm + 10180u) - 1u);
     ctx.r3.u64 = vm;
   }
+#ifdef CC_OP_STATS
+  g_call_teardown += __builtin_ia32_rdtsc() - cc_t0;
+#endif
 }
 
 // ---------------------------------------------------------------------------

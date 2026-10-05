@@ -4,7 +4,7 @@
 
 // Float constant at 0x82040000 + off as the handlers load it (9536 is the
 // zero constant, 9540 the one constant).
-static inline double cc_asconv_k(Machine& base, uint32_t off) {
+static CC_HOT_FN inline double cc_asconv_k(Machine& base, uint32_t off) {
   PPCRegister x{};
   x.u32 = REX_LOAD_U32(0x82040000u + off);
   return double(x.f32);
@@ -12,7 +12,7 @@ static inline double cc_asconv_k(Machine& base, uint32_t off) {
 
 // fctiwz as the recompiled code computes it (truncation, NaN -> 0x80000000,
 // saturating); the low word, as lwz 84 of the stored double reads it.
-static inline uint32_t cc_asconv_fctiwz(double f) {
+static CC_HOT_FN inline uint32_t cc_asconv_fctiwz(double f) {
   const int64_t r = std::isnan(f) ? int64_t(0x80000000U)
                     : (f >= double(INT_MAX)) ? INT_MAX : simde_mm_cvttsd_si32(simde_mm_load_sd(&f));
   return uint32_t(r);
@@ -20,7 +20,7 @@ static inline uint32_t cc_asconv_fctiwz(double f) {
 
 // Text of a string id in the global string table [0x822666DC]: id 0 -> the
 // table's +12, else [table+28][id].
-static inline uint32_t cc_asconv_text(Machine& base, uint32_t id) {
+static CC_HOT_FN inline uint32_t cc_asconv_text(Machine& base, uint32_t id) {
   const uint32_t tbl = REX_LOAD_U32(0x822666DCu);
   return id ? REX_LOAD_U32(REX_LOAD_U32(tbl + 28u) + id * 4u) : tbl + 12u;
 }
@@ -37,7 +37,7 @@ static inline uint32_t cc_asconv_text(Machine& base, uint32_t id) {
 // back to +100 (sub_82129A70) with length +96 and a zero byte. The text at
 // +100 is interned in the global string table (sub_8209D948); r3 as it
 // returns.
-static uint32_t cc_asconv_tostr_slow(Context& ctx, Machine& base, uint32_t v, uint32_t t) {
+static CC_HOT_FN uint32_t cc_asconv_tostr_slow(Context& ctx, Machine& base, uint32_t v, uint32_t t) {
   CcFrame frame(ctx, base, 624u);
   const uint32_t r1 = ctx.r1.u32;
   if (t == 1024u) {
@@ -124,7 +124,7 @@ static uint32_t cc_asconv_tostr_slow(Context& ctx, Machine& base, uint32_t v, ui
 // -> its u16 id; bool -> 126 for a byte of 1, else 127; int, number and
 // 1024 -> formatted and interned (above); anything else 0. The id is also
 // left in r3 as the original leaves it.
-static inline uint32_t cc_as_tostr_id(Context& ctx, Machine& base, uint32_t v) {
+static CC_HOT_FN inline uint32_t cc_as_tostr_id(Context& ctx, Machine& base, uint32_t v) {
   const uint32_t t = REX_LOAD_U32(v);
   uint32_t r = 0u;
   if (t == 8u) {
@@ -137,7 +137,7 @@ static inline uint32_t cc_as_tostr_id(Context& ctx, Machine& base, uint32_t v) {
   ctx.r3.u64 = r;
   return r;
 }
-static void sub_82082890(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_82082890(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_82082890);
   CC_FPROF_SCOPE(sub_82082890_native);
   cc_as_tostr_id(ctx, base, ctx.r3.u32);
@@ -147,7 +147,7 @@ static void sub_82082890(Context& ctx, Machine& base) {
 // float; int (signed) and bool -> converted and rounded to float; string ->
 // strtod sub_82128290(text, 0) rounded to float; 1024 and 16384 -> the one
 // constant when the payload is nonzero; anything else the zero constant.
-static inline double cc_as_tonum(Context& ctx, Machine& base, uint32_t v) {
+static CC_HOT_FN inline double cc_as_tonum(Context& ctx, Machine& base, uint32_t v) {
   const uint32_t t = REX_LOAD_U32(v);
   switch (t) {
     case 16u: {
@@ -182,7 +182,7 @@ static inline double cc_as_tonum(Context& ctx, Machine& base, uint32_t v) {
   ctx.fpscr.disableFlushMode();
   return cc_asconv_k(base, 9536u);
 }
-static void sub_82082700(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_82082700(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_82082700);
   CC_FPROF_SCOPE(sub_82082700_native);
   ctx.f1.f64 = cc_as_tonum(ctx, base, ctx.r3.u32);
@@ -192,7 +192,7 @@ static void sub_82082700(Context& ctx, Machine& base) {
 // -> payload; number -> fctiwz of the float; string -> strtol base 10
 // sub_82128298(text) (r3 as it returns); anything else 0. The result is
 // also left in r3.
-static inline uint32_t cc_as_toint(Context& ctx, Machine& base, uint32_t v) {
+static CC_HOT_FN inline uint32_t cc_as_toint(Context& ctx, Machine& base, uint32_t v) {
   const uint32_t t = REX_LOAD_U32(v);
   uint32_t r = 0u;
   switch (t) {
@@ -217,7 +217,7 @@ static inline uint32_t cc_as_toint(Context& ctx, Machine& base, uint32_t v) {
   ctx.r3.u64 = r;
   return r;
 }
-static void sub_82082BB0(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_82082BB0(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_82082BB0);
   CC_FPROF_SCOPE(sub_82082BB0_native);
   cc_as_toint(ctx, base, ctx.r3.u32);
@@ -229,7 +229,7 @@ struct CcAsConvNum2 {
   uint32_t a, b;
   double fa, fb, z;
 };
-static inline CcAsConvNum2 cc_asconv_num2(Context& ctx, Machine& base, uint32_t s, uint32_t lr_a1, uint32_t lr_a2,
+static CC_HOT_FN inline CcAsConvNum2 cc_asconv_num2(Context& ctx, Machine& base, uint32_t s, uint32_t lr_a1, uint32_t lr_a2,
                                           uint32_t lr_b1, uint32_t lr_b2) {
   CcAsConvNum2 n;
   n.a = cc_as_pop_release(ctx, base, s, lr_a1, lr_a2);
@@ -242,14 +242,14 @@ static inline CcAsConvNum2 cc_asconv_num2(Context& ctx, Machine& base, uint32_t 
 }
 // Boolean result of a binary handler: b = {2, r} (byte), pushed (pool
 // re-read from S), then a's slot freed.
-static inline void cc_asconv_put_bool(Machine& base, uint32_t s, uint32_t a, uint32_t b, uint32_t r) {
+static CC_HOT_FN inline void cc_asconv_put_bool(Machine& base, uint32_t s, uint32_t a, uint32_t b, uint32_t r) {
   REX_STORE_U8(b + 4u, uint8_t(r));
   REX_STORE_U32(b + 0u, 2u);
   cc_as_push(base, cc_as_pool(base, s), b);
   cc_as_free(base, a);
 }
 // Number result of a binary handler: b = {16, r}, pushed, a's slot freed.
-static inline void cc_asconv_put_num(Machine& base, uint32_t s, uint32_t a, uint32_t b, float r) {
+static CC_HOT_FN inline void cc_asconv_put_num(Machine& base, uint32_t s, uint32_t a, uint32_t b, float r) {
   PPCRegister x{};
   x.f32 = r;
   REX_STORE_U32(b + 4u, x.u32);
@@ -260,7 +260,7 @@ static inline void cc_asconv_put_num(Machine& base, uint32_t s, uint32_t a, uint
 
 // Subtract (exact sub_8207C048, op 0x0B): b - a (ToNumber, single
 // precision) into b.
-static uint32_t cc_as_op_0B(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_0B(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_0B);
   const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o.s, 0x8207C0C8u, 0x8207C0D4u, 0x8207C148u, 0x8207C154u);
   cc_asconv_put_num(base, o.s, n.a, n.b, float(n.fb - n.fa));
@@ -268,7 +268,7 @@ static uint32_t cc_as_op_0B(Context& ctx, Machine& base, const CcAsOp& o) {
 }
 
 // Multiply (exact sub_8207C1F8, op 0x0C): b * a into b.
-static uint32_t cc_as_op_0C(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_0C(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_0C);
   const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o.s, 0x8207C278u, 0x8207C284u, 0x8207C2F8u, 0x8207C304u);
   cc_asconv_put_num(base, o.s, n.a, n.b, float(n.fb * n.fa));
@@ -278,7 +278,7 @@ static uint32_t cc_as_op_0C(Context& ctx, Machine& base, const CcAsOp& o) {
 // Divide (exact sub_8207C3A8, op 0x0D): a equal to the zero constant ->
 // b = {undefined, 0}, else b = {16, b / a}; b referenced and pushed, a's
 // slot freed.
-static uint32_t cc_as_op_0D(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_0D(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_0D);
   const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o.s, 0x8207C42Cu, 0x8207C438u, 0x8207C4ACu, 0x8207C4B8u);
   if (n.fa == n.z) {
@@ -299,7 +299,7 @@ static uint32_t cc_as_op_0D(Context& ctx, Machine& base, const CcAsOp& o) {
 
 // And (exact sub_8207C5A8, op 0x10): false when either ToNumber equals the
 // zero constant.
-static uint32_t cc_as_op_10(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_10(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_10);
   const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o.s, 0x8207C62Cu, 0x8207C638u, 0x8207C6ACu, 0x8207C6B8u);
   cc_asconv_put_bool(base, o.s, n.a, n.b, (n.fa == n.z || n.fb == n.z) ? 0u : 1u);
@@ -308,7 +308,7 @@ static uint32_t cc_as_op_10(Context& ctx, Machine& base, const CcAsOp& o) {
 
 // Or (exact sub_8207C778, op 0x11): false when both ToNumbers equal the
 // zero constant.
-static uint32_t cc_as_op_11(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_11(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_11);
   const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o.s, 0x8207C7FCu, 0x8207C808u, 0x8207C87Cu, 0x8207C888u);
   cc_asconv_put_bool(base, o.s, n.a, n.b, (n.fa == n.z && n.fb == n.z) ? 0u : 1u);
@@ -317,7 +317,7 @@ static uint32_t cc_as_op_11(Context& ctx, Machine& base, const CcAsOp& o) {
 
 // Not (exact sub_8207C948, op 0x12): pop, release; the slot becomes {2,
 // ToBoolean == 0} (undefined: true) and is pushed again.
-static uint32_t cc_as_op_12(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_12(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_12);
   const uint32_t v = cc_as_pop_release(ctx, base, o.s, 0x8207C9C0u, 0x8207C9CCu);
   uint32_t r = 1u;
@@ -330,7 +330,7 @@ static uint32_t cc_as_op_12(Context& ctx, Machine& base, const CcAsOp& o) {
 
 // ToInteger (exact sub_8207F260, ops 0x18 and 0x4A): pop, release; the
 // slot becomes {4, ToInt} (undefined: 0) and is pushed again.
-static uint32_t cc_as_op_18(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_18(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_18);
   const uint32_t v = cc_as_pop_release(ctx, base, o.s, 0x8207F2D8u, 0x8207F2E4u);
   uint32_t r = 0u;
@@ -346,7 +346,7 @@ static uint32_t cc_as_op_18(Context& ctx, Machine& base, const CcAsOp& o) {
 // freed. b undefined: a is the result, b's slot freed. Otherwise a new pool
 // slot (sub_82082488) takes sub_82082F18(new, VM, a, b) and both slots are
 // freed. The result is referenced and pushed.
-static uint32_t cc_as_op_47(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_47(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_47);
   const uint32_t a = cc_as_pop_release(ctx, base, o.s, 0x8207ED38u, 0x8207ED44u);
   const uint32_t b = cc_as_pop_release(ctx, base, o.s, 0x8207EDB8u, 0x8207EDC4u);
@@ -380,7 +380,7 @@ static uint32_t cc_as_op_47(Context& ctx, Machine& base, const CcAsOp& o) {
 }
 
 // Less (exact sub_8207EEC8, op 0x48): b < a (ToNumber) into b.
-static uint32_t cc_as_op_48(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_48(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_48);
   const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o.s, 0x8207EF48u, 0x8207EF54u, 0x8207EFC8u, 0x8207EFD4u);
   cc_asconv_put_bool(base, o.s, n.a, n.b, n.fb < n.fa ? 1u : 0u);
@@ -391,7 +391,7 @@ static uint32_t cc_as_op_48(Context& ctx, Machine& base, const CcAsOp& o) {
 // undefined: b undefined; b undefined: false; same type, or neither type
 // reference-counted: the low byte of sub_82082CD0(b, a); else false. Into
 // b as {2, byte}, pushed; a's slot freed.
-static uint32_t cc_as_op_49(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_49(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_49);
   const uint32_t a = cc_as_pop_release(ctx, base, o.s, 0x8207F100u, 0x8207F10Cu);
   const uint32_t b = cc_as_pop_release(ctx, base, o.s, 0x8207F180u, 0x8207F18Cu);
@@ -414,7 +414,7 @@ static uint32_t cc_as_op_49(Context& ctx, Machine& base, const CcAsOp& o) {
 // ToString (exact sub_8207F350, op 0x4B; frame 128): pop, release; the slot
 // becomes {8, ToString id} and is pushed again. For undefined the original
 // takes the u16 at its frame +80 (never written there), read the same way.
-static uint32_t cc_as_op_4B(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_4B(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_4B);
   CcFrame frame(ctx, base, 128u);
   const uint32_t v = cc_as_pop_release(ctx, base, o.s, 0x8207F3C8u, 0x8207F3D4u);
@@ -429,7 +429,7 @@ static uint32_t cc_as_op_4B(Context& ctx, Machine& base, const CcAsOp& o) {
 
 // PushDuplicate (exact sub_8207F440, op 0x4C): the top slot pointer is
 // referenced and pushed again (the same slot twice on the stack).
-static uint32_t cc_as_op_4C(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_4C(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_4C);
   const uint32_t p = cc_as_pool(base, o.s);
   const uint32_t v = REX_LOAD_U32(p + REX_LOAD_U32(p + 5024u) * 4u - 4u);
@@ -441,7 +441,7 @@ static uint32_t cc_as_op_4C(Context& ctx, Machine& base, const CcAsOp& o) {
 // Increment (exact sub_8207FB40, op 0x50): pop, release; undefined ->
 // {4, 1}; int -> {4, ToInt + 1}; number -> {16, ToNumber + the one
 // constant}; other types unchanged. Referenced and pushed again.
-static uint32_t cc_as_op_50(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_50(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_50);
   const uint32_t v = cc_as_pop_release(ctx, base, o.s, 0x8207FBB8u, 0x8207FBC4u);
   const uint32_t t = REX_LOAD_U32(v);
@@ -469,7 +469,7 @@ static uint32_t cc_as_op_50(Context& ctx, Machine& base, const CcAsOp& o) {
 // Decrement (exact sub_8207FCA8, op 0x51): as Increment with -1:
 // undefined -> {4, -1}; int -> {4, ToInt - 1}; number -> {16, ToNumber -
 // the one constant}.
-static uint32_t cc_as_op_51(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_51(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_51);
   const uint32_t v = cc_as_pop_release(ctx, base, o.s, 0x8207FD20u, 0x8207FD2Cu);
   const uint32_t t = REX_LOAD_U32(v);
@@ -497,7 +497,7 @@ static uint32_t cc_as_op_51(Context& ctx, Machine& base, const CcAsOp& o) {
 // StrictEquals (exact sub_82080E08, op 0x66): pops a and b (released);
 // both defined and of the same type: the low byte of sub_82082CD0(a, b),
 // else false (undefined too). Into b as {2, byte}, pushed; a's slot freed.
-static uint32_t cc_as_op_66(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_66(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_66);
   const uint32_t a = cc_as_pop_release(ctx, base, o.s, 0x82080E80u, 0x82080E8Cu);
   const uint32_t b = cc_as_pop_release(ctx, base, o.s, 0x82080F00u, 0x82080F0Cu);
@@ -516,7 +516,7 @@ static uint32_t cc_as_op_66(Context& ctx, Machine& base, const CcAsOp& o) {
 }
 
 // Greater (exact sub_82080FA0, op 0x67): b > a (ToNumber) into b.
-static uint32_t cc_as_op_67(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_67(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_67);
   const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o.s, 0x82081020u, 0x8208102Cu, 0x820810A0u, 0x820810ACu);
   cc_asconv_put_bool(base, o.s, n.a, n.b, n.fb > n.fa ? 1u : 0u);
@@ -525,7 +525,7 @@ static uint32_t cc_as_op_67(Context& ctx, Machine& base, const CcAsOp& o) {
 
 // ToBoolean (exact sub_82081160, op 0x70): pop, release; the slot becomes
 // {2, ToBoolean} (undefined: false) and is pushed again. Returns 1.
-static uint32_t cc_as_op_70(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_70(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_70);
   const uint32_t v = cc_as_pop_release(ctx, base, o.s, 0x820811D8u, 0x820811E4u);
   uint32_t r = 0u;

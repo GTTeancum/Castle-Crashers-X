@@ -3,7 +3,7 @@
 // Game heap as the AS code fetches it: unless the flag at 0x8228A7B7 is set,
 // sub_820A71E8(0x8222F918, 0x02000000, 0, 32) sets the heaps up first; the
 // heap is the table at 0x822673C0 indexed by sub_820B5EB8.
-static inline uint32_t cc_as_game_heap(Context& ctx, Machine& base, uint32_t lr_init, uint32_t lr_idx) {
+static CC_HOT_FN inline uint32_t cc_as_game_heap(Context& ctx, Machine& base, uint32_t lr_init, uint32_t lr_idx) {
   if (REX_LOAD_U8(0x8228A7B7u) == 0u) {
     ctx.r3.u64 = 0x8222F918u; ctx.r4.u64 = 0x02000000u; ctx.r5.u64 = 0u; ctx.r6.u64 = 32u;
     ctx.lr = lr_init;
@@ -24,7 +24,7 @@ static inline uint32_t cc_as_game_heap(Context& ctx, Machine& base, uint32_t lr_
 // float}; objects 1, 64, 128, 512, 1024, 16384, 32768 -> type 1 with +0 the
 // value's object (counted, 4096 or 8192 payload, else 0) and
 // sub_82066EA8(+0, 1), even for 0; anything else -> undefined, returns 0.
-static inline uint32_t cc_as_var_assign(Context& ctx, Machine& base, uint32_t var, uint32_t v) {
+static CC_HOT_FN inline uint32_t cc_as_var_assign(Context& ctx, Machine& base, uint32_t var, uint32_t v) {
   if (REX_LOAD_U32(var + 0u) != 0u && (REX_LOAD_U32(var + 4u) & kAsRef) != 0u)
     cc_as_unref_obj(ctx, base, var + 0u, 0x8208BF9Cu, 0x8208BFA8u);
   REX_STORE_U32(var + 0u, 0u);
@@ -75,7 +75,7 @@ static inline uint32_t cc_as_var_assign(Context& ctx, Machine& base, uint32_t va
       return 0u;
   }
 }
-static void sub_8208BF38(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_8208BF38(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8208BF38);
   CC_FPROF_SCOPE(sub_8208BF38_native);
   ctx.r3.u64 = cc_as_var_assign(ctx, base, ctx.r4.u32, ctx.r5.u32);
@@ -86,7 +86,7 @@ static void sub_8208BF38(Context& ctx, Machine& base) {
 // the value (Var assignment, whose result is r3). Otherwise a new 12-byte
 // Var {0, undefined} from the game heap (sub_8209BDD8; none: 0) takes the
 // value and sub_820936B0(object+4, id, Var) adds it (r3 its result).
-static inline void cc_as_set_member(Context& ctx, Machine& base, uint32_t obj, uint32_t id, uint32_t v) {
+static CC_HOT_FN inline void cc_as_set_member(Context& ctx, Machine& base, uint32_t obj, uint32_t id, uint32_t v) {
   const uint32_t var = cc_asmap_find(base, obj + 4u, id & 0xFFFFu);
   if (var != 0u) {
     ctx.r3.u64 = cc_as_var_assign(ctx, base, var, v);
@@ -104,7 +104,7 @@ static inline void cc_as_set_member(Context& ctx, Machine& base, uint32_t obj, u
   ctx.r3.u64 = obj + 4u; ctx.r4.u64 = id; ctx.r5.u64 = nv; ctx.lr = 0x8208C36Cu;
   sub_820936B0(ctx, base);
 }
-static void sub_8208C2A0(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_8208C2A0(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8208C2A0);
   CC_FPROF_SCOPE(sub_8208C2A0_native);
   cc_as_set_member(ctx, base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
@@ -117,7 +117,7 @@ static void sub_8208C2A0(Context& ctx, Machine& base) {
 // {2, true}. Any other id (104 and 105 too): the active function's locals
 // (sub_82079BE0) and members (sub_8208C140), then the current clip's slot 12
 // (r4 id, r5 out); not found: out = {undefined, 0}, returns 0.
-static inline uint32_t cc_as_get_variable(Context& ctx, Machine& base, uint32_t s, uint32_t id, uint32_t out) {
+static CC_HOT_FN inline uint32_t cc_as_get_variable(Context& ctx, Machine& base, uint32_t s, uint32_t id, uint32_t out) {
   switch ((id & 0xFFFFu) - 102u) {
     case 0u: {
       const uint32_t r = cc_vcall(ctx, base, cc_as_top_clip(base, cc_as_vm(base, s)), 156u, 0x8207B064u);
@@ -165,7 +165,7 @@ static inline uint32_t cc_as_get_variable(Context& ctx, Machine& base, uint32_t 
   REX_STORE_U32(out + 0u, kAsUndef);
   return 0u;
 }
-static void sub_8207AF80(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_8207AF80(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8207AF80);
   CC_FPROF_SCOPE(sub_8207AF80_native);
   ctx.r3.u64 = cc_as_get_variable(ctx, base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
@@ -178,7 +178,7 @@ static void sub_8207AF80(Context& ctx, Machine& base) {
 // u16 count +24 decremented inline when its slot-40 type is counted; the Var
 // is freed to the game heap (sub_8209BF18). Then the entry array is freed
 // and +8 cleared (when set); +4 and +12 cleared.
-static void sub_82079A00(Context& ctx, Machine& base) {
+static CC_HOT_FN void sub_82079A00(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_82079A00);
   CC_FPROF_SCOPE(sub_82079A00_native);
   const uint32_t fn = ctx.r3.u32;
@@ -213,7 +213,7 @@ static void sub_82079A00(Context& ctx, Machine& base) {
 // value's ToString id (sub_82082890) looked up in the VM's string table
 // (VM+10316: id 0 -> table+12, else [table+28][id]; the table pointer read
 // before the call); the value becomes {4, strlen}.
-static inline void cc_as_strlen_value(Context& ctx, Machine& base, uint32_t s, uint32_t v, uint32_t lr) {
+static CC_HOT_FN inline void cc_as_strlen_value(Context& ctx, Machine& base, uint32_t s, uint32_t v, uint32_t lr) {
   const uint32_t names = REX_LOAD_U32(cc_as_vm(base, s) + 10316u);
   ctx.r3.u64 = v; ctx.lr = lr;
   sub_82082890(ctx, base);
@@ -228,7 +228,7 @@ static inline void cc_as_strlen_value(Context& ctx, Machine& base, uint32_t s, u
 // GetVariable (exact sub_8207CE60, op 0x1C): pops the name (released); its
 // slot takes the variable's value (GetVariable with the name's ToString id)
 // and is referenced and pushed.
-static uint32_t cc_as_op_1C(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_1C(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_1C);
   const uint32_t slot = cc_as_pop_release(ctx, base, o.s, 0x8207CED8u, 0x8207CEE4u);
   ctx.r3.u64 = slot; ctx.lr = 0x8207CEF8u;
@@ -243,7 +243,7 @@ static uint32_t cc_as_op_1C(Context& ctx, Machine& base, const CcAsOp& o) {
 // SetVariable (exact sub_8207CF70, op 0x1D): pops the value and the name
 // (both released); unless the name is undefined, sub_8207AE58(S, ToString
 // id of the name, value). Both slots freed.
-static uint32_t cc_as_op_1D(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_1D(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_1D);
   const uint32_t val = cc_as_pop_release(ctx, base, o.s, 0x8207CFE8u, 0x8207CFF4u);
   const uint32_t name = cc_as_pop_release(ctx, base, o.s, 0x8207D068u, 0x8207D074u);
@@ -262,7 +262,7 @@ static uint32_t cc_as_op_1D(Context& ctx, Machine& base, const CcAsOp& o) {
 // index and the target (all released); the target clip sub_8207B598(S,
 // ToString id of the target) gets its slot 116 with r4 = ToInt(index) + 78,
 // r5 = the value. The three slots freed.
-static uint32_t cc_as_op_23(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_23(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_23);
   const uint32_t val = cc_as_pop_release(ctx, base, o.s, 0x8207D318u, 0x8207D324u);
   const uint32_t idx = cc_as_pop_release(ctx, base, o.s, 0x8207D398u, 0x8207D3A4u);
@@ -286,7 +286,7 @@ static uint32_t cc_as_op_23(Context& ctx, Machine& base, const CcAsOp& o) {
 // (both released); with an active function (VM function stack) the
 // variable is set through sub_8208C2A0(function, ToString id, value), else
 // through the current clip's slot 16 (r4 id, r5 value). Both slots freed.
-static uint32_t cc_as_op_3C(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_3C(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_3C);
   const uint32_t val = cc_as_pop_release(ctx, base, o.s, 0x8207DF30u, 0x8207DF3Cu);
   const uint32_t name = cc_as_pop_release(ctx, base, o.s, 0x8207DFB0u, 0x8207DFBCu);
@@ -312,7 +312,7 @@ static uint32_t cc_as_op_3C(Context& ctx, Machine& base, const CcAsOp& o) {
 // ToString id, temp) unless the function's member map (+4) already has the
 // id, else through the current clip's slot 16 (r4 id, r5 temp). The name
 // slot freed.
-static uint32_t cc_as_op_41(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_41(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_41);
   CcFrame frame(ctx, base, 144u);
   const uint32_t tmp = ctx.r1.u32 + 80u;
@@ -343,7 +343,7 @@ static uint32_t cc_as_op_41(Context& ctx, Machine& base, const CcAsOp& o) {
 // sub_8207A3F0(object, name, slot); string 8 with name id 1 -> {4, string
 // length}; others keep the popped value. The slot is referenced and pushed,
 // the name slot freed.
-static uint32_t cc_as_op_4E(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_4E(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_4E);
   const uint32_t name = cc_as_pop_release(ctx, base, o.s, 0x8207F550u, 0x8207F55Cu);
   const uint32_t obj = cc_as_pop_release(ctx, base, o.s, 0x8207F5D0u, 0x8207F5DCu);
@@ -399,7 +399,7 @@ static uint32_t cc_as_op_4E(Context& ctx, Machine& base, const CcAsOp& o) {
 // (format 0x8203E37C, sub_820798D8 + sub_8208C5D8); otherwise the object
 // value's object (nonzero) gets its slot 16 (r4 ToString id of the name, r5
 // value). The three slots freed.
-static uint32_t cc_as_op_4F(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_4F(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_4F);
   const uint32_t val = cc_as_pop_release(ctx, base, o.s, 0x8207F8E8u, 0x8207F8F4u);
   const uint32_t name = cc_as_pop_release(ctx, base, o.s, 0x8207F968u, 0x8207F974u);
@@ -439,7 +439,7 @@ static uint32_t cc_as_op_4F(Context& ctx, Machine& base, const CcAsOp& o) {
 // ConstantPool (exact sub_820813F8, op 0x88): only when S+4 is empty: an
 // 8-byte pool header {u32 0, u16 0} from the game heap (sub_8209BDD8; none:
 // 0) is stored at S+4 and filled by sub_82083900(header, VM, data).
-static uint32_t cc_as_op_88(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_88(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_88);
   if (REX_LOAD_U32(o.s + 4u) != 0u) return 0u;
   ctx.r3.u64 = cc_as_game_heap(ctx, base, 0x82081444u, 0x82081448u);
@@ -464,7 +464,7 @@ static uint32_t cc_as_op_88(Context& ctx, Machine& base, const CcAsOp& o) {
 // undefined; 128 -> sub_8207A3F0(object, temp, slot); string 8 with name id
 // 1 -> {4, string length}; object or name undefined -> undefined. The slot
 // is referenced and pushed. Returns 1.
-static uint32_t cc_as_op_A2(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_A2(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_A2);
   CcFrame frame(ctx, base, 160u);
   const uint32_t tmp = ctx.r1.u32 + 88u;
@@ -508,7 +508,7 @@ static uint32_t cc_as_op_A2(Context& ctx, Machine& base, const CcAsOp& o) {
 // cleared first) and, the name not being undefined, stored as in SetMember
 // (0x4F; an out-of-range array index does nothing). The object slot freed.
 // Returns 1.
-static uint32_t cc_as_op_A3(Context& ctx, Machine& base, const CcAsOp& o) {
+static CC_HOT_FN uint32_t cc_as_op_A3(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_A3);
   CcFrame frame(ctx, base, 176u);
   const uint32_t key = ctx.r1.u32 + 88u, val = ctx.r1.u32 + 104u;

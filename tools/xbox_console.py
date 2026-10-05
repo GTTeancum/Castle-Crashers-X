@@ -9,7 +9,9 @@ XboxSDK\\XboxName, or --xbox). Commands:
   run [seconds] [log]      launch the game and record its debug output (and
                            other notifications) for <seconds> to <log>
   listen <seconds> <log>   record notifications without launching anything
-  shot <file.bmp>          capture the console's front buffer
+  shot <file.png>          capture the console's scanout framebuffer
+  profile <delay> <secs> <out>  sample the running game's threads (Eip, Esp,
+                           top of stack) every 5 ms after <delay> seconds
   reboot                   warm reboot to the default title
   cmd <text>               send one XBDM command and print the reply
 
@@ -132,6 +134,43 @@ def shot(path, width=640, height=480):
     Image.frombytes("RGB", (width, height), bytes(raw), "raw", "BGRX").save(path)
 
 
+def profile(delay, seconds, out_path, period=0.02, stack_words=192):
+    """Sampling profiler: after `delay` seconds, every `period` the console
+    is stopped, each game thread's Eip/Esp read (getcontext) and the top
+    `stack_words` dwords of its stack copied (return-address candidates for
+    a caller view), then resumed. Samples are written one per line:
+    'thread eip esp w0 w1 ...' (hex)."""
+    time.sleep(delay)
+    x = Xbdm(XBOX)
+    end = time.time() + seconds
+    n = 0
+    with open(out_path, "w", encoding="utf-8", newline="\n") as out:
+        while time.time() < end:
+            threads = x.cmd("threads")[1:]
+            x.cmd("stop")
+            rows = []
+            for t in threads:
+                ctx = {}
+                for l in x.cmd("getcontext thread=%s control int" % t)[1:]:
+                    k, _, v = l.partition("=")
+                    ctx[k] = v
+                eip = int(ctx.get("Eip", "0"), 16)
+                esp = int(ctx.get("Esp", "0"), 16)
+                words = b""
+                if esp and stack_words:
+                    try:
+                        words = getmem(x, esp, stack_words * 4)
+                    except Exception:
+                        words = b""
+                ws = [int.from_bytes(words[i:i + 4], "little") for i in range(0, len(words) - 3, 4)]
+                rows.append("%s %08x %08x %s" % (t, eip, esp, " ".join("%08x" % w for w in ws)))
+            x.cmd("go")
+            out.write("\n".join(rows) + "\n")
+            n += 1
+            time.sleep(period)
+    print("samples", n)
+
+
 def main(argv):
     global XBOX
     XBOX = xbox_name()
@@ -156,6 +195,8 @@ def main(argv):
     elif op == "shot":
         shot(argv[1])
         print("captured", argv[1])
+    elif op == "profile":
+        profile(float(argv[1]), float(argv[2]), argv[3])
     elif op == "reboot":
         tool("xbreboot")
         print("rebooted")

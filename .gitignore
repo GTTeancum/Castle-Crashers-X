@@ -71,3 +71,4 @@ logs/frames_*/
 logs/xemu_*/
 logs/run_*.txt
 logs/console/
+nxdk-checkpoint022/main.map
