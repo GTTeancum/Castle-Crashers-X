@@ -349,10 +349,35 @@ static const uint32_t g_watch_store = [] {
 }  // namespace cc::tree
 #ifndef CC_XBOX_DRIVER
 extern "C" __declspec(dllimport) void* __stdcall VirtualAlloc(void*, size_t, unsigned long, unsigned long);
+struct CcExceptionRecord {
+  unsigned long code, flags;
+  CcExceptionRecord* next;
+  void* address;
+  unsigned long count;
+  uintptr_t info[15];
+};
+struct CcExceptionPointers { CcExceptionRecord* record; void* context; };
+extern "C" __declspec(dllimport) void* __stdcall AddVectoredExceptionHandler(
+    unsigned long first, long(__stdcall* handler)(CcExceptionPointers*));
 #endif
 namespace cc_win {
+uint32_t guest_of(uintptr_t window_offset) {
+  return window_offset >= kImageOffset ? uint32_t(window_offset) + (kImageGuest - kImageOffset)
+                                       : uint32_t(window_offset);
+}
 #ifndef CC_XBOX_DRIVER
 uint8_t* g_base = nullptr;
+// Host: a guest access outside the committed window faults; report the
+// guest address (like a harness memory stop) instead of a bare crash.
+static long __stdcall fault_report(CcExceptionPointers* ep) {
+  const CcExceptionRecord* r = ep->record;
+  if (r->code != 0xC0000005ul || r->count < 2) return 0;  // EXCEPTION_CONTINUE_SEARCH
+  const uintptr_t off = r->info[1] - uintptr_t(g_base);
+  if (off >= kSpan) return 0;
+  cc_elog("FAIL flat window: guest %08x not mapped (%s)\n", guest_of(off), r->info[0] ? "write" : "read");
+  std::fflush(nullptr);
+  std::exit(1);
+}
 #endif
 bool open(const Range* ranges, unsigned count) {
   // Window offsets of the ranges, page-rounded, sorted and merged, so each
@@ -401,6 +426,7 @@ bool open(const Range* ranges, unsigned count) {
 #else
   g_base = static_cast<uint8_t*>(VirtualAlloc(nullptr, kSpan, 0x2000u /*MEM_RESERVE*/, 0x01u /*PAGE_NOACCESS*/));
   if (!g_base) return false;
+  AddVectoredExceptionHandler(1, fault_report);
   for (unsigned i = 0; i < m; ++i) {
     if (!VirtualAlloc(g_base + pages[i].lo, pages[i].hi - pages[i].lo, 0x1000u /*MEM_COMMIT*/, 0x04u /*PAGE_READWRITE*/))
       return false;

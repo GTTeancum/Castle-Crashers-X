@@ -67,6 +67,9 @@ inline bool in_window(const void* p) {
 }
 // Reserve the window and commit the given guest ranges (page-rounded and
 // merged). Returns false if the window cannot be placed; says on the debug
-// channel which memory path is active and how much is committed.
+// channel which memory path is active and how much is committed. The host
+// also reports a fault inside the window with its guest address.
 bool open(const Range* ranges, unsigned count);
+// Guest address of a window offset (the inverse of offset()).
+uint32_t guest_of(uintptr_t window_offset);
 }  // namespace cc_win

@@ -8,6 +8,7 @@
 #include <hal/video.h>
 void* cc_xr_alloc_gpu(uint32_t bytes);
 #include <windows.h>
+#include <excpt.h>
 #endif
 #include <array>
 #include <cstdio>
@@ -470,6 +471,27 @@ static void store(AddressSpace& m,uint32_t a,unsigned n,uint64_t v) {
 }
 
 
+#if defined(CC_FLAT_WINDOW) && defined(CC_XBOX_DRIVER)
+// A guest access outside the committed flat window faults (ring 0, no
+// handler: a kernel stop). Report it like the page-table build's memory
+// stop instead: failure bar with code 3 and the guest address.
+static int cc_window_fault(EXCEPTION_POINTERS* ep) {
+  const EXCEPTION_RECORD* r = ep->ExceptionRecord;
+  if (r->ExceptionCode != 0xC0000005u || r->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
+  const uintptr_t off = r->ExceptionInformation[1] - cc_win::kBase;
+  if (off >= cc_win::kSpan) return EXCEPTION_CONTINUE_SEARCH;
+  cc_elog("FAIL flat window: guest %08x not mapped\n", unsigned(cc_win::guest_of(off)));
+  cc_xr_show_fail(3u, cc_win::guest_of(off));
+  cc_fail_exit();
+}
+static Result cc_invoke_guarded(uint32_t entry, Context& c, AddressSpace& m, uint32_t budget) {
+  __try {
+    return invoke(entry, c, m, sink(), budget);
+  } __except (cc_window_fault(GetExceptionInformation())) {
+    return Result{};
+  }
+}
+#endif
 static void renderer_caller_prefix_controls(const char* image_path) {
   std::FILE* stream=std::fopen(image_path,"rb");
   CHECK(stream!=nullptr);
@@ -1323,7 +1345,11 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   cc::tree::set_exact_texture_bind(true);
   // Unlimited op budget (0xFFFFFFFF): the 10,000-frame limit ends the run;
   // op/function counters wrap deterministically at 32 bits.
+#if defined(CC_FLAT_WINDOW) && defined(CC_XBOX_DRIVER)
+  auto pi=cc_invoke_guarded(0x82070ba4,c,m,0xFFFFFFFFu);
+#else
   auto pi=invoke(0x82070ba4,c,m,sink(),0xFFFFFFFFu);
+#endif
   cc_log("caller_post_init result=%s@%08x funcs=%u memops=%u r1=%08x lr=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r11=%08x\n",
               name(pi.error),pi.address,pi.functions,pi.memory_ops,c.r1.u32,uint32_t(c.lr),
               c.r3.u32,c.r4.u32,c.r5.u32,c.r6.u32,c.r7.u32,c.r11.u32);
