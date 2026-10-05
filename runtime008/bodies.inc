@@ -475,9 +475,11 @@ static CC_HOT_FN void sub_82086090(Context& ctx, Machine& base) {
 // of those leaves is answered directly (same result, and the leaves only
 // write r3 and volatile scratch registers); anything else goes through the
 // normal indirect call with r3 = object and the original return address.
-// Two-instruction methods "li r3,K / lwz|lhz|lha|lbz r3,D(r3)" + blr are
-// recognised from the original code (read once per method address from the
-// mapped image, cached); no hand-written wrapper is such a method.
+// Two-instruction methods "li r3,K / lwz|lhz|lha|lbz r3,D(r3)" + blr and
+// the setters "stw|sth r4,D(r3)" + blr are recognised from the original
+// code (read once per method address from the mapped image, cached); the
+// only wrapped methods of that shape, the name setters, are excluded in
+// cc_vsite_fill.
 struct CcLeaf { uint32_t fn; uint8_t kind; int32_t imm; };  // kind 0 unknown, 1 not a leaf, 2.. leaf
 static CcLeaf g_leaf_cache[4096];
 static inline const CcLeaf& cc_leaf_info(Machine& base, uint32_t fn) {
@@ -496,6 +498,8 @@ static inline const CcLeaf& cc_leaf_info(Machine& base, uint32_t fn) {
       else if (op == 0xA063u) e.kind = 4;   // lhz r3,D(r3)
       else if (op == 0xA863u) e.kind = 5;   // lha r3,D(r3)
       else if (op == 0x8863u) e.kind = 6;   // lbz r3,D(r3)
+      else if (op == 0x9083u) e.kind = 9;   // stw r4,D(r3)
+      else if (op == 0xB083u) e.kind = 10;  // sth r4,D(r3)
     }
   }
   return e;
@@ -504,9 +508,10 @@ static inline const CcLeaf& cc_leaf_info(Machine& base, uint32_t fn) {
 // for addresses only the full dispatch switch knows. Defined in bridge.cpp.
 static CcGenFn cc_dispatch_lookup(uint32_t a);
 // Per-call-site cache of the last two methods seen there: the leaf kind
-// (kinds 2-6 above; 7 and 8 the two hand-checked methods below) or the
-// generated function to call. A site that alternates between two classes
-// (sprite / clip children) keeps both; a miss decodes the method once.
+// (kinds 2-6, 9, 10 above; 7 and 8 the two hand-checked methods below) or
+// the generated function to call. A site that alternates between two
+// classes (sprite / clip children) keeps both; a miss decodes the method
+// once.
 struct CcVEnt { uint32_t key; uint8_t kind; int32_t imm; CcGenFn fn; };
 struct CcVSite { CcVEnt e[2]; };
 static __attribute__((noinline)) void cc_vsite_fill(Machine& base, uint32_t fn, CcVEnt& v) {
@@ -515,6 +520,9 @@ static __attribute__((noinline)) void cc_vsite_fill(Machine& base, uint32_t fn, 
   if (fn == 0x82086818u) { v.kind = 8; return; }  // bit 2 of byte +140
   const CcLeaf& e = cc_leaf_info(base, fn);
   v.kind = e.kind; v.imm = e.imm;
+  // The clip and text-field name setters are wrapped (the display-list
+  // name cache must see them): called, not stored directly.
+  if (fn == 0x820867E8u || fn == 0x82094760u) v.kind = 1;
   if (v.kind == 1) v.fn = cc_dispatch_lookup(fn);
 }
 #ifndef CC_XBOX_DRIVER
@@ -541,6 +549,39 @@ struct CcVcReport {
 } g_vc_report;
 }  // namespace
 #endif
+// The site's entry for method fn after a miss of entry 0 (out of line: the
+// expansion at each call site keeps only the compare and the common kinds).
+static __attribute__((noinline)) const CcVEnt& cc_vsite_miss(Machine& base, uint32_t fn, CcVSite& s) {
+  if (fn == s.e[1].key) {
+    const CcVEnt t = s.e[0]; s.e[0] = s.e[1]; s.e[1] = t;
+  } else {
+    s.e[1] = s.e[0];
+    cc_vsite_fill(base, fn, s.e[0]);
+  }
+  return s.e[0];
+}
+// The less common kinds: field loads other than lwz, the two hand-checked
+// methods, the setters, and methods only the dispatch switch knows.
+static __attribute__((noinline)) uint32_t cc_vsite_rest(Context& ctx, Machine& base, uint32_t obj, uint32_t fn, uint32_t lr, const CcVEnt& v) {
+  const uint32_t a = obj + uint32_t(v.imm);
+  uint64_t r3;
+  switch (v.kind) {
+    case 4: r3 = REX_LOAD_U16(a); break;
+    case 5: r3 = uint64_t(int64_t(int16_t(REX_LOAD_U16(a)))); break;
+    case 6: r3 = REX_LOAD_U8(a); break;
+    case 7: r3 = REX_LOAD_U16(obj + 100u) != 0u ? 1u : 0u; break;
+    case 8: r3 = (REX_LOAD_U8(obj + 140u) >> 2) & 1u; break;
+    case 9: REX_STORE_U32(a, ctx.r4.u32); r3 = obj; break;  // r3 stays the object
+    case 10: REX_STORE_U16(a, ctx.r4.u16); r3 = obj; break;
+    default:
+      ctx.r3.u64 = obj;
+      ctx.lr = lr;
+      dispatch(fn, ctx, base);
+      return ctx.r3.u32;
+  }
+  ctx.r3.u64 = r3;
+  return uint32_t(r3);
+}
 static inline __attribute__((always_inline)) uint32_t cc_vcall_site(Context& ctx, Machine& base, uint32_t obj, uint32_t slot, uint32_t lr, CcVSite& s) {
   const uint32_t fn = REX_LOAD_U32(REX_LOAD_U32(obj) + slot);
 #ifndef CC_XBOX_DRIVER
@@ -551,36 +592,19 @@ static inline __attribute__((always_inline)) uint32_t cc_vcall_site(Context& ctx
     if (fn != s.e[0].key && fn != s.e[1].key) ++st.misses;
   }
 #endif
-  if (__builtin_expect(fn != s.e[0].key, 0)) {
-    if (fn == s.e[1].key) {
-      const CcVEnt t = s.e[0]; s.e[0] = s.e[1]; s.e[1] = t;
-    } else {
-      s.e[1] = s.e[0];
-      cc_vsite_fill(base, fn, s.e[0]);
-    }
-  }
-  const CcVEnt& v = s.e[0];
+  const CcVEnt& v = __builtin_expect(fn == s.e[0].key, 1) ? s.e[0] : cc_vsite_miss(base, fn, s);
 #ifndef CC_XBOX_DRIVER
   if (g_vc_on) (*g_vc_stats)[lr].kind = v.kind;
 #endif
-  const uint32_t a = obj + uint32_t(v.imm);
-  uint64_t r3;
-  switch (v.kind) {
-    case 2: r3 = uint64_t(int64_t(v.imm)); break;  // sign-extended like li
-    case 3: r3 = REX_LOAD_U32(a); break;
-    case 4: r3 = REX_LOAD_U16(a); break;
-    case 5: r3 = uint64_t(int64_t(int16_t(REX_LOAD_U16(a)))); break;
-    case 6: r3 = REX_LOAD_U8(a); break;
-    case 7: r3 = REX_LOAD_U16(obj + 100u) != 0u ? 1u : 0u; break;
-    case 8: r3 = (REX_LOAD_U8(obj + 140u) >> 2) & 1u; break;
-    default:
-      ctx.r3.u64 = obj;
-      ctx.lr = lr;
-      if (v.fn) v.fn(ctx, base); else dispatch(fn, ctx, base);
-      return ctx.r3.u32;
+  if (v.kind == 1 && v.fn) {
+    ctx.r3.u64 = obj;
+    ctx.lr = lr;
+    v.fn(ctx, base);
+    return ctx.r3.u32;
   }
-  ctx.r3.u64 = r3;
-  return uint32_t(r3);
+  if (v.kind == 2) { ctx.r3.u64 = uint64_t(int64_t(v.imm)); return uint32_t(v.imm); }  // sign-extended like li
+  if (v.kind == 3) { const uint32_t r = REX_LOAD_U32(obj + uint32_t(v.imm)); ctx.r3.u64 = r; return r; }
+  return cc_vsite_rest(ctx, base, obj, fn, lr, v);
 }
 #define cc_vcall(CTX, BASE, OBJ, SLOT, LR) ([&]() -> uint32_t { \
     static CcVSite cc_vs{}; \
