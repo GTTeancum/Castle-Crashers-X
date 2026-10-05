@@ -487,7 +487,10 @@ void cc_xr_bind(uint32_t key, const void* data, uint32_t w, uint32_t h, int kind
 }
 
 // One draw of the game's: prim 13 quad list, 4 triangle list, 5 strip;
-// vertices are big-endian {x, y, z, u, v, argb} with the given stride.
+// vertices are big-endian {x, y, z, u, v, argb} (stride 24) or, for the
+// quad emitter's effect modes (stride 32), {x, y, z, u, v, u2, v2, argb}
+// whose second coordinate pair feeds the 360 effect shaders (not drawn
+// here).
 void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t stride, uint32_t blend) {
   if (!init() || !vertices || stride < 24 || !count) return;
   struct Tally { uint64_t t0; ~Tally() { g_draw_cycles += cycles() - t0; } } tally{cycles()};
@@ -503,8 +506,13 @@ void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t st
   const float su = g_have_tex && !g_cur.normalized ? float(g_cur.w) : 1.0f;
   const float sv = g_have_tex && !g_cur.normalized ? float(g_cur.h) : 1.0f;
   GpuVertex* out = g_vb + g_vb_used;
+#ifdef CC_COLOUR20_BUILD
+  const uint32_t at = 20u;  // bisect build: colour read at +20 for every stride (before the fix)
+#else
+  const uint32_t at = stride >= 32u ? 28u : 20u;  // colour
+#endif
   for (uint32_t i = 0; i < count; ++i, v += stride)
-    put_vertex(out[i], bef(v), bef(v + 4), bef(v + 12), bef(v + 16), be32(v + 20), su, sv);
+    put_vertex(out[i], bef(v), bef(v + 4), bef(v + 12), bef(v + 16), be32(v + at), su, sv);
   emit_draw(op, g_vb_used, count, blend);
   g_vb_used += count;
 }
