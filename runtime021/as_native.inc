@@ -160,13 +160,17 @@ static CC_AS_INL CcAsLoop cc_as_loop_of(Machine& base, uint32_t s) {
   cc_as_loop_vm(base, L);
   return L;
 }
+// The guest path of the accessors below is out of line: with a view (every
+// loop of the shipped scripts has one) it only runs for a corrupt count.
+static __attribute__((noinline, cold)) uint32_t cc_as_vld_guest(Machine& base, uint32_t a) { return REX_LOAD_U32(a); }
+static __attribute__((noinline, cold)) void cc_as_vst_guest(Machine& base, uint32_t a, uint32_t v) { REX_STORE_U32(a, v); }
 static CC_AS_INL uint32_t cc_as_vld(Machine& base, const CcAsLoop& L, uint32_t off) {
-  if (L.hv != nullptr && off < kAsVmBlock - 3u) return cc_as_hld(L.hv + off);
-  return REX_LOAD_U32(L.vm + off);
+  if (__builtin_expect(L.hv != nullptr && off < kAsVmBlock - 3u, 1)) return cc_as_hld(L.hv + off);
+  return cc_as_vld_guest(base, L.vm + off);
 }
 static CC_AS_INL void cc_as_vst(Machine& base, const CcAsLoop& L, uint32_t off, uint32_t v) {
-  if (L.hv != nullptr && off < kAsVmBlock - 3u) { cc_as_hst(L.hv + off, v); return; }
-  REX_STORE_U32(L.vm + off, v);
+  if (__builtin_expect(L.hv != nullptr && off < kAsVmBlock - 3u, 1)) { cc_as_hst(L.hv + off, v); return; }
+  cc_as_vst_guest(base, L.vm + off, v);
 }
 static CC_AS_INL uint32_t cc_as_pool(const CcAsLoop& L) { return L.vm + kAsPool; }
 // Active function (top of the VM's function stack; 0 at top level).
@@ -252,12 +256,16 @@ static CC_HOT_FN __attribute__((noinline)) void cc_as_rc(Context& ctx, Machine& 
 // sequence after a pop): a reference-counted object with a nonzero count
 // first gets its slot-4 method when this is the last reference, then
 // sub_82066EA8(object, 0) decrements the count.
+// Slot-4 method of an object losing its last reference (out of line: rare).
+static __attribute__((noinline)) void cc_as_last_ref(Context& ctx, Machine& base, uint32_t obj, uint32_t lr) {
+  cc_vcall(ctx, base, obj, 4u, lr);
+}
 static CC_HOT_FN __attribute__((noinline)) void cc_as_unref_obj(Context& ctx, Machine& base, uint32_t holder, uint32_t lr_a, uint32_t lr_b) {
   // holder: address of the object pointer (slot + 4, or Var + 0)
   const uint32_t obj = REX_LOAD_U32(holder);
   const uint32_t rc = REX_LOAD_U16(obj + 24u);
   if (rc == 0u) return;
-  if (rc == 1u) cc_vcall(ctx, base, obj, 4u, lr_a);
+  if (rc == 1u) cc_as_last_ref(ctx, base, obj, lr_a);
   cc_as_rc(ctx, base, REX_LOAD_U32(holder), 0u, lr_b);
 }
 static CC_AS_INL void cc_as_unref(Context& ctx, Machine& base, uint32_t slot, uint32_t lr_a, uint32_t lr_b) {
@@ -285,12 +293,16 @@ static CC_HOT_FN inline uint32_t cc_as_obj_of(Machine& base, uint32_t slot) {
 // Native handlers take the loop as the decoded instruction (op, the
 // record's possibly stale len/data, the return slot r6 and the stop byte
 // done, plus the VM) and return the extra pc delta like the recompiled
-// ones.
-static uint32_t cc_as_native_op(Context& ctx, Machine& base, const CcAsOp& o, bool& handled);
+// ones. Each is its own function, reached through the opcode table
+// g_as_fn (null: the guest handler), so the dispatch loops stay small and
+// the hot handlers do not share one huge function with the rare ones.
+using CcAsOpFn = uint32_t (*)(Context&, Machine&, const CcAsOp&);
+static CcAsOpFn g_as_fn[256];
+static void cc_as_fill_ops();  // as_ops.inc
 
 // Guest handler for an opcode (the table at 0x8215A518), called with the
 // record already stored at rec.
-static CC_HOT_FN uint32_t cc_as_guest_op(Context& ctx, Machine& base, uint32_t op, uint32_t s, uint32_t rec,
+static __attribute__((noinline)) uint32_t cc_as_guest_op(Context& ctx, Machine& base, uint32_t op, uint32_t s, uint32_t rec,
                                uint32_t r6, uint32_t done, uint32_t lr) {
   ctx.r3.u64 = s; ctx.r4.u64 = s; ctx.r5.u64 = rec; ctx.r6.u64 = r6; ctx.r7.u64 = done;
   ctx.lr = lr;
@@ -307,27 +319,28 @@ static CC_HOT_FN uint32_t cc_as_guest_op(Context& ctx, Machine& base, uint32_t o
   return ctx.r3.u32;
 }
 
-// Per-opcode choice: true runs the guest handler (host CC_AS_GUEST list or
-// CC_AS_EXACT; opcodes without a native handler fall back by themselves).
-static bool g_as_guest[256];
 // The handler table at 0x8215A518 as the loops test it (a zero entry is a
 // missing handler): read once when the first loop starts; 0 handler, 1 no
 // handler, 2 past the table's 0xA5 entries (the guest word is read each
 // time, as the original).
 static uint8_t g_as_tbl[256];
+// The native opcode table is filled here too; the host takes the opcodes
+// listed in CC_AS_GUEST (all of them under CC_AS_EXACT) out of it, so they
+// run their guest handlers.
 static CC_HOT_FN void cc_as_init_switches(Machine& base) {
   static bool done = false;
-  if (done) return;
+  if (__builtin_expect(done, 1)) return;
   done = true;
   for (unsigned op = 0; op < 256u; ++op)
     g_as_tbl[op] = op >= 0xA5u ? 2u : REX_LOAD_U32(0x8215A518u + op * 4u) == 0u ? 1u : 0u;
+  cc_as_fill_ops();
 #ifndef CC_XBOX_DRIVER
   const bool all = std::getenv("CC_AS_EXACT") != nullptr;
   const char* l = std::getenv("CC_AS_GUEST");
   for (unsigned op = 0; op < 256u; ++op) {
     char hex[8];
     std::snprintf(hex, sizeof(hex), "%02X", op);
-    g_as_guest[op] = all || (l && std::strstr(l, hex) != nullptr);
+    if (all || (l && std::strstr(l, hex) != nullptr)) g_as_fn[op] = nullptr;
   }
 #endif
 }
@@ -380,6 +393,16 @@ void cc_op_dbg() {
 }
 #endif
 static uint32_t cc_as_step_body(Context& ctx, Machine& base, CcAsLoop& L, uint32_t op, uint32_t lr);
+// Guest handler run from a loop: the record fields written to rec first
+// (out of line: the shipped scripts' hot opcodes are all native).
+static __attribute__((noinline)) uint32_t cc_as_step_guest(Context& ctx, Machine& base, CcAsLoop& L, uint32_t op, uint32_t lr) {
+  L.guest_ran = 1u;
+  REX_STORE_U32(L.rec + 0u, op);
+  REX_STORE_U16(L.rec + 4u, uint16_t(L.len));
+  REX_STORE_U32(L.rec + 8u, L.data);
+  if (L.r6_clear) { REX_STORE_U32(L.r6 + 4u, 0u); REX_STORE_U8(L.r6 + 8u, 0u); }
+  return cc_as_guest_op(ctx, base, op, L.s, L.rec, L.r6, L.done, lr);
+}
 static CC_HOT_FN inline uint32_t cc_as_step(Context& ctx, Machine& base, CcAsLoop& L, uint32_t op, uint32_t lr) {
 #ifdef CC_OP_STATS
   const uint64_t t0 = __builtin_ia32_rdtsc();
@@ -402,22 +425,15 @@ static CC_HOT_FN inline __attribute__((always_inline)) uint32_t cc_as_step_body(
 #ifndef CC_XBOX_DRIVER
   if (g_as_oracle) cc_as_oracle_loop(base, L);
 #endif
-  if (!g_as_guest[op]) {
-    bool handled = false;
-    const uint32_t r = cc_as_native_op(ctx, base, L, handled);
-    if (handled) {
+  const CcAsOpFn fn = g_as_fn[op];
+  if (__builtin_expect(fn != nullptr, 1)) {
+    const uint32_t r = fn(ctx, base, L);
 #ifndef CC_XBOX_DRIVER
-      if (g_as_oracle) cc_as_oracle_loop(base, L);
+    if (g_as_oracle) cc_as_oracle_loop(base, L);
 #endif
-      return r;
-    }
+    return r;
   }
-  L.guest_ran = 1u;
-  REX_STORE_U32(L.rec + 0u, op);
-  REX_STORE_U16(L.rec + 4u, uint16_t(L.len));
-  REX_STORE_U32(L.rec + 8u, L.data);
-  if (L.r6_clear) { REX_STORE_U32(L.r6 + 4u, 0u); REX_STORE_U8(L.r6 + 8u, 0u); }
-  return cc_as_guest_op(ctx, base, op, L.s, L.rec, L.r6, L.done, lr);
+  return cc_as_step_guest(ctx, base, L, op, lr);
 }
 // Instruction fetch: op byte, and for op >= 0x80 the little-endian u16
 // length; a nonzero length moves the data pointer to the bytes after it.

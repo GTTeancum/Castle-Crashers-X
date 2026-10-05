@@ -22,29 +22,43 @@
 // VM = [[r3+0]+76]+156 (the loop's). Float values pass through f0 as in
 // the original. The position is a host variable here; the guest-callable
 // sub_8207AA50 below keeps it in guest memory.
+// Constant pool of a Push item or name: the active function's pool, else
+// the script's own (u16 string ids).
+static CC_AS_INL uint32_t cc_as_pool_tbl(Machine& base, const CcAsLoop& L) {
+  const uint32_t act = cc_as_act(base, L);
+  return act ? REX_LOAD_U32(REX_LOAD_U32(act + 140u)) : REX_LOAD_U32(REX_LOAD_U32(L.s + 4u));
+}
+// The decode's rare items out of line: 0 inline string, 6 double.
+static __attribute__((noinline)) void cc_as_decode_str(Context& ctx, Machine& base, const CcAsLoop& L, uint32_t out, uint32_t data, uint32_t& pos) {
+  CcFrame frame(ctx, base, 208u);
+  const uint32_t buf = ctx.r1.u32 + 96u;
+  ctx.r3.u64 = buf; ctx.r4.u64 = data + pos; ctx.lr = 0x8207AACCu;
+  sub_82053A00(ctx, base);
+  pos = pos + REX_LOAD_U32(buf) + 1u;
+  ctx.r3.u64 = cc_as_vld(base, L, 10316u); ctx.r4.u64 = buf + 4u; ctx.lr = 0x8207AAF8u;
+  sub_8209D948(ctx, base);
+  REX_STORE_U16(out + 4u, ctx.r3.u16);
+  REX_STORE_U32(out + 0u, 8u);
+}
+static __attribute__((noinline)) void cc_as_decode_double(Context& ctx, Machine& base, uint32_t out, uint32_t data, uint32_t& pos) {
+  auto b = [&](uint32_t k) { return uint32_t(REX_LOAD_U8(data + pos + k)); };
+  const uint64_t bits = (uint64_t(b(3)) << 56) | (uint64_t(b(2)) << 48) | (uint64_t(b(1)) << 40) | (uint64_t(b(0)) << 32) |
+                        (uint64_t(b(7)) << 24) | (uint64_t(b(6)) << 16) | (uint64_t(b(5)) << 8) | uint64_t(b(4));
+  pos += 8u;
+  REX_STORE_U32(out + 0u, 16u);
+  ctx.fpscr.disableFlushMode();
+  ctx.f0.u64 = bits;
+  ctx.f13.f64 = double(float(ctx.f0.f64));
+  PPCRegister temp{};
+  temp.f32 = float(ctx.f13.f64);
+  REX_STORE_U32(out + 4u, temp.u32);
+}
 static CC_HOT_FN void cc_as_decode(Context& ctx, Machine& base, const CcAsLoop& L, uint32_t out, uint32_t data, uint32_t& pos) {
   const uint32_t type = REX_LOAD_U8(data + pos);
   ++pos;
   auto b = [&](uint32_t k) { return uint32_t(REX_LOAD_U8(data + pos + k)); };
-  auto pool_id = [&](uint32_t idx2) {
-    const uint32_t act = cc_as_act(base, L);
-    const uint32_t tbl = act ? REX_LOAD_U32(REX_LOAD_U32(act + 140u)) : REX_LOAD_U32(REX_LOAD_U32(L.s + 4u));
-    REX_STORE_U32(out + 0u, 8u);
-    REX_STORE_U16(out + 4u, REX_LOAD_U16(tbl + idx2));
-  };
   switch (type) {
-    case 0: {
-      CcFrame frame(ctx, base, 208u);
-      const uint32_t buf = ctx.r1.u32 + 96u;
-      ctx.r3.u64 = buf; ctx.r4.u64 = data + pos; ctx.lr = 0x8207AACCu;
-      sub_82053A00(ctx, base);
-      pos = pos + REX_LOAD_U32(buf) + 1u;
-      ctx.r3.u64 = cc_as_vld(base, L, 10316u); ctx.r4.u64 = buf + 4u; ctx.lr = 0x8207AAF8u;
-      sub_8209D948(ctx, base);
-      REX_STORE_U16(out + 4u, ctx.r3.u16);
-      REX_STORE_U32(out + 0u, 8u);
-      return;
-    }
+    case 0: cc_as_decode_str(ctx, base, L, out, data, pos); return;
     case 1: {
       const uint32_t bits = (b(0) << 24) | (b(1) << 16) | (b(2) << 8) | b(3);
       pos += 4u;
@@ -70,19 +84,7 @@ static CC_HOT_FN void cc_as_decode(Context& ctx, Machine& base, const CcAsLoop& 
       REX_STORE_U8(out + 4u, v == 1u ? 1u : 0u);
       return;
     }
-    case 6: {
-      const uint64_t bits = (uint64_t(b(3)) << 56) | (uint64_t(b(2)) << 48) | (uint64_t(b(1)) << 40) | (uint64_t(b(0)) << 32) |
-                            (uint64_t(b(7)) << 24) | (uint64_t(b(6)) << 16) | (uint64_t(b(5)) << 8) | uint64_t(b(4));
-      pos += 8u;
-      REX_STORE_U32(out + 0u, 16u);
-      ctx.fpscr.disableFlushMode();
-      ctx.f0.u64 = bits;
-      ctx.f13.f64 = double(float(ctx.f0.f64));
-      PPCRegister temp{};
-      temp.f32 = float(ctx.f13.f64);
-      REX_STORE_U32(out + 4u, temp.u32);
-      return;
-    }
+    case 6: cc_as_decode_double(ctx, base, out, data, pos); return;
     case 7: {
       const uint32_t v = (b(3) << 24) | (b(2) << 16) | (b(1) << 8) | b(0);
       pos += 4u;
@@ -93,13 +95,17 @@ static CC_HOT_FN void cc_as_decode(Context& ctx, Machine& base, const CcAsLoop& 
     case 8: {
       const uint32_t idx = b(0);
       pos += 1u;
-      pool_id((idx << 1) & 0x1FEu);
+      const uint32_t tbl = cc_as_pool_tbl(base, L);
+      REX_STORE_U32(out + 0u, 8u);
+      REX_STORE_U16(out + 4u, REX_LOAD_U16(tbl + ((idx << 1) & 0x1FEu)));
       return;
     }
     case 9: {
       const uint32_t idx = (b(1) << 8) | b(0);
       pos += 2u;
-      pool_id((idx << 1) & 0x1FFFEu);
+      const uint32_t tbl = cc_as_pool_tbl(base, L);
+      REX_STORE_U32(out + 0u, 8u);
+      REX_STORE_U16(out + 4u, REX_LOAD_U16(tbl + ((idx << 1) & 0x1FFFEu)));
       return;
     }
     default: return;  // 2 and anything above 9: nothing more
@@ -155,9 +161,7 @@ static CC_AS_INL uint32_t cc_as_name(Context& ctx, Machine& base, const CcAsLoop
   } else {
     return 0u;
   }
-  const uint32_t act = cc_as_act(base, L);
-  const uint32_t tbl = act ? REX_LOAD_U32(REX_LOAD_U32(act + 140u)) : REX_LOAD_U32(REX_LOAD_U32(L.s + 4u));
-  return REX_LOAD_U16(tbl + idx2);
+  return REX_LOAD_U16(cc_as_pool_tbl(base, L) + idx2);
 }
 static CC_HOT_FN void sub_8207A908(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8207A908);
@@ -376,6 +380,29 @@ static CC_HOT_FN uint32_t cc_as_op_3D(Context& ctx, Machine& base, const CcAsOp&
 // answers slot 24 and is gone (count 0) or its slot 140 changed across the
 // call, the stop byte is set. Unless stopped, the result is referenced and
 // pushed; argument, name and object slots are freed.
+// CallMethod on a string (out of line: rare): the frame string object so.
+static __attribute__((noinline)) void cc_as_op_52_str(Context& ctx, Machine& base, const CcAsOp& o, uint32_t so, uint32_t obj, uint32_t name,
+                                                      uint32_t argc, uint32_t args, uint32_t res) {
+  REX_STORE_U32(so + 4u, 0u);
+  REX_STORE_U32(so + 8u, 0u);
+  REX_STORE_U32(so + 12u, 0u);
+  REX_STORE_U32(so + 16u, 1u);
+  REX_STORE_U32(so + 0u, 0x8203E41Cu);  // 0x82040000 - 7140
+  REX_STORE_U8(so + 20u, 0u);
+  REX_STORE_U16(so + 24u, 0u);
+  ctx.r3.u64 = obj; ctx.lr = 0x820800F0u;
+  sub_82082890(ctx, base);
+  REX_STORE_U16(so + 28u, ctx.r3.u16);
+  cc_vcall(ctx, base, cc_as_top_clip(base, o), 140u, 0x82080118u);
+  ctx.r3.u64 = name; ctx.lr = 0x82080130u;
+  sub_82082890(ctx, base);
+  ctx.r5.u64 = ctx.r3.u32; ctx.r4.u64 = o.vm; ctx.r3.u64 = so; ctx.r6.u64 = argc; ctx.r7.u64 = args;
+  ctx.r8.u64 = res; ctx.r9.u64 = o.done; ctx.lr = 0x8208014Cu;
+  sub_8207A5D8(ctx, base);
+  REX_STORE_U32(so + 0u, 0x8203E41Cu);
+  ctx.r3.u64 = so; ctx.lr = 0x82080158u;
+  sub_82079970(ctx, base);
+}
 static CC_HOT_FN uint32_t cc_as_op_52(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_52);
   CcFrame frame(ctx, base, 272u);
@@ -399,26 +426,7 @@ static CC_HOT_FN uint32_t cc_as_op_52(Context& ctx, Machine& base, const CcAsOp&
     const int32_t st = int32_t(t);
     bool objcall = false;
     if (st == 8) {
-      const uint32_t so = r1 + 80u;
-      REX_STORE_U32(so + 4u, 0u);
-      REX_STORE_U32(so + 8u, 0u);
-      REX_STORE_U32(so + 12u, 0u);
-      REX_STORE_U32(so + 16u, 1u);
-      REX_STORE_U32(so + 0u, 0x8203E41Cu);  // 0x82040000 - 7140
-      REX_STORE_U8(so + 20u, 0u);
-      REX_STORE_U16(so + 24u, 0u);
-      ctx.r3.u64 = obj; ctx.lr = 0x820800F0u;
-      sub_82082890(ctx, base);
-      REX_STORE_U16(so + 28u, ctx.r3.u16);
-      cc_vcall(ctx, base, cc_as_top_clip(base, o), 140u, 0x82080118u);
-      ctx.r3.u64 = name; ctx.lr = 0x82080130u;
-      sub_82082890(ctx, base);
-      ctx.r5.u64 = ctx.r3.u32; ctx.r4.u64 = o.vm; ctx.r3.u64 = so; ctx.r6.u64 = argc; ctx.r7.u64 = args;
-      ctx.r8.u64 = res; ctx.r9.u64 = o.done; ctx.lr = 0x8208014Cu;
-      sub_8207A5D8(ctx, base);
-      REX_STORE_U32(so + 0u, 0x8203E41Cu);
-      ctx.r3.u64 = so; ctx.lr = 0x82080158u;
-      sub_82079970(ctx, base);
+      cc_as_op_52_str(ctx, base, o, r1 + 80u, obj, name, argc, args, res);
     } else if (st == 1024 || st == 128 || st == 64 || st == 512 || t == 4096u || t == 8192u || t == 32768u) {
       objcall = (t & kAsRef) != 0u || t == 4096u || t == 8192u;
     }
@@ -449,22 +457,19 @@ static CC_HOT_FN uint32_t cc_as_op_52(Context& ctx, Machine& base, const CcAsOp&
 
 #include "as_ops_more.inc"
 
-// Native opcode table: handled = false sends the opcode to its guest
-// handler.
-static CC_HOT_FN uint32_t cc_as_native_op(Context& ctx, Machine& base, const CcAsOp& o, bool& handled) {
-  handled = true;
-  switch (o.op) {
-    case 0x96u: return cc_as_op_96(ctx, base, o);
-    case 0x17u: case 0x9Eu: return cc_as_op_17(ctx, base, o);
-    case 0x99u: return cc_as_op_99(ctx, base, o);
-    case 0x9Du: return cc_as_op_9D(ctx, base, o);
-    case 0x3Eu: return cc_as_op_3E(ctx, base, o);
-    case 0xA0u: return cc_as_op_A0(ctx, base, o);
-    case 0xA1u: return cc_as_op_A1(ctx, base, o);
-    case 0xA4u: return cc_as_op_A4(ctx, base, o);
-    case 0x3Du: return cc_as_op_3D(ctx, base, o);
-    case 0x52u: return cc_as_op_52(ctx, base, o);
+// Native opcode table (g_as_fn; opcodes left null run their guest
+// handler).
+static void cc_as_fill_ops() {
+  g_as_fn[0x96u] = cc_as_op_96;
+  g_as_fn[0x17u] = cc_as_op_17;
+  g_as_fn[0x9Eu] = cc_as_op_17;
+  g_as_fn[0x99u] = cc_as_op_99;
+  g_as_fn[0x9Du] = cc_as_op_9D;
+  g_as_fn[0x3Eu] = cc_as_op_3E;
+  g_as_fn[0xA0u] = cc_as_op_A0;
+  g_as_fn[0xA1u] = cc_as_op_A1;
+  g_as_fn[0xA4u] = cc_as_op_A4;
+  g_as_fn[0x3Du] = cc_as_op_3D;
+  g_as_fn[0x52u] = cc_as_op_52;
 #include "as_ops_more_cases.inc"
-    default: handled = false; return 0u;
-  }
 }
