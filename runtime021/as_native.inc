@@ -64,6 +64,13 @@ static constexpr bool g_as_rc_call = false;
 #endif
 static constexpr bool g_as_oracle = false;
 #endif
+// Direct calls of the native clip GetMember (from GetVariable and the
+// GetMember handlers) unless the host selects its recompiled body.
+#ifndef CC_XBOX_DRIVER
+static const bool g_as_gm_direct = !cc_as_exact_fn("sub_8208B438");
+#else
+static constexpr bool g_as_gm_direct = true;
+#endif
 
 // VM of a script context: [[[S+0]+76]+156].
 static CC_HOT_FN inline uint32_t cc_as_vm(Machine& base, uint32_t s) {

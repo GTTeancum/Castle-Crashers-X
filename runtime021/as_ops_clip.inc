@@ -2,33 +2,54 @@
 // signed bit-field reader (included by as_ops_more.inc). Helper
 // replacements only; the recompiled bodies stay as sub_X_exact.
 
+// Clip property ids the native getter sub_82089C00 answers (78..82,
+// 84..88, 91, 98, 102: it returns 1 for them); for any other id it returns
+// 0 having written nothing but its stack frame. The setter sub_82089F70
+// acts on 78..81, 84, 85, 87, 88, 91 and 97; any other id returns 0 the
+// same way.
+static CC_AS_INL bool cc_clip_get_prop(uint32_t k) {
+  const uint32_t d = k - 78u;
+  return d < 25u && ((0x11027DFu >> d) & 1u) != 0u;
+}
+static CC_AS_INL bool cc_clip_set_prop(uint32_t k) {
+  const uint32_t d = k - 78u;
+  return d < 20u && ((0x826CFu >> d) & 1u) != 0u;
+}
+
 // Clip GetMember (exact sub_8208B438: clip r3, id r4, out value r5).
 // The clip's slot 112 (property getter, r4 id u16, r5 out) answers
 // first; then the member read sub_8208C140(clip, id, out); then a child
 // of that name in the display list at clip+104 (sub_82085078) as a typed
 // reference (sub_8206F918(out, child)); then the map at clip+204, whose
 // object gives out = {type (slot 40), object}. Found: 1; otherwise out =
-// undefined and 0.
-static CC_HOT_FN void sub_8208B438(Context& ctx, Machine& base) {
-  CC_AS_SWITCH(sub_8208B438);
-  CC_FPROF_SCOPE(sub_8208B438_native);
-  const uint32_t clip = ctx.r3.u32;
-  const uint64_t id = ctx.r4.u64, out = ctx.r5.u64;
+// undefined and 0. When slot 112 is the native getter sub_82089C00, a
+// property id calls it directly and any other id skips it (it would
+// answer 0 and write nothing). GetVariable and GetMember (0x4E, 0xA2) call
+// this directly for objects whose slot 12 is sub_8208B438.
+static CC_HOT_FN uint32_t cc_clip_get_member(Context& ctx, Machine& base, uint32_t clip, uint64_t id, uint64_t out) {
   CcFrame frame(ctx, base, 112u);
-  ctx.r4.u64 = id & 0xFFFFu;
-  ctx.r5.u64 = out;
-  if ((cc_vcall(ctx, base, clip, 112u, 0x8208B464u) & 0xFFu) != 0u) { ctx.r3.u64 = 1u; return; }
+  const uint32_t k = uint32_t(id) & 0xFFFFu;
+  if (REX_LOAD_U32(REX_LOAD_U32(clip) + 112u) == 0x82089C00u) {
+    if (cc_clip_get_prop(k)) {
+      ctx.r3.u64 = clip; ctx.r4.u64 = k; ctx.r5.u64 = out; ctx.lr = 0x8208B464u;
+      sub_82089C00(ctx, base);
+      return 1u;
+    }
+  } else {
+    ctx.r4.u64 = k;
+    ctx.r5.u64 = out;
+    if ((cc_vcall(ctx, base, clip, 112u, 0x8208B464u) & 0xFFu) != 0u) return 1u;
+  }
   ctx.r3.u64 = clip; ctx.r4.u64 = id; ctx.r5.u64 = out; ctx.lr = 0x8208B480u;
   sub_8208C140(ctx, base);
-  if ((ctx.r3.u32 & 0xFFu) != 0u) { ctx.r3.u64 = 1u; return; }
+  if ((ctx.r3.u32 & 0xFFu) != 0u) return 1u;
   ctx.r3.u64 = clip + 104u; ctx.r4.u64 = id; ctx.lr = 0x8208B498u;
   sub_82085078(ctx, base);
   const uint32_t child = ctx.r3.u32;
   if (child != 0u) {
     ctx.r3.u64 = out; ctx.r4.u64 = child; ctx.lr = 0x8208B4ACu;
     sub_8206F918(ctx, base);
-    ctx.r3.u64 = 1u;
-    return;
+    return 1u;
   }
   const uint32_t o = uint32_t(out);
   const uint32_t obj = cc_asmap_find(base, clip + 204u, uint32_t(id) & 0xFFFFu);
@@ -36,12 +57,16 @@ static CC_HOT_FN void sub_8208B438(Context& ctx, Machine& base) {
     const uint32_t t = cc_vcall(ctx, base, obj, 40u, 0x8208B4E0u);
     REX_STORE_U32(o + 0u, t);
     REX_STORE_U32(o + 4u, obj);
-    ctx.r3.u64 = 1u;
-    return;
+    return 1u;
   }
   REX_STORE_U32(o + 0u, kAsUndef);
   REX_STORE_U32(o + 4u, 0u);
-  ctx.r3.u64 = 0u;
+  return 0u;
+}
+static CC_HOT_FN void sub_8208B438(Context& ctx, Machine& base) {
+  CC_AS_SWITCH(sub_8208B438);
+  CC_FPROF_SCOPE(sub_8208B438_native);
+  ctx.r3.u64 = cc_clip_get_member(ctx, base, ctx.r3.u32, ctx.r4.u64, ctx.r5.u64);
 }
 
 // Number result of a clip property method (f1) as the getter stores it:
@@ -118,16 +143,20 @@ static CC_HOT_FN void sub_82089C00(Context& ctx, Machine& base) {
 // Clip SetMember (exact sub_8208B520: clip r3, id r4, value r5). The
 // clip's slot 116 (property setter, r4 id u16, r5 value) first; when it
 // returns 0 in its low byte, sub_8208C2A0(clip, id, value) sets the
-// member. r3 is the last call's result.
+// member. r3 is the last call's result. When slot 116 is the native
+// setter sub_82089F70, non-property ids skip it.
 static CC_HOT_FN void sub_8208B520(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8208B520);
   CC_FPROF_SCOPE(sub_8208B520_native);
   const uint32_t clip = ctx.r3.u32;
   const uint64_t id = ctx.r4.u64, val = ctx.r5.u64;
   CcFrame frame(ctx, base, 112u);
-  ctx.r4.u64 = id & 0xFFFFu;
-  ctx.r5.u64 = val;
-  if ((cc_vcall(ctx, base, clip, 116u, 0x8208B54Cu) & 0xFFu) != 0u) return;
+  // the native setter sub_82089F70 answers 0 untouched for non-property ids
+  if (REX_LOAD_U32(REX_LOAD_U32(clip) + 116u) != 0x82089F70u || cc_clip_set_prop(uint32_t(id) & 0xFFFFu)) {
+    ctx.r4.u64 = id & 0xFFFFu;
+    ctx.r5.u64 = val;
+    if ((cc_vcall(ctx, base, clip, 116u, 0x8208B54Cu) & 0xFFu) != 0u) return;
+  }
   ctx.r3.u64 = clip; ctx.r4.u64 = id; ctx.r5.u64 = val; ctx.lr = 0x8208B568u;
   sub_8208C2A0(ctx, base);
 }

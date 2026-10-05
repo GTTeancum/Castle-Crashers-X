@@ -104,13 +104,28 @@ static CC_HOT_FN void sub_8208C2A0(Context& ctx, Machine& base) {
   cc_as_set_member(ctx, base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
 }
 
+// Clip GetMember (as_ops_clip.inc).
+static uint32_t cc_clip_get_member(Context& ctx, Machine& base, uint32_t clip, uint64_t id, uint64_t out);
+// An object's slot-12 member read with r4 (id) and r5 (out) already set, as
+// the callers' virtual call: objects whose slot 12 is the clip GetMember
+// sub_8208B438 run it directly. Returns r3.
+static CC_AS_INL uint32_t cc_as_slot12(Context& ctx, Machine& base, uint32_t obj, uint32_t lr, CcVSite& vs) {
+  if (g_as_gm_direct && REX_LOAD_U32(REX_LOAD_U32(obj) + 12u) == 0x8208B438u) {
+    ctx.r3.u64 = cc_clip_get_member(ctx, base, obj, ctx.r4.u64, ctx.r5.u64);
+    return ctx.r3.u32;
+  }
+  return cc_vcall_site(ctx, base, obj, 12u, lr, vs);
+}
+
 // GetVariable (exact sub_8207AF80: S r3, name id r4, out value r5; returns 1
 // when found). Ids 102..108 (jump table on id - 102): 102 the current clip's
 // slot-156 object, 103 the player ([S+0]+76), 107 / 108 the player's +280 /
 // +284 object, each as a typed reference (sub_8206F918(out, object)); 106 is
 // {2, true}. Any other id (104 and 105 too): the active function's locals
 // (sub_82079BE0) and members (sub_8208C140), then the current clip's slot 12
-// (r4 id, r5 out); not found: out = {undefined, 0}, returns 0.
+// (r4 id, r5 out; the clip GetMember directly when slot 12 is sub_8208B438,
+// which answers 'this' (98) and the other property ids without its virtual
+// calls); not found: out = {undefined, 0}, returns 0.
 static CC_HOT_FN uint32_t cc_as_get_variable(Context& ctx, Machine& base, const CcAsLoop& L, uint32_t id, uint32_t out) {
   const uint32_t s = L.s;
   switch ((id & 0xFFFFu) - 102u) {
@@ -154,7 +169,8 @@ static CC_HOT_FN uint32_t cc_as_get_variable(Context& ctx, Machine& base, const 
   }
   const uint32_t clip = cc_as_top_clip(base, L);
   ctx.r4.u64 = id; ctx.r5.u64 = out;
-  if ((cc_vcall(ctx, base, clip, 12u, 0x8207B128u) & 0xFFu) != 0u) return 1u;
+  static CcVSite vs{};
+  if ((cc_as_slot12(ctx, base, clip, 0x8207B128u, vs) & 0xFFu) != 0u) return 1u;
   REX_STORE_U32(out + 4u, 0u);
   REX_STORE_U32(out + 0u, kAsUndef);
   return 0u;
@@ -369,7 +385,8 @@ static CC_HOT_FN uint32_t cc_as_op_4E(Context& ctx, Machine& base, const CcAsOp&
     }
     if (call) {
       ctx.r5.u64 = obj;
-      undef = (cc_vcall(ctx, base, target, 12u, 0x8207F7ECu) & 0xFFu) == 0u;
+      static CcVSite vs{};
+      undef = (cc_as_slot12(ctx, base, target, 0x8207F7ECu, vs) & 0xFFu) == 0u;
     }
   }
   if (undef) {
@@ -473,7 +490,8 @@ static CC_HOT_FN uint32_t cc_as_op_A2(Context& ctx, Machine& base, const CcAsOp&
       ctx.r3.u64 = tmp; ctx.lr = 0x82081FD8u;
       sub_82082890(ctx, base);
       ctx.r4.u64 = ctx.r3.u32; ctx.r5.u64 = obj;
-      undef = (cc_vcall(ctx, base, target, 12u, 0x82081FF4u) & 0xFFu) == 0u;
+      static CcVSite vs{};
+      undef = (cc_as_slot12(ctx, base, target, 0x82081FF4u, vs) & 0xFFu) == 0u;
     } else if (st == 128) {
       ctx.r3.u64 = REX_LOAD_U32(obj + 4u); ctx.r4.u64 = tmp; ctx.r5.u64 = obj; ctx.lr = 0x82082090u;  // counted
       sub_8207A3F0(ctx, base);
