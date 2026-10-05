@@ -393,6 +393,38 @@ void cc_op_dbg() {
 }
 #endif
 static uint32_t cc_as_step_body(Context& ctx, Machine& base, CcAsLoop& L, uint32_t op, uint32_t lr);
+#ifndef CC_XBOX_DRIVER
+// Host behaviour trace (CC_AS_VALHASH=<n>): a running hash over every
+// instruction the native loops run (the opcode, the value-stack depth and
+// the value on top: its type, and its payload for undefined, bool, int,
+// string id and number; object payloads are addresses and left out),
+// printed every n frames as VALHASH lines. Two runs that place heap
+// objects differently (the activation slab) compare by it.
+static const uint32_t g_as_valhash_every = [] {
+  const char* e = std::getenv("CC_AS_VALHASH");
+  return e ? uint32_t(std::strtoul(e, nullptr, 10)) : 0u;
+}();
+static __attribute__((noinline, cold)) void cc_as_valhash_step(Machine& base, const CcAsLoop& L, uint32_t op) {
+  static uint64_t h = 1469598103934665603ull, ops = 0;
+  static uint32_t bucket = 0;
+  const uint32_t b = g_frame_delay_calls / g_as_valhash_every;
+  if (b != bucket) {
+    std::fprintf(stderr, "VALHASH frame=%u ops=%llu hash=%016llx\n", b * g_as_valhash_every, (unsigned long long)ops, (unsigned long long)h);
+    bucket = b;
+  }
+  ++ops;
+  const uint32_t n = cc_as_vld(base, L, kAsPool + 5024u);
+  uint64_t x = uint64_t(op) | (uint64_t(n & 0xFFFFu) << 8);
+  if (n - 1u < 1256u) {
+    const uint32_t slot = cc_as_vld(base, L, kAsPool + (n - 1u) * 4u);
+    const uint32_t t = REX_LOAD_U32(slot);
+    x ^= uint64_t(t) << 24;
+    if (t == kAsUndef || t == 2u || t == 4u || t == 16u) x ^= uint64_t(REX_LOAD_U32(slot + 4u)) * 0x9E3779B97F4A7C15ull;
+    else if (t == 8u) x ^= uint64_t(REX_LOAD_U16(slot + 4u)) * 0x9E3779B97F4A7C15ull;
+  }
+  for (int k = 0; k < 8; ++k) { h ^= (x >> (8 * k)) & 0xFFu; h *= 1099511628211ull; }
+}
+#endif
 // Guest handler run from a loop: the record fields written to rec first
 // (out of line: the shipped scripts' hot opcodes are all native).
 static __attribute__((noinline)) uint32_t cc_as_step_guest(Context& ctx, Machine& base, CcAsLoop& L, uint32_t op, uint32_t lr) {
@@ -426,14 +458,19 @@ static CC_HOT_FN inline __attribute__((always_inline)) uint32_t cc_as_step_body(
   if (g_as_oracle) cc_as_oracle_loop(base, L);
 #endif
   const CcAsOpFn fn = g_as_fn[op];
+  uint32_t r;
   if (__builtin_expect(fn != nullptr, 1)) {
-    const uint32_t r = fn(ctx, base, L);
+    r = fn(ctx, base, L);
 #ifndef CC_XBOX_DRIVER
     if (g_as_oracle) cc_as_oracle_loop(base, L);
 #endif
-    return r;
+  } else {
+    r = cc_as_step_guest(ctx, base, L, op, lr);
   }
-  return cc_as_step_guest(ctx, base, L, op, lr);
+#ifndef CC_XBOX_DRIVER
+  if (g_as_valhash_every) cc_as_valhash_step(base, L, op);
+#endif
+  return r;
 }
 // Instruction fetch: op byte, and for op >= 0x80 the little-endian u16
 // length; a nonzero length moves the data pointer to the bytes after it.
@@ -639,6 +676,60 @@ static CC_HOT_FN void sub_8207B630(Context& ctx, Machine& base) {
 // Var assignment (as_ops_var.inc).
 static uint32_t cc_as_var_assign(Context& ctx, Machine& base, uint32_t var, uint32_t v);
 
+// Activation slab (host CC_AS_SLAB=1, Xbox build define CC_AS_SLAB_BUILD;
+// off by default: locals then live outside the game heap, so the heap's
+// contents and later placements differ from the original and state hashes
+// no longer compare). The locals DefineLocal (3C, 41) and the inline
+// SetVariable (A4) create in the innermost active function's member map
+// take their Var, and an empty map its 16-entry array, from a 16 KiB block
+// of the physical arena (checked to lie outside the game heap), handed out
+// last-in first-out: CallCustomFunction rewinds it to its entry mark after
+// the function's members are released. The heap free sub_8209BF18 returns
+// at once for pointers outside the heap, so the releases (sub_82079A00, a
+// regrow past 16 entries, Delete) need no change. A full slab falls back
+// to the heap. This removes about four game-heap operations per local.
+#ifndef CC_XBOX_DRIVER
+static const bool g_as_slab_on = std::getenv("CC_AS_SLAB") != nullptr;
+static uint32_t g_as_slab_peak = 0, g_as_slab_full = 0;
+#elif defined(CC_AS_SLAB_BUILD)
+static constexpr bool g_as_slab_on = true;
+#else
+static constexpr bool g_as_slab_on = false;
+#endif
+static constexpr uint32_t kAsSlabBytes = 0x4000u;
+static uint32_t g_as_slab = 0u, g_as_slab_top = 0u;  // slab 0: not yet, 0xFFFFFFFF: unusable
+// First use (from CallCustomFunction): the block and its heap check.
+static __attribute__((noinline, cold)) void cc_as_slab_init(Context& ctx, Machine& base) {
+  const uint32_t hint = g_phys_zone_hint;
+  g_phys_zone_hint = 0u;
+  const uint32_t a = cc_phys_alloc(base, kAsSlabBytes, 16u);
+  g_phys_zone_hint = hint;
+  const uint32_t heap = REX_LOAD_U32(0x822673C0u + REX_LOAD_U8(ctx.r13.u32 + 268u) * 4u);
+  const uint32_t lo = REX_LOAD_U32(heap + 8u), hi = REX_LOAD_U32(heap + 12u);
+  const bool outside = a != 0u && (a + kAsSlabBytes <= lo || a >= hi);
+  g_as_slab = outside ? a : 0xFFFFFFFFu;
+  g_as_slab_top = a;
+#ifndef CC_XBOX_DRIVER
+  std::fprintf(stderr, "ASSLAB block=%08x heap=%08x..%08x %s\n", a, lo, hi, outside ? "used" : "unusable");
+  static struct Report { ~Report() { std::fprintf(stderr, "ASSLAB peak=%u full=%u\n", g_as_slab_peak, g_as_slab_full); } } report;
+#endif
+}
+// n bytes (16-byte steps) from the slab, or 0 when it is full or unusable.
+static CC_AS_INL uint32_t cc_as_slab_alloc(uint32_t n) {
+  const uint32_t step = (n + 15u) & ~15u;
+  if (g_as_slab + 1u <= 1u || g_as_slab_top - g_as_slab + step > kAsSlabBytes) {
+#ifndef CC_XBOX_DRIVER
+    ++g_as_slab_full;
+#endif
+    return 0u;
+  }
+  const uint32_t p = g_as_slab_top;
+  g_as_slab_top = p + step;
+#ifndef CC_XBOX_DRIVER
+  if (g_as_slab_top - g_as_slab > g_as_slab_peak) g_as_slab_peak = g_as_slab_top - g_as_slab;
+#endif
+  return p;
+}
 // Error report of CallCustomFunction: format fmt with the function's name
 // (id 0 -> the string table's +12, else [table+28][id]) and, when set_r5,
 // r5 (otherwise r5 stays as the last call left it, as in the original).
@@ -724,6 +815,11 @@ static CC_HOT_FN void sub_8207B150(Context& ctx, Machine& base) {
   REX_STORE_U32(r1 + 128u, 0u);
   REX_STORE_U16(r1 + 132u, 0u);
   REX_STORE_U32(r1 + 136u, 0u);
+  uint32_t slab_mark = 0u;
+  if (g_as_slab_on) {
+    if (g_as_slab == 0u) cc_as_slab_init(ctx, base);
+    slab_mark = g_as_slab_top;
+  }
 #ifdef CC_OP_STATS
   g_call_setup += __builtin_ia32_rdtsc() - cc_t0;
 #endif
@@ -753,6 +849,7 @@ static CC_HOT_FN void sub_8207B150(Context& ctx, Machine& base) {
 #endif
   ctx.r3.u64 = fn; ctx.lr = 0x8207B4C8u;
   sub_82079A00(ctx, base);
+  if (g_as_slab_on) g_as_slab_top = slab_mark;  // this call's locals are released
   for (uint32_t i = 0; i < 12u; ++i) {
     const uint32_t var = REX_LOAD_U32(fn + 48u + i * 8u);
     if (var == 0u || REX_LOAD_U32(var + 0u) == 0u) continue;

@@ -304,8 +304,10 @@ static CC_HOT_FN uint32_t cc_as_op_A1(Context& ctx, Machine& base, const CcAsOp&
   return 1u;
 }
 
-// SetVariable on an object (as_ops_var.inc).
+// SetVariable on an object, and into the innermost active function
+// (as_ops_var.inc).
 static inline void cc_as_set_member(Context& ctx, Machine& base, uint32_t obj, uint32_t id, uint32_t v);
+static inline void cc_as_set_local(Context& ctx, Machine& base, uint32_t act, uint32_t id, uint32_t v);
 
 // SetVariable inline (exact sub_820822D8, op 0xA4): name, then an item
 // decoded into a frame temporary {type, payload, in-use} at frame+88; with
@@ -323,7 +325,7 @@ static CC_HOT_FN uint32_t cc_as_op_A4(Context& ctx, Machine& base, const CcAsOp&
   cc_as_decode(ctx, base, o, tmp, o.data, pos);
   const uint32_t act = cc_as_act(base, o);
   if (act != 0u) {
-    cc_as_set_member(ctx, base, act, id, tmp);
+    cc_as_set_local(ctx, base, act, id, tmp);
   } else {
     const uint32_t clip = cc_as_top_clip(base, o);
     ctx.r4.u64 = id; ctx.r5.u64 = tmp;

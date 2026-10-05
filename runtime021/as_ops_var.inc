@@ -2,7 +2,9 @@
 
 // Game heap as the AS code fetches it: unless the flag at 0x8228A7B7 is set,
 // sub_820A71E8(0x8222F918, 0x02000000, 0, 32) sets the heaps up first; the
-// heap is the table at 0x822673C0 indexed by sub_820B5EB8.
+// heap is the table at 0x822673C0 indexed by sub_820B5EB8, which is the
+// single instruction lbz r3,268(r13) (done inline, r3 and lr as it leaves
+// them).
 static CC_HOT_FN inline uint32_t cc_as_game_heap(Context& ctx, Machine& base, uint32_t lr_init, uint32_t lr_idx) {
   if (REX_LOAD_U8(0x8228A7B7u) == 0u) {
     ctx.r3.u64 = 0x8222F918u; ctx.r4.u64 = 0x02000000u; ctx.r5.u64 = 0u; ctx.r6.u64 = 32u;
@@ -10,7 +12,7 @@ static CC_HOT_FN inline uint32_t cc_as_game_heap(Context& ctx, Machine& base, ui
     sub_820A71E8(ctx, base);
   }
   ctx.lr = lr_idx;
-  sub_820B5EB8(ctx, base);
+  ctx.r3.u64 = REX_LOAD_U8(ctx.r13.u32 + 268u);
   return REX_LOAD_U32(0x822673C0u + ctx.r3.u32 * 4u);
 }
 
@@ -102,6 +104,41 @@ static CC_HOT_FN void sub_8208C2A0(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8208C2A0);
   CC_FPROF_SCOPE(sub_8208C2A0_native);
   cc_as_set_member(ctx, base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+}
+
+// SetVariable into the innermost active function act with the slab on: as
+// cc_as_set_member, the new Var and an empty map's entry array (capacity
+// 16) from the slab.
+static __attribute__((noinline)) void cc_as_set_local_slab(Context& ctx, Machine& base, uint32_t act, uint32_t id, uint32_t v) {
+  const uint32_t var = cc_asmap_find(base, act + 4u, id & 0xFFFFu);
+  if (var != 0u) {
+    ctx.r3.u64 = cc_as_var_assign(ctx, base, var, v);
+    return;
+  }
+  const uint32_t nv = cc_as_slab_alloc(12u);
+  if (nv == 0u) {
+    cc_as_set_member(ctx, base, act, id, v);
+    return;
+  }
+  REX_STORE_U32(nv + 0u, 0u);
+  REX_STORE_U32(nv + 4u, kAsUndef);
+  REX_STORE_U32(nv + 8u, 0u);
+  cc_as_var_assign(ctx, base, nv, v);
+  if (REX_LOAD_U32(act + 4u) == 0u && REX_LOAD_U32(act + 8u) == 0u && REX_LOAD_U32(act + 12u) == 0u) {
+    const uint32_t arr = cc_as_slab_alloc(16u * 8u);
+    if (arr != 0u) {
+      REX_STORE_U32(act + 8u, arr);
+      REX_STORE_U32(act + 12u, 16u);
+    }
+  }
+  ctx.r3.u64 = act + 4u; ctx.r4.u64 = id; ctx.r5.u64 = nv; ctx.lr = 0x8208C36Cu;
+  sub_820936B0(ctx, base);
+}
+// SetVariable into the innermost active function (DefineLocal, inline
+// SetVariable).
+static CC_AS_INL void cc_as_set_local(Context& ctx, Machine& base, uint32_t act, uint32_t id, uint32_t v) {
+  if (g_as_slab_on) cc_as_set_local_slab(ctx, base, act, id, v);
+  else cc_as_set_member(ctx, base, act, id, v);
 }
 
 // Clip GetMember (as_ops_clip.inc).
@@ -313,7 +350,7 @@ static CC_HOT_FN uint32_t cc_as_op_3C(Context& ctx, Machine& base, const CcAsOp&
   const uint32_t id = ctx.r3.u32;
   const uint32_t act = cc_as_act(base, o);
   if (act != 0u) {
-    cc_as_set_member(ctx, base, act, id, val);
+    cc_as_set_local(ctx, base, act, id, val);
   } else {
     ctx.r4.u64 = id; ctx.r5.u64 = val;
     cc_vcall(ctx, base, cc_as_top_clip(base, o), 16u, 0x8207E028u);
@@ -342,7 +379,7 @@ static CC_HOT_FN uint32_t cc_as_op_41(Context& ctx, Machine& base, const CcAsOp&
   REX_STORE_U32(tmp + 4u, 0u);
   const uint32_t act = cc_as_act(base, o);
   if (act != 0u) {
-    if (cc_asmap_find(base, act + 4u, id & 0xFFFFu) == 0u) cc_as_set_member(ctx, base, act, id, tmp);
+    if (cc_asmap_find(base, act + 4u, id & 0xFFFFu) == 0u) cc_as_set_local(ctx, base, act, id, tmp);
   } else {
     ctx.r4.u64 = id; ctx.r5.u64 = tmp;
     cc_vcall(ctx, base, cc_as_top_clip(base, o), 16u, 0x8207ECA8u);

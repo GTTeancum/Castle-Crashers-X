@@ -61,6 +61,11 @@ endif
 ifneq ($(BENCH),)
 CXXFLAGS += -DCC_BENCH
 endif
+# Script locals from the activation slab instead of the game heap (not
+# exact: heap placement changes; see runtime021/as_native.inc): make ASSLAB=1
+ifneq ($(ASSLAB),)
+CXXFLAGS += -DCC_AS_SLAB_BUILD
+endif
 ifneq ($(SPRITEEXACT),)
 CXXFLAGS += -DCC_SPRITE_EXACT_BUILD
 endif
