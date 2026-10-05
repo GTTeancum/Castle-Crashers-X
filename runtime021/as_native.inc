@@ -83,12 +83,19 @@ static CC_HOT_FN inline uint32_t cc_as_vm(Machine& base, uint32_t s) {
 // change of the memory model only has to change it.
 static CC_HOT_FN inline uint8_t* cc_as_host(uint32_t a, uint32_t n) {
   if (g_as_nohost) return nullptr;
+#ifdef CC_FLAT_WINDOW
+  // Flat guest window: the pool, stacks and code blocks the interpreter
+  // reads each lie in one committed region.
+  static_cast<void>(n);
+  return ::cc_win::ptr(a);
+#else
   uint8_t* const p = g_page_host[a >> 16];
   if (uintptr_t(p) <= 1u) return nullptr;
   const uint32_t e = a + (n - 1u);
   if (e < a) return nullptr;
   if ((e >> 16) != (a >> 16) && g_page_host[e >> 16] != p + 0x10000u) return nullptr;
   return p + (a & 0xFFFFu);
+#endif
 }
 static CC_AS_INL uint32_t cc_as_hld(const uint8_t* p) {
   uint32_t x;

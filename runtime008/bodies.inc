@@ -211,8 +211,15 @@ static void cc_oracle_mismatch(const char* fn, int slot, uint32_t exact, uint32_
 // objects only through this helper and the cc_hb*/cc_hput* accessors, so a
 // different memory model changes one place.
 static inline __attribute__((always_inline)) uint8_t* cc_obj_host(uint32_t a, uint32_t n) {
+#ifdef CC_FLAT_WINDOW
+  // Flat guest window: every object the natives reach lies in one committed
+  // region, so its bytes are contiguous in host memory.
+  static_cast<void>(n);
+  return ::cc_win::ptr(a);
+#else
   uint8_t* b = g_page_host[a >> 16];
   return (uintptr_t(b) > 1u && (a & 0xFFFFu) <= 0x10000u - n) ? b + (a & 0xFFFFu) : nullptr;
+#endif
 }
 static inline __attribute__((always_inline)) uint32_t cc_hb32(const uint8_t* p) {
   uint32_t x; __builtin_memcpy(&x, p, 4); return __builtin_bswap32(x);
@@ -736,8 +743,12 @@ struct CcFrame {
 // never faults; pages without a direct host mapping are skipped). All
 // guest-to-host address use of the display natives goes through here.
 static inline __attribute__((always_inline)) void cc_prefetch(uint32_t a) {
+#ifdef CC_FLAT_WINDOW
+  __builtin_prefetch(::cc_win::ptr(a));
+#else
   uint8_t* b = g_page_host[a >> 16];
   if (__builtin_expect(uintptr_t(b) > 1u, 1)) __builtin_prefetch(b + (a & 0xFFFFu));
+#endif
 }
 #define sub_8208AF08 sub_8208AF08_exact
 #endif
