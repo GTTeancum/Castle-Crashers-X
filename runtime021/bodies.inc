@@ -243,27 +243,140 @@ static std::set<uint32_t> g_committed_pages;
 // the value or 0). Fewer than 4 entries: linear scan; otherwise the
 // original's binary search, probe for probe (unsigned index arithmetic
 // kept as compiled, so even a malformed map reads the same entries).
-static CC_HOT_FN uint32_t cc_asmap_find(Machine& base, uint32_t map, uint32_t key) {
-  const uint32_t n = REX_LOAD_U32(map + 0u), e = REX_LOAD_U32(map + 4u);
-  if (n < 4u) {
-    for (uint32_t i = 0; i < n; ++i)
-      if (REX_LOAD_U16(e + i * 8u) == key) return REX_LOAD_U32(e + i * 8u + 4u);
-    return 0u;
+//
+// Maps of 16 to 32767 entries also keep the answer of the last lookup per
+// (map, id) in a small host table: the entry index when the id was found,
+// or the position it would sort into when it was not. On the 4P level-13
+// run (frames 6600-9000) about 47% of lookups go to such maps, and most
+// repeat a recent (map, id) with the map unchanged. A cached answer is
+// used only while the map's count and entry array are the ones it was
+// found with and, for a found id, the entry still holds the id between
+// strictly smaller and larger neighbours, or, for an absent id, the
+// neighbours around its position are strictly smaller and larger than it.
+// Maps are kept sorted by sub_820936B0 (every insert changes the count),
+// and on a sorted map the search can only give that same answer (the host
+// census CC_ASMAP_STAT=1 also checks every such map it sees is sorted).
+// CC_ORACLE=1 re-runs the search on every cached answer and reports a
+// difference; CC_ASMAP_NOCACHE=1 (host) or the Xbox build define
+// CC_ASMAP_NOCACHE_BUILD turns the table off.
+struct CcAsMapHit { uint32_t map, n, e, ki; };  // ki: id | index << 16 | absent << 31
+static CcAsMapHit g_asmap_hit[2048];
+#ifndef CC_XBOX_DRIVER
+static const bool g_asmap_cache = std::getenv("CC_ASMAP_NOCACHE") == nullptr;
+static const bool g_asmap_oracle = std::getenv("CC_ORACLE") != nullptr;
+#elif defined(CC_ASMAP_NOCACHE_BUILD)
+static constexpr bool g_asmap_cache = false;
+#else
+static constexpr bool g_asmap_cache = true;
+#endif
+#ifndef CC_XBOX_DRIVER
+// Host census (CC_ASMAP_STAT=1, frames CC_SAMPLE_FROM..CC_SAMPLE_TO),
+// printed at exit: lookups of maps under 4 entries, of 4..15 entries (or
+// past the table's range), and of table-sized maps answered by the table
+// (found / absent) or by a search (found / absent); unsorted counts the
+// table-sized maps seen with ids not strictly increasing.
+static const bool g_asmap_stat = std::getenv("CC_ASMAP_STAT") != nullptr;
+static uint64_t g_asmap_count[7];
+namespace {
+struct CcAsMapReport {
+  ~CcAsMapReport() {
+    if (g_asmap_stat)
+      std::fprintf(stderr, "ASMAP small=%llu mid=%llu hit_found=%llu hit_absent=%llu search_found=%llu search_absent=%llu unsorted=%llu\n",
+                   (unsigned long long)g_asmap_count[0], (unsigned long long)g_asmap_count[1], (unsigned long long)g_asmap_count[2],
+                   (unsigned long long)g_asmap_count[3], (unsigned long long)g_asmap_count[4], (unsigned long long)g_asmap_count[5],
+                   (unsigned long long)g_asmap_count[6]);
   }
-  uint32_t hi = n - 1u, lo = 0u, mid = hi >> 1;
+} g_asmap_report;
+}  // namespace
+#define CC_ASMAP_COUNT(k) do { if (g_asmap_stat && g_sample_on.load(std::memory_order_relaxed)) ++g_asmap_count[k]; } while (0)
+static __attribute__((noinline, cold)) void cc_asmap_sortcheck(Machine& base, uint32_t n, uint32_t e) {
+  if (!g_sample_on.load(std::memory_order_relaxed)) return;
+  for (uint32_t k = 0; k + 1u < n; ++k)
+    if (REX_LOAD_U16(e + k * 8u) >= REX_LOAD_U16(e + k * 8u + 8u)) { ++g_asmap_count[6]; return; }
+}
+#else
+#define CC_ASMAP_COUNT(k) do { } while (0)
+#endif
+// Binary search of a map with n >= 4 entries: index of the id, or n when
+// absent (the original's probes and final checks); lo/hi: the final window
+// of an absent id.
+static CC_HOT_FN inline uint32_t cc_asmap_search(Machine& base, uint32_t n, uint32_t e, uint32_t key, uint32_t& lo, uint32_t& hi) {
+  hi = n - 1u; lo = 0u;
+  uint32_t mid = hi >> 1;
   uint32_t v = REX_LOAD_U16(e + mid * 8u);
   while (v != key) {
     if (v > key) hi = mid - 1u; else lo = mid + 1u;
     const uint32_t d = hi - lo;
     if (d < 2u) {
-      if (REX_LOAD_U16(e + lo * 8u) == key) return REX_LOAD_U32(e + lo * 8u + 4u);
-      if (REX_LOAD_U16(e + hi * 8u) == key) return REX_LOAD_U32(e + hi * 8u + 4u);
-      return 0u;
+      if (REX_LOAD_U16(e + lo * 8u) == key) return lo;
+      if (REX_LOAD_U16(e + hi * 8u) == key) return hi;
+      return n;
     }
     mid = (d >> 1) + lo;
     v = REX_LOAD_U16(e + mid * 8u);
   }
-  return REX_LOAD_U32(e + mid * 8u + 4u);
+  return mid;
+}
+static CC_HOT_FN inline uint32_t cc_asmap_search(Machine& base, uint32_t n, uint32_t e, uint32_t key) {
+  uint32_t lo, hi;
+  return cc_asmap_search(base, n, e, key, lo, hi);
+}
+static CC_HOT_FN uint32_t cc_asmap_find(Machine& base, uint32_t map, uint32_t key) {
+  const uint32_t n = REX_LOAD_U32(map + 0u), e = REX_LOAD_U32(map + 4u);
+  if (n < 4u) {
+    CC_ASMAP_COUNT(0);
+    for (uint32_t i = 0; i < n; ++i)
+      if (REX_LOAD_U16(e + i * 8u) == key) return REX_LOAD_U32(e + i * 8u + 4u);
+    return 0u;
+  }
+  if (n < 16u || n > 0x7FFFu || !g_asmap_cache) {
+    CC_ASMAP_COUNT(1);
+    const uint32_t i = cc_asmap_search(base, n, e, key);
+    return i != n ? REX_LOAD_U32(e + i * 8u + 4u) : 0u;
+  }
+#ifndef CC_XBOX_DRIVER
+  if (g_asmap_stat) cc_asmap_sortcheck(base, n, e);
+#endif
+  CcAsMapHit& h = g_asmap_hit[((map >> 3) ^ (map >> 12) ^ (key * 0x9E3779B1u >> 7)) & 2047u];
+  if (h.map == map && h.n == n && h.e == e && (h.ki & 0xFFFFu) == key) {
+    const uint32_t i = (h.ki >> 16) & 0x7FFFu;
+    const uint32_t a = e + i * 8u;
+    if (int32_t(h.ki) >= 0) {
+      if (REX_LOAD_U16(a) == key && (i == 0u || REX_LOAD_U16(a - 8u) < key) && (i + 1u >= n || REX_LOAD_U16(a + 8u) > key)) {
+#ifndef CC_XBOX_DRIVER
+        if (g_asmap_oracle) {
+          const uint32_t j = cc_asmap_search(base, n, e, key);
+          if (j != i) cc_oracle_mismatch("cc_asmap_find_cache", int(key), j, i);
+        }
+#endif
+        CC_ASMAP_COUNT(2);
+        return REX_LOAD_U32(a + 4u);
+      }
+    } else if ((i == 0u || REX_LOAD_U16(a - 8u) < key) && (i >= n || REX_LOAD_U16(a) > key)) {
+#ifndef CC_XBOX_DRIVER
+      if (g_asmap_oracle) {
+        const uint32_t j = cc_asmap_search(base, n, e, key);
+        if (j != n) cc_oracle_mismatch("cc_asmap_find_absent", int(key), j, n);
+      }
+#endif
+      CC_ASMAP_COUNT(3);
+      return 0u;
+    }
+  }
+  uint32_t lo, hi;
+  const uint32_t i = cc_asmap_search(base, n, e, key, lo, hi);
+  h.map = map; h.n = n; h.e = e;
+  if (i == n) {
+    // position the id would sort into (entries before lo are smaller and
+    // after hi larger in a sorted map; lo and hi themselves were compared)
+    const uint32_t p = lo + (REX_LOAD_U16(e + lo * 8u) < key ? 1u : 0u) + (hi != lo && REX_LOAD_U16(e + hi * 8u) < key ? 1u : 0u);
+    h.ki = key | (p << 16) | 0x80000000u;
+    CC_ASMAP_COUNT(5);
+    return 0u;
+  }
+  h.ki = key | (i << 16);
+  CC_ASMAP_COUNT(4);
+  return REX_LOAD_U32(e + i * 8u + 4u);
 }
 // ActionScript Var read (shared by the locals and member lookups): Var
 // {+0 object, +4 type, +8 payload} -> out value {type, payload}; object type
