@@ -87,6 +87,10 @@ endif
 ifneq ($(WALKNOPREFETCH),)
 CXXFLAGS += -DCC_WALK_NOPREFETCH_BUILD
 endif
+# Text bisect: GLYPHEXACT=1 (recompiled glyph rectangle, renderer slot 112)
+ifneq ($(GLYPHEXACT),)
+CXXFLAGS += -DCC_GLYPH_EXACT_BUILD
+endif
 ifneq ($(NOFMAFAST),)
 CXXFLAGS += -DCC_NO_FMA_FAST
 endif

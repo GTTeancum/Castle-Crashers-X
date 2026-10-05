@@ -579,3 +579,151 @@ static CC_HOT_FN void sub_820855D8(Context& ctx, Machine& base) {
   }
   ctx.r3.u64 = (stop == spr) ? 2u : 0u;
 }
+
+// Rotated textured rectangle (renderer slot 112: exact sub_820A8FF8 and the
+// sub_820A9068 it calls; the glyph loop sub_820A9E98 draws every glyph with
+// it, angle 0). r3 renderer, r4 / r5 two opposite corners {x, y, z}, r10
+// colour, f1..f4 u0 v0 u1 v1, f5 the angle; the caller's frame holds the
+// vertex count at +100 and an aspect flag byte at +95.
+// sub_820A8FF8 saves lr at r1-8 and r31 at r1-16, opens a 160-byte frame
+// and writes the uv pairs (u0 v0) (u1 v0) (u1 v1) (u0 v1) at +112..+140 of
+// it, the count at +100 and the flag at +95. sub_820A9068 opens a 352-byte
+// frame below; when the renderer's draw flag (+28715) is set it rotates the
+// rectangle about its centre c = (a + b) * 0.5 (0x82014748): with
+// s = sin(angle), k = cos(angle) (sub_82127A08 / sub_82127AE8, rounded to
+// float) and d a corner's offset from c, x = c.x + (d.x*k - d.y*s) and
+// y = c.y + (d.y*k + d.x*s), each product and sum rounded to float and the
+// second product fused as compiled; z = (a.z + b.z) * 0.5. Each y is then
+// multiplied by the renderer's viewport aspect (slot 60: w / h of viewport
+// [+29124]) when the flag is set, else by 1.0 (0x82042544). The corners go
+// to +160 / +144 / +128 / +112 of the frame, the colour to +92, the count
+// to +100 and the fourth uv pointer to +84, and slot 116 (the quad) draws
+// them with the other uv pointers in r8..r10.
+// Native: the same stores (both frames' words, slot 60's stack word) and
+// calls (sin, cos, slot 116; slot 60 inline when it is sub_820A7488) from
+// host values. Non-finite corners or angle take the exact body.
+// Switches: host CC_GLYPH_EXACT=1, Xbox make GLYPHEXACT=1.
+static inline bool cc_glyph_native_on() {
+#if defined(CC_GLYPH_EXACT_BUILD)
+  return false;
+#elif defined(CC_XBOX_DRIVER)
+  return true;
+#else
+  static const bool on = !std::getenv("CC_GLYPH_EXACT");
+  return on;
+#endif
+}
+// Corners (dx0, dy0), (dx1, dy0), (dx1, dy1), (dx0, dy1) rotated by (k, s),
+// offsets from the centre.
+template <bool Plain>
+static inline __attribute__((always_inline)) void cc_glyph_rotate(const double dx[2], const double dy[2], double s, double k,
+                                                                  double out[4][2]) {
+  const double sy0 = cc_rf(dy[0] * s), sx0 = cc_rf(dx[0] * s), sx1 = cc_rf(dx[1] * s), sy1 = cc_rf(dy[1] * s);
+  out[0][0] = cc_rf(cc_fmaf<Plain>(dx[0], k, -sy0)); out[0][1] = cc_rf(cc_fmaf<Plain>(dy[0], k, sx0));
+  out[1][0] = cc_rf(cc_fmaf<Plain>(dx[1], k, -sy0)); out[1][1] = cc_rf(cc_fmaf<Plain>(dy[0], k, sx1));
+  out[2][0] = cc_rf(cc_fmaf<Plain>(dx[1], k, -sy1)); out[2][1] = cc_rf(cc_fmaf<Plain>(dy[1], k, sx1));
+  out[3][0] = cc_rf(cc_fmaf<Plain>(dx[0], k, -sy1)); out[3][1] = cc_rf(cc_fmaf<Plain>(dy[1], k, sx0));
+}
+static CC_HOT_FN void sub_820A8FF8(Context& ctx, Machine& base) {
+  CC_AS_SWITCH(sub_820A8FF8);
+  uint32_t aw[3], bw[3];
+  cc_load_words(base, ctx.r4.u32, 3u, aw);
+  cc_load_words(base, ctx.r5.u32, 3u, bw);
+  const double angle = ctx.f5.f64;
+  const bool finite = std::isfinite(angle) && cc_finite_bits(aw[0]) && cc_finite_bits(aw[1]) && cc_finite_bits(aw[2]) &&
+                      cc_finite_bits(bw[0]) && cc_finite_bits(bw[1]) && cc_finite_bits(bw[2]);
+  if (!cc_glyph_native_on() || !finite) {
+    sub_820A8FF8_exact(ctx, base);
+    return;
+  }
+  ctx.fpscr.disableFlushMode();
+  const uint32_t rnd = ctx.r3.u32, colour = ctx.r10.u32, r0 = ctx.r1.u32;
+  const uint32_t lr0 = uint32_t(ctx.lr);
+  // sub_820A8FF8's frame.
+  REX_STORE_U32(r0 - 8u, lr0);
+  REX_STORE_U64(r0 - 16u, ctx.r31.u64);
+  const uint32_t r1 = r0 - 160u;
+  REX_STORE_U32(r1, r0);
+  const uint32_t count = REX_LOAD_U32(r1 + 260u);
+  const uint8_t flag = REX_LOAD_U8(r1 + 255u);
+  {
+    const uint32_t u0 = cc_dbits(ctx.f1.f64), v0 = cc_dbits(ctx.f2.f64), u1 = cc_dbits(ctx.f3.f64), v1 = cc_dbits(ctx.f4.f64);
+    const uint32_t uv[8] = {u0, v0, u1, v0, u1, v1, u0, v1};
+    cc_store_words(base, r1 + 112u, 8u, uv);
+    REX_STORE_U32(r1 + 100u, count);
+    REX_STORE_U8(r1 + 95u, flag);
+  }
+  // sub_820A9068's frame.
+  const uint32_t r2 = r1 - 352u;
+  REX_STORE_U32(r2, r1);
+  if (REX_LOAD_U8(rnd + 28715u) != 0u) {
+    const double half = cc_f32d(REX_LOAD_U32(0x82014748u));
+    const double ax = cc_f32d(aw[0]), ay = cc_f32d(aw[1]), az = cc_f32d(aw[2]);
+    const double bx = cc_f32d(bw[0]), by = cc_f32d(bw[1]), bz = cc_f32d(bw[2]);
+    const double cx = cc_rf(cc_rf(bx + ax) * half), cy = cc_rf(cc_rf(by + ay) * half);
+    const uint32_t z = cc_dbits(cc_rf(cc_rf(az + bz) * half));
+    const double dx[2] = {cc_rf(ax - cx), cc_rf(bx - cx)}, dy[2] = {cc_rf(ay - cy), cc_rf(by - cy)};
+    ctx.r1.u64 = r2;
+    ctx.f1.f64 = angle; ctx.lr = 0x820A9148u;
+    sub_82127A08(ctx, base);
+    const double s = cc_rf(ctx.f1.f64);
+    ctx.f1.f64 = angle; ctx.lr = 0x820A9154u;
+    sub_82127AE8(ctx, base);
+    const double k = cc_rf(ctx.f1.f64);
+    ctx.fpscr.disableFlushMode();
+    double rot[4][2];
+    if (cc_plain_fma()) {
+      cc_glyph_rotate<true>(dx, dy, s, k, rot);
+      bool fin = true;
+      for (int i = 0; i < 4; ++i) fin = fin && std::isfinite(rot[i][0]) && std::isfinite(rot[i][1]);
+      if (!fin) cc_glyph_rotate<false>(dx, dy, s, k, rot);
+    } else {
+      cc_glyph_rotate<false>(dx, dy, s, k, rot);
+    }
+    // Corner i at +160 - 16 i: {x, y, z}.
+    uint32_t pt[4][3];
+    double y[4];
+    for (int i = 0; i < 4; ++i) {
+      pt[i][0] = cc_dbits(rot[i][0] + cx);
+      y[i] = cc_rf(rot[i][1] + cy);
+      pt[i][1] = cc_dbits(y[i]);
+      pt[i][2] = z;
+    }
+    auto put_corners = [&]() {
+      for (uint32_t i = 0; i < 4u; ++i) cc_store_words(base, r2 + 160u - 16u * i, 3u, pt[i]);
+    };
+    // Aspect: slot 60 once per y, in corner order.
+    const double one = cc_f32d(REX_LOAD_U32(0x82042544u));
+    for (uint32_t i = 0; i < 4u; ++i) {
+      double ratio = one;
+      if (flag != 0u) {
+        const uint32_t fn = REX_LOAD_U32(REX_LOAD_U32(rnd) + 60u);
+        if (fn == 0x820A7488u) {
+          const uint32_t idx = REX_LOAD_U32(rnd + 29124u);
+          const uint32_t w = REX_LOAD_U32(rnd + idx * 24u + 28748u), h = REX_LOAD_U32(rnd + idx * 24u + 28752u);
+          REX_STORE_U64(r2 - 16u, uint64_t(h));  // sub_820A7488's conversion word (its last store)
+          ratio = cc_rf(cc_rf(double(int64_t(w))) / cc_rf(double(int64_t(h))));
+        } else {
+          put_corners();  // the frame as the exact body has it at this call
+          ctx.r3.u64 = rnd; ctx.lr = 0x820A9210u + 0x30u * i;
+          REX_CALL_INDIRECT_FUNC(fn);
+          ratio = ctx.f1.f64;
+        }
+      }
+      y[i] = cc_rf(ratio * y[i]);
+      pt[i][1] = cc_dbits(y[i]);
+    }
+    put_corners();
+    REX_STORE_U32(r2 + 92u, colour);
+    REX_STORE_U32(r2 + 84u, r1 + 136u);
+    REX_STORE_U32(r2 + 100u, count);
+    ctx.r3.u64 = rnd; ctx.r4.u64 = r2 + 160u; ctx.r5.u64 = r2 + 144u; ctx.r6.u64 = r2 + 128u; ctx.r7.u64 = r2 + 112u;
+    ctx.r8.u64 = r1 + 112u; ctx.r9.u64 = r1 + 120u; ctx.r10.u64 = r1 + 128u; ctx.lr = 0x820A92F4u;
+    const uint32_t quad = REX_LOAD_U32(REX_LOAD_U32(rnd) + 116u);
+    if (quad == 0x820A9308u) sub_820A9308(ctx, base);
+    else REX_CALL_INDIRECT_FUNC(quad);
+  }
+  ctx.r1.u64 = r0;
+  ctx.r12.u64 = lr0;
+  ctx.lr = lr0;
+}
