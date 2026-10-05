@@ -5,6 +5,7 @@ SRCS = \
   $(CURDIR)/xbox_audio.cpp \
   $(CURDIR)/xbox_render.cpp \
   $(CURDIR)/xbox_input.cpp \
+  $(CURDIR)/xbox_perf.cpp \
   $(CURDIR)/../runtime007/numeric/fused.cpp \
   $(CURDIR)/../runtime007/numeric/target_fma.cpp \
   $(CURDIR)/../runtime021/update_boundary_tests.cpp \
@@ -75,6 +76,11 @@ CXXFLAGS += -DCC_WALK_EXACT_BUILD
 endif
 ifneq ($(NOFMAFAST),)
 CXXFLAGS += -DCC_NO_FMA_FAST
+endif
+# Pentium III performance counters, a PMC line per second next to PERF
+# (xbox_perf.cpp): make PMC=1
+ifneq ($(PMC),)
+CXXFLAGS += -DCC_PMC
 endif
 # On-screen sampling profiler: make PROFILE=1
 ifneq ($(PROFILE),)

@@ -524,6 +524,7 @@ void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
                unsigned(sum_render / window_frames / 100u), unsigned(sum_draw / window_frames / 100u),
                unsigned(sum_wait / window_frames / 100u));
       max_frame_us = 0;
+      { void cc_xbox_perf_second(unsigned frames); cc_xbox_perf_second(window_frames); }  // xbox_perf.cpp
     }
     shown_fps = window_frames * 1000u / (now - window_start);
     shown_ms = (now - window_start) / window_frames;
