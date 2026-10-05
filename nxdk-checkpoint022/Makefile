@@ -50,7 +50,13 @@ endif
 ifneq ($(HOT),)
 CXXFLAGS += -DCC_HOT_CODE
 endif
-# Console census of slow-path memory pages: make SLOWSTATS=1
+# Guest memory through the 64 KiB page table instead of the flat guest
+# window (verification build; see runtime021/guest_window.h): make PAGETABLE=1
+ifneq ($(PAGETABLE),)
+CXXFLAGS += -DCC_PAGE_TABLE
+endif
+# Console census of slow-path memory pages (page-table builds only):
+# make PAGETABLE=1 SLOWSTATS=1
 ifneq ($(SLOWSTATS),)
 CXXFLAGS += -DCC_SLOW_STATS
 endif
@@ -90,8 +96,8 @@ CFLAGS += -fms-compatibility-version=19.29
 NXDK_SDL = y
 include $(NXDK_DIR)/Makefile
 
-$(CURDIR)/../runtime021/bridge.obj: $(CURDIR)/../runtime021/audio.inc $(CURDIR)/../runtime021/bodies.inc $(wildcard $(CURDIR)/../runtime021/as_*.inc) $(CURDIR)/../runtime008/bodies.inc $(CURDIR)/../runtime021/decls.inc $(CURDIR)/../runtime021/dispatch.inc $(wildcard $(CURDIR)/../runtime021/generated/*.inc) $(CURDIR)/../runtime021/cc_log.h
-$(CURDIR)/../runtime021/update_boundary_tests.obj: $(CURDIR)/../runtime021/cc_log.h $(CURDIR)/../runtime021/selftest.h
+$(CURDIR)/../runtime021/bridge.obj: $(CURDIR)/../runtime021/audio.inc $(CURDIR)/../runtime021/bodies.inc $(wildcard $(CURDIR)/../runtime021/as_*.inc) $(CURDIR)/../runtime008/bodies.inc $(CURDIR)/../runtime021/decls.inc $(CURDIR)/../runtime021/dispatch.inc $(wildcard $(CURDIR)/../runtime021/generated/*.inc) $(CURDIR)/../runtime021/cc_log.h $(CURDIR)/../runtime021/guest_window.h
+$(CURDIR)/../runtime021/update_boundary_tests.obj: $(CURDIR)/../runtime021/cc_log.h $(CURDIR)/../runtime021/selftest.h $(CURDIR)/../runtime021/guest_window.h
 
 # Disc payload: the boundary chain's inputs live under D:\data on the ISO.
 .PHONY: discdata

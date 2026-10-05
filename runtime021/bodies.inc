@@ -2270,6 +2270,18 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
       for (size_t i = 0; i < base.memory.region_count(); ++i) {
         if (!(rg[i].access & 2u) || !rg[i].host) continue;
         if (ctx.r1.u32 >= rg[i].guest && ctx.r1.u32 - rg[i].guest < rg[i].bytes) continue;
+#ifdef CC_FLAT_WINDOW
+        // Flat guest window: the 360 command ring (0x0200F140, 2 MiB) is no
+        // longer one 256 KiB block repeated over its 2 MiB, so its bytes
+        // differ from the aliased layout; nothing reads them (a run with
+        // CC_GFX_ALIAS=none on the page-table build changes only these
+        // hashes). The surfaces' uncommitted interiors read as zero (they
+        // were zero throughout in the aliased layout too).
+        if (rg[i].guest - 0x0200F140u < 0x200000u) continue;
+        const uint32_t g0 = rg[i].guest;
+        bool holes = false;
+        for (const cc_win::Range& hr : cc_win::kHoles) holes |= hr.lo < g0 + rg[i].bytes && g0 < hr.hi;
+#endif
         // Script values {u32 type, u32 payload, u8 in-use, 3 padding bytes}
         // are copied as three words, so their padding carries whatever stale
         // stack bytes the source temporary had; a word whose word 8 bytes
@@ -2277,16 +2289,28 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
         uint64_t h = 0x9E3779B97F4A7C15ull ^ rg[i].bytes;
         const uint8_t* p = rg[i].host;
         size_t n = rg[i].bytes, k = 0;
+#ifdef CC_FLAT_WINDOW
+        auto byte = [p, g0, holes](size_t at) -> uint32_t { return holes && cc_win::in_hole(g0 + uint32_t(at)) ? 0u : p[at]; };
+        auto be32 = [byte](size_t at) { return (byte(at) << 24) | (byte(at + 1) << 16) | (byte(at + 2) << 8) | byte(at + 3); };
+#else
         auto be32 = [p](size_t at) { return (uint32_t(p[at]) << 24) | (uint32_t(p[at + 1]) << 16) | (uint32_t(p[at + 2]) << 8) | p[at + 3]; };
+#endif
         auto is_type = [](uint32_t t) { return t == 0x80000000u || (t != 0u && t <= 0x40000u && (t & (t - 1u)) == 0u); };
         for (; k + 4u <= n; k += 4u) {
           uint32_t w = be32(k);
           if (k >= 8u && is_type(be32(k - 8u))) w &= 0xFF000000u;
           h = (h ^ w) * 0x100000001B3ull; h ^= h >> 29;
         }
+#ifdef CC_FLAT_WINDOW
+        for (; k < n; ++k) h = (h ^ byte(k)) * 0x100000001B3ull;
+#else
         for (; k < n; ++k) h = (h ^ p[k]) * 0x100000001B3ull;
+#endif
         all = (all ^ h) * 0x9E3779B97F4A7C15ull;
         cc_log("STATE frame=%u guest=%08x bytes=%08x hash=%016llx%c", f, rg[i].guest, rg[i].bytes, (unsigned long long)h, 10);
+#ifdef CC_FLAT_WINDOW
+        if (holes) continue;  // no dump of a region with uncommitted pages
+#endif
         // CC_STATE_DUMP=<dir>: the region's bytes to <dir>/<frame>_<guest>.bin
         if (const char* dir = std::getenv("CC_STATE_DUMP")) {
           char path[512];

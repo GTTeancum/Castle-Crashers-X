@@ -39,6 +39,7 @@ void cc_xprof_frame(bool (*read32)(uint32_t, uint32_t*));
 #include <map>
 #include <set>
 #include "cc_log.h"
+#include "guest_window.h"
 #ifndef CC_XBOX_DRIVER
 #include <atomic>
 #include <unordered_map>
@@ -284,7 +285,7 @@ static void cc_capture_on_function(const char* name, const Context& ctx,
                                    cc::xbox::AddressSpace& mem);
 static void cc_capture_end_frame(cc::xbox::AddressSpace& mem, uint32_t frame);
 void set_exact_texture_bind(bool v) noexcept { g_use_exact_texture_bind = v; }
-#ifdef CC_FAST
+#ifdef CC_PAGE_TABLE_FAST
 // Play build guest page table: one entry per 64 KiB guest page holding the
 // host address of the page start when the whole page lies in mapped memory
 // with one host offset (one region, or adjacent regions laid out the same
@@ -333,13 +334,84 @@ void cc_slow_dbg() {
            top[0], cnt[0], top[1], cnt[1], top[2], cnt[2], top[3], cnt[3], top[4], cnt[4], top[5], cnt[5], top[6], cnt[6], top[7], cnt[7]);
 }
 #endif
+static const void* g_page_owner = nullptr;
+#endif
+#if defined(CC_FLAT_WINDOW) && defined(CC_SLOW_STATS)
+#error "the slow-path census needs the page-table build (make PAGETABLE=1 SLOWSTATS=1)"
+#endif
 #if defined(CC_FAST) && !defined(CC_XBOX_DRIVER)
 static const uint32_t g_watch_store = [] {
   const char* e = std::getenv("CC_WATCH_STORE");
   return e ? uint32_t(std::strtoul(e, nullptr, 16)) : 0x80000000u;
 }();
 #endif
-static const void* g_page_owner = nullptr;
+#ifdef CC_FLAT_WINDOW
+}  // namespace cc::tree
+#ifndef CC_XBOX_DRIVER
+extern "C" __declspec(dllimport) void* __stdcall VirtualAlloc(void*, size_t, unsigned long, unsigned long);
+#endif
+namespace cc_win {
+#ifndef CC_XBOX_DRIVER
+uint8_t* g_base = nullptr;
+#endif
+bool open(const Range* ranges, unsigned count) {
+  // Window offsets of the ranges, page-rounded, sorted and merged, so each
+  // page is committed once.
+  Range pages[32];
+  unsigned n = 0;
+  for (unsigned i = 0; i < count && n < 32u; ++i) {
+    if (ranges[i].hi <= ranges[i].lo) continue;
+    const uint32_t lo = uint32_t(offset(ranges[i].lo)) & ~0xFFFu;
+    const uint32_t hi = (uint32_t(offset(ranges[i].hi - 1u)) + 0x1000u) & ~0xFFFu;
+    unsigned k = n++;
+    while (k && pages[k - 1].lo > lo) { pages[k] = pages[k - 1]; --k; }
+    pages[k] = Range{lo, hi};
+  }
+  unsigned m = 0;
+  for (unsigned i = 0; i < n; ++i) {
+    if (m && pages[i].lo <= pages[m - 1].hi) {
+      if (pages[i].hi > pages[m - 1].hi) pages[m - 1].hi = pages[i].hi;
+    } else {
+      pages[m++] = pages[i];
+    }
+  }
+  uint32_t committed = 0;
+#ifdef CC_XBOX_DRIVER
+  PVOID base = reinterpret_cast<PVOID>(kBase);
+  SIZE_T size = kSpan;
+  NTSTATUS st = NtAllocateVirtualMemory(&base, 0, &size, MEM_RESERVE, PAGE_READWRITE);
+  if (!NT_SUCCESS(st) || base != reinterpret_cast<PVOID>(kBase)) {
+    DbgPrint("MEM flat window: reserve %08x+%08x failed status=%08x\n", unsigned(kBase), unsigned(kSpan), unsigned(st));
+    return false;
+  }
+  for (unsigned i = 0; i < m; ++i) {
+    PVOID b = reinterpret_cast<PVOID>(kBase + pages[i].lo);
+    SIZE_T s = pages[i].hi - pages[i].lo;
+    st = NtAllocateVirtualMemory(&b, 0, &s, MEM_COMMIT, PAGE_READWRITE);
+    if (!NT_SUCCESS(st)) {
+      DbgPrint("MEM flat window: commit %08x+%08x failed status=%08x\n", unsigned(kBase + pages[i].lo),
+               unsigned(pages[i].hi - pages[i].lo), unsigned(st));
+      return false;
+    }
+    __builtin_memset(b, 0, pages[i].hi - pages[i].lo);
+    committed += pages[i].hi - pages[i].lo;
+  }
+  DbgPrint("MEM flat window base=%08x span=%08x committed=%uK ranges=%u\n", unsigned(kBase), unsigned(kSpan),
+           unsigned(committed >> 10), m);
+#else
+  g_base = static_cast<uint8_t*>(VirtualAlloc(nullptr, kSpan, 0x2000u /*MEM_RESERVE*/, 0x01u /*PAGE_NOACCESS*/));
+  if (!g_base) return false;
+  for (unsigned i = 0; i < m; ++i) {
+    if (!VirtualAlloc(g_base + pages[i].lo, pages[i].hi - pages[i].lo, 0x1000u /*MEM_COMMIT*/, 0x04u /*PAGE_READWRITE*/))
+      return false;
+    committed += pages[i].hi - pages[i].lo;
+  }
+  cc_log("MEM flat window committed=%uK ranges=%u%c", unsigned(committed >> 10), m, 10);
+#endif
+  return true;
+}
+}  // namespace cc_win
+namespace cc::tree {
 #endif
 struct Machine {
   struct ThreadSlot {
@@ -1004,7 +1076,11 @@ struct Machine {
     // Host probe build: report the guest functions that read one address.
     if (a == uint32_t(CC_WATCH_ADDR)) watch_hit(a);
 #endif
-#ifdef CC_FAST
+#ifdef CC_FLAT_WINDOW
+    // Play build: every mapped guest region sits in the flat window.
+    return get_be(cc_win::ptr(a), n);
+#else
+#ifdef CC_PAGE_TABLE_FAST
     {
       uint8_t* b = g_page_host[a >> 16];
       if (__builtin_expect(uintptr_t(b) > 1u, 1)) return get_be(b + (a & 0xFFFFu), n);
@@ -1013,13 +1089,17 @@ struct Machine {
     const uint32_t off = a - hot_read.lo;
     if (__builtin_expect(off < hot_read.limit, 1)) return get_be(hot_read.host + off, n);
     return load_slow(a, n);
+#endif
   }
   __attribute__((always_inline)) void store(uint32_t a, unsigned n, uint64_t v) {
     tick(a);
 #if defined(CC_FAST) && !defined(CC_XBOX_DRIVER)
     if (__builtin_expect(a - g_watch_store + 8u < 16u, 0)) watch_store(a, n, v);
 #endif
-#ifdef CC_FAST
+#ifdef CC_FLAT_WINDOW
+    put_be(cc_win::ptr(a), n, v);
+#else
+#ifdef CC_PAGE_TABLE_FAST
     {
       uint8_t* b = g_page_host[a >> 16];
       if (__builtin_expect(uintptr_t(b) > 1u, 1)) { put_be(b + (a & 0xFFFFu), n, v); return; }
@@ -1028,12 +1108,17 @@ struct Machine {
     const uint32_t off = a - hot_write.lo;
     if (__builtin_expect(off < hot_write.limit, 1)) { put_be(hot_write.host + off, n, v); return; }
     store_slow(a, n, v);
+#endif
   }
   // r1-addressed accesses: their own hot entry (a read/write region), so
-  // interleaved stack and heap accesses do not evict each other.
+  // interleaved stack and heap accesses do not evict each other. In the flat
+  // window they need no select: the guest stacks are low memory.
   __attribute__((always_inline)) uint64_t load_stack(uint32_t a, unsigned n) {
     tick(a);
-#ifdef CC_FAST
+#ifdef CC_FLAT_WINDOW
+    return get_be(cc_win::low_ptr(a), n);
+#else
+#ifdef CC_PAGE_TABLE_FAST
     {
       uint8_t* b = g_page_host[a >> 16];
       if (__builtin_expect(uintptr_t(b) > 1u, 1)) return get_be(b + (a & 0xFFFFu), n);
@@ -1042,13 +1127,17 @@ struct Machine {
     const uint32_t off = a - hot_stack.lo;
     if (__builtin_expect(off < hot_stack.limit, 1)) return get_be(hot_stack.host + off, n);
     return stack_load_slow(a, n);
+#endif
   }
   __attribute__((always_inline)) void store_stack(uint32_t a, unsigned n, uint64_t v) {
     tick(a);
 #if defined(CC_FAST) && !defined(CC_XBOX_DRIVER)
     if (__builtin_expect(a - g_watch_store + 8u < 16u, 0)) watch_store(a, n, v);
 #endif
-#ifdef CC_FAST
+#ifdef CC_FLAT_WINDOW
+    put_be(cc_win::low_ptr(a), n, v);
+#else
+#ifdef CC_PAGE_TABLE_FAST
     {
       uint8_t* b = g_page_host[a >> 16];
       if (__builtin_expect(uintptr_t(b) > 1u, 1)) { put_be(b + (a & 0xFFFFu), n, v); return; }
@@ -1057,12 +1146,13 @@ struct Machine {
     const uint32_t off = a - hot_stack.lo;
     if (__builtin_expect(off < hot_stack.limit, 1)) { put_be(hot_stack.host + off, n, v); return; }
     stack_store_slow(a, n, v);
+#endif
   }
   // Fill the page-table entry for a's page (play build): host address of
   // the page start if the regions covering the page cover all of it with
   // one host offset, else the 'checked path' marker.
   void fill_page([[maybe_unused]] uint32_t a) {
-#ifdef CC_FAST
+#ifdef CC_PAGE_TABLE_FAST
     if (g_page_owner != &memory) {
       std::memset(g_page_host, 0, sizeof(g_page_host));
       g_page_owner = &memory;
@@ -1106,7 +1196,7 @@ struct Machine {
     store_slow(a, n, v);
   }
   __attribute__((noinline, cold)) uint64_t load_slow(uint32_t a, unsigned n) {
-#if defined(CC_FAST) && (!defined(CC_XBOX_DRIVER) || defined(CC_SLOW_STATS))
+#if defined(CC_PAGE_TABLE_FAST) && (!defined(CC_XBOX_DRIVER) || defined(CC_SLOW_STATS))
     cc_slow_census(a);
 #endif
     if (const uint8_t* p = fast_host(a, n, 1u)) {
@@ -1120,7 +1210,7 @@ struct Machine {
     return v;
   }
   __attribute__((noinline, cold)) void store_slow(uint32_t a, unsigned n, uint64_t v) {
-#if defined(CC_FAST) && (!defined(CC_XBOX_DRIVER) || defined(CC_SLOW_STATS))
+#if defined(CC_PAGE_TABLE_FAST) && (!defined(CC_XBOX_DRIVER) || defined(CC_SLOW_STATS))
     cc_slow_census(a);
 #endif
     if (uint8_t* p = fast_host(a, n, 2u)) {
@@ -1454,7 +1544,11 @@ static constexpr uint8_t VectorMaskR[256] = {
   0x0E,0x0D,0x0C,0x0B,0x0A,0x09,0x08,0x07,0x06,0x05,0x04,0x03,0x02,0x01,0x00,0xFF
 };
 static simde__m128i simde_mm_setzero_si128() { return simde__m128i{}; }
+#ifdef CC_FLAT_WINDOW
+static uint8_t* raw_addr021(Machine&,uint32_t a) { return cc_win::ptr(a); }
+#else
 static uint8_t* raw_addr021(Machine& base,uint32_t a) { auto* p=base.fast_host(a,16,3); if(!p) p=base.memory.contiguous(a,16,3); if(!p) base.fail(Error::memory,a); return p; }
+#endif
 #define REX_RAW_ADDR(a) raw_addr021(base,uint32_t(a))
 using PPCRegister = Register;
 // Native code on the hot path (play build) goes into .text$hot with the
@@ -2633,9 +2727,17 @@ Result invoke(uint32_t entry, Context &ctx, AddressSpace &memory, Sink sink,
     error.error = Error::memory;
     return error;
   }
+#ifdef CC_FLAT_WINDOW
+  // The flat window holds one address space (the play session's); another
+  // one cannot be reached through it.
+  if (!memory.region_count() || !cc_win::in_window(memory.regions()[0].host)) {
+    error.error = Error::memory;
+    return error;
+  }
+#endif
   Machine m(memory, sink);
   m.budget = budget;
-#ifdef CC_FAST
+#ifdef CC_PAGE_TABLE_FAST
   if (g_page_owner != &memory) {  // a different address space: forget its pages
     std::memset(g_page_host, 0, sizeof(g_page_host));
     g_page_owner = &memory;
