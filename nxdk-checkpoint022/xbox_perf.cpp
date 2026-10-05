@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Per-second console measurement lines printed next to PERF (called once a
 // second from cc_xr_frame_end in xbox_render.cpp):
-//   FRAME: frames in the second and baked-texture reads (count, KiB) in it.
+//   FRAME: where each frame's time goes besides the game's update and
+//          render, in 0.1 ms per frame like PERF: audio mix (aud), frame end
+//          with the overlay, GPU wait and present (end), frame-pacing sleep
+//          (slp), worker jobs at the frame boundary (wrk) and everything
+//          else (oth = frame - upd - ren - aud - end - slp - wrk: the main
+//          loop outside update/render and the frame-boundary glue); and the
+//          baked textures read in the second (count, KiB).
 //   PMC (make PMC=1): two Pentium III performance counters, rotating through
 //          event pairs one second at a time. The title runs in ring 0, so it
 //          programs PerfEvtSel0/1 (MSR 0x186/0x187) and reads with rdpmc.
@@ -10,8 +16,9 @@
 #include <cstdint>
 
 // runtime021 (bridge.cpp): FRAME line counters since the last call, reset:
-// {frames, baked-texture reads, baked-texture bytes}.
-void cc_xbox_frame_stats(uint64_t out[3]);
+// {frames, baked-texture reads, baked-texture bytes, then microseconds of
+// frame, audio, end, sleep, workers, update, render}.
+void cc_xbox_frame_stats(uint64_t out[10]);
 
 #ifdef CC_PMC
 namespace {
@@ -51,9 +58,16 @@ void arm(unsigned set) {
 
 // frames: frames completed in the second just ended.
 void cc_xbox_perf_second([[maybe_unused]] unsigned frames) {
-  uint64_t fs[3] = {};
+  uint64_t fs[10] = {};
   cc_xbox_frame_stats(fs);
-  DbgPrint("FRAME frames=%u bake=%u bakeKB=%u\n", unsigned(fs[0]), unsigned(fs[1]), unsigned(fs[2] >> 10));
+  const uint64_t f = fs[0] ? fs[0] : 1u;
+  uint64_t known = 0;
+  for (unsigned i = 4; i < 10; ++i) known += fs[i];
+  const uint64_t other = fs[3] > known ? fs[3] - known : 0u;
+  DbgPrint("FRAME frames=%u ms=%u aud=%u end=%u slp=%u wrk=%u oth=%u bake=%u bakeKB=%u\n", unsigned(fs[0]),
+           unsigned(fs[3] / f / 100u), unsigned(fs[4] / f / 100u), unsigned(fs[5] / f / 100u),
+           unsigned(fs[6] / f / 100u), unsigned(fs[7] / f / 100u), unsigned(other / f / 100u),
+           unsigned(fs[1]), unsigned(fs[2] >> 10));
 #ifdef CC_PMC
   const unsigned n = frames ? frames : 1u;
   if (g_armed) {

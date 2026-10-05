@@ -2763,10 +2763,12 @@ const char *name(Error e) noexcept {
 } // namespace cc::tree
 #ifdef CC_XBOX_DRIVER
 // The console FRAME line's counters (nxdk-checkpoint022/xbox_perf.cpp), read
-// and reset: out = {frames, baked-texture reads, baked-texture bytes}.
-void cc_xbox_frame_stats(uint64_t out[3]) {
+// and reset: out = {frames, baked-texture reads, baked-texture bytes, then
+// microseconds of frame, audio, end, sleep, workers, update, render}.
+void cc_xbox_frame_stats(uint64_t out[10]) {
   using namespace cc::tree;
   out[0] = g_fs_frames; out[1] = g_fs_bake_reads; out[2] = g_fs_bake_bytes;
   g_fs_frames = g_fs_bake_reads = g_fs_bake_bytes = 0;
+  for (unsigned i = 0; i < 7; ++i) { out[3 + i] = g_fs_us[i]; g_fs_us[i] = 0; }
 }
 #endif

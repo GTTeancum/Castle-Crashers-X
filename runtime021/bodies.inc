@@ -210,8 +210,12 @@ static double g_update_seconds, g_render_seconds;
 #else
 static uint32_t g_frame_update_us, g_frame_render_us;
 // Console FRAME line (nxdk-checkpoint022/xbox_perf.cpp, once a second):
-// frames and baked-texture reads and bytes, summed until read by
-// cc_xbox_frame_stats (bridge.cpp).
+// frame-to-frame time and its parts outside the game's update and render,
+// in microseconds: {frame, audio mix, frame end (overlay, GPU wait,
+// present), frame-pacing sleep, worker jobs, update, render}; frames, and
+// baked-texture reads and bytes. Summed until read by cc_xbox_frame_stats
+// (bridge.cpp).
+static uint64_t g_fs_us[7];
 static uint32_t g_fs_frames, g_fs_bake_reads, g_fs_bake_bytes;
 #endif
 static uint32_t g_tex_swap_ins = 0, g_tex_swap_outs = 0;
@@ -2193,9 +2197,17 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     base.memory.store_be(0x02500110u, 4, uint32_t(t100ns / 10000ull));
   }
 #ifdef CC_XBOX_DRIVER
-  ++g_fs_frames;
+  const uint64_t fs_t0 = ::cc_xbox_clock(1000000u);
+  {
+    static uint64_t last = 0;
+    if (last) { g_fs_us[0] += fs_t0 - last; ++g_fs_frames; }
+    last = fs_t0;
+  }
 #endif
   cc_audio_frame();
+#ifdef CC_XBOX_DRIVER
+  g_fs_us[1] += ::cc_xbox_clock(1000000u) - fs_t0;
+#endif
 #ifdef CC_FAST
   cc_menu_text_patch(base);
 #endif
@@ -2233,7 +2245,12 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     last = now;
   }
 #endif
-  ::cc_xr_frame_end(g_frame_update_us, g_frame_render_us);
+  g_fs_us[5] += g_frame_update_us; g_fs_us[6] += g_frame_render_us;
+  {
+    const uint64_t t = ::cc_xbox_clock(1000000u);
+    ::cc_xr_frame_end(g_frame_update_us, g_frame_render_us);
+    g_fs_us[2] += ::cc_xbox_clock(1000000u) - t;
+  }
   g_frame_update_us = g_frame_render_us = 0;
 #if defined(CC_FAST) && !defined(CC_BENCH)
   // Play build: honour the game's own frame pacing (it asks to sleep the
@@ -2241,7 +2258,11 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   // asks for its 2 ms minimum; skip that.
   {
     const uint64_t interval = uint64_t(0) - base.load(ctx.r5.u32, 8);
-    if (interval > 20000u) ::cc_xbox_sleep_100ns(interval);
+    if (interval > 20000u) {
+      const uint64_t t = ::cc_xbox_clock(1000000u);
+      ::cc_xbox_sleep_100ns(interval);
+      g_fs_us[3] += ::cc_xbox_clock(1000000u) - t;
+    }
   }
 #endif
 #endif
@@ -2358,7 +2379,15 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   // dedicated scratch stack below the main thread's, exactly as the
   // worker's own stack would be. Nothing here is synthesized: only the
   // scheduling point is modeled.
+#ifdef CC_XBOX_DRIVER
+  {
+    const uint64_t t = ::cc_xbox_clock(1000000u);
+    cc_drain_workers(base, ctx.r13.u32);
+    g_fs_us[4] += ::cc_xbox_clock(1000000u) - t;
+  }
+#else
   cc_drain_workers(base, ctx.r13.u32);
+#endif
   base.trace_one_frame = false;
 #ifndef CC_FAST
   // Diagnostics only: on the Xbox cc_log scrolls the framebuffer text,
