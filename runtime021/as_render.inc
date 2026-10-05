@@ -25,15 +25,136 @@
 //    update stack popped, the result OR-ed into the flags; flag 2 ends the
 //    walk.
 // Afterwards the +152 mode and every open depth entry pop a renderer state.
+//
+// Play build: the methods the walk calls are read from the node's vtable
+// and, when they are the display-list classes' own (addresses below; the
+// image's code is fixed), answered or called directly instead of through
+// cc_vcall: slot 48 (clear bit 6 of +86), slot 44 (constant 1 or 0), slot
+// 180 (the visibility query sub_8208AF08, or constant 1) and slot 68 (this
+// walk or the sprite leaf). Any other method is called as before.
+// The query for a child C walks C's parents (slot 156, +96 for clips) and
+// returns 0 at the first one that answers slot 44 with bit 0 of byte +140
+// clear, else C's own bit 0 of +140. For every child whose parent is this
+// clip the walk over the parents is the same, so it is done once per clip
+// (the clip's "chain": 1 every node from the clip up passes, 2 one fails)
+// and such a child's answer is (chain 1 ? bit 0 of its +140 : 0). The chain
+// of a clip child follows from this clip's and is handed to its walk. The
+// query's one guest-visible effect, its frame word at r1 - 112, is still
+// written. Chains are formed only from the recognised leaves (slot 44
+// constant, slot 156 +96 or constant 0); otherwise the query runs. Nothing
+// the draw walk runs writes +96 or +140; with CC_ORACLE=1 the host runs the
+// query for every child answered from a chain and logs any difference.
+// The next sibling's node is prefetched while a child is drawn.
+// Switches: host CC_WALK_VCALL=1 (every method through cc_vcall, no chains:
+// the previous walk), CC_WALK_NOINHERIT=1 (the query for every child),
+// CC_WALK_NOPREFETCH=1; Xbox make WALKVCALL=1 / WALKNOINHERIT=1 /
+// WALKNOPREFETCH=1. CC_WALK_EXACT (the exact query) also turns chains off.
+namespace cc_walk {
+constexpr uint32_t kLi1 = 0x820619E8u;     // li r3,1
+constexpr uint32_t kLi0 = 0x82053A98u;     // li r3,0
+constexpr uint32_t kParent = 0x820868D0u;  // lwz r3,96(r3)
+constexpr uint32_t kClear6 = 0x82086278u;  // byte +86 &= ~0x40
+constexpr uint32_t kQuery = 0x8208AF08u;   // sub_8208AF08
+constexpr uint32_t kWalk = 0x8208A7A0u;    // sub_8208A7A0
+constexpr uint32_t kSprite = 0x820855D8u;  // sub_820855D8
+#if defined(CC_WALK_VCALL_BUILD)
+constexpr bool kDirect = false;
+#else
+constexpr bool kDirect = true;
+#endif
+#if defined(CC_WALK_VCALL_BUILD) || defined(CC_WALK_NOINHERIT_BUILD) || defined(CC_WALK_EXACT_BUILD)
+constexpr bool kInherit = false;
+#else
+constexpr bool kInherit = true;
+#endif
+#if defined(CC_WALK_NOPREFETCH_BUILD)
+constexpr bool kPrefetch = false;
+#else
+constexpr bool kPrefetch = true;
+#endif
+#ifdef CC_XBOX_DRIVER
+inline bool direct() { return kDirect; }
+inline bool inherit() { return kInherit; }
+inline bool prefetch() { return kPrefetch; }
+#else
+inline bool direct() {
+  static const bool on = kDirect && !std::getenv("CC_WALK_VCALL");
+  return on;
+}
+inline bool inherit() {
+  static const bool on = kInherit && direct() && !std::getenv("CC_WALK_NOINHERIT") && !std::getenv("CC_WALK_EXACT");
+  return on;
+}
+inline bool prefetch() {
+  static const bool on = kPrefetch && !std::getenv("CC_WALK_NOPREFETCH");
+  return on;
+}
+#endif
+// Chain handed by a walk to the walk of the clip child it calls next
+// (taken and cleared at that walk's entry).
+uint32_t g_chain_node = 0;
+uint8_t g_chain = 0;
+// A node's methods in slots 44, 68, 156 and 180.
+struct Slots { uint32_t s44, s68, s156, s180; };
+inline __attribute__((always_inline)) void slots(Machine& base, uint32_t vt, Slots& s) {
+  if (const uint8_t* p = cc_obj_host(vt + 44u, 140u)) {
+    s.s44 = cc_hb32(p); s.s68 = cc_hb32(p + 24u); s.s156 = cc_hb32(p + 112u); s.s180 = cc_hb32(p + 136u);
+  } else {
+    s.s44 = REX_LOAD_U32(vt + 44u); s.s68 = REX_LOAD_U32(vt + 68u);
+    s.s156 = REX_LOAD_U32(vt + 156u); s.s180 = REX_LOAD_U32(vt + 180u);
+  }
+}
+// Chain of node a as the query walks it: 1 pass, 2 fail, 3 a method on the
+// way is not a recognised leaf (the query then runs for each child).
+__attribute__((noinline)) uint8_t chain_of(Machine& base, uint32_t a) {
+  for (uint32_t n = 0; a != 0u; ++n) {
+    if (n >= 4096u) return 3u;  // a parent loop: the query itself runs (and loops)
+    const uint32_t vt = REX_LOAD_U32(a);
+    const uint32_t s44 = REX_LOAD_U32(vt + 44u), s156 = REX_LOAD_U32(vt + 156u);
+    if (s44 == kLi1) {
+      if ((REX_LOAD_U8(a + 140u) & 1u) == 0u) return 2u;
+    } else if (s44 != kLi0) {
+      return 3u;
+    }
+    if (s156 == kParent) a = REX_LOAD_U32(a + 96u);
+    else if (s156 == kLi0) a = 0u;
+    else return 3u;
+  }
+  return 1u;
+}
+// Prefetch of the node at guest a (the fields the walk and the sprite leaf
+// read lie in its first 160 bytes).
+inline __attribute__((always_inline)) void prefetch_node(uint32_t a) {
+  if (const uint8_t* p = cc_obj_host(a, 160u)) {
+    __builtin_prefetch(p, 0, 3); __builtin_prefetch(p + 32, 0, 3); __builtin_prefetch(p + 64, 0, 3);
+    __builtin_prefetch(p + 96, 0, 3); __builtin_prefetch(p + 128, 0, 3);
+  }
+}
+#ifndef CC_XBOX_DRIVER
+// Oracle (CC_ORACLE=1): the query itself for a child answered from the
+// clip's chain (it writes the same frame word).
+__attribute__((noinline)) void oracle_query(Context& ctx, Machine& base, uint32_t ch, uint32_t answer) {
+  ctx.r3.u64 = ch; ctx.lr = 0x8208A888u;
+  sub_8208AF08(ctx, base);
+  if ((ctx.r3.u32 & 0xFFu) != answer) cc_oracle_mismatch("sub_8208A7A0 chain", 0, ctx.r3.u32 & 0xFFu, answer);
+}
+#endif
+}  // namespace cc_walk
 static CC_HOT_FN void sub_8208A7A0(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8208A7A0);
   CC_FPROF_SCOPE(sub_8208A7A0_native);
+  using namespace cc_walk;
   const uint32_t clip = ctx.r3.u32, st = ctx.r4.u32, rnd = ctx.r5.u32;
   uint32_t stop = ctx.r6.u32;
+  const bool dir = direct(), inh = inherit(), pf = prefetch();
+  // This clip's chain: 0 not yet known, 1 pass, 2 fail, 3 not formed.
+  uint8_t chain = g_chain_node == clip ? g_chain : 0u;
+  g_chain_node = 0u;
   CcFrame frame(ctx, base, 256u);
   const uint32_t r1 = ctx.r1.u32;
   uint32_t r23 = 0, flags = 0, depth = 0;
-  cc_vcall(ctx, base, clip, 48u, 0x8208A7DCu);
+  if (dir && REX_LOAD_U32(REX_LOAD_U32(clip) + 48u) == kClear6) REX_STORE_U8(clip + 86u, uint8_t(REX_LOAD_U8(clip + 86u) & 0xBFu));
+  else cc_vcall(ctx, base, clip, 48u, 0x8208A7DCu);
   if (stop == clip) stop = 0u;
   if (int32_t(REX_LOAD_U32(clip + 152u)) != 0) {
     ctx.r4.u64 = rnd; ctx.r5.u64 = REX_LOAD_U32(clip + 152u) & 0xFFFFu;
@@ -41,16 +162,46 @@ static CC_HOT_FN void sub_8208A7A0(Context& ctx, Machine& base) {
     REX_CALL_INDIRECT_FUNC(REX_LOAD_U32(REX_LOAD_U32(rnd) + 32u));
   }
   for (uint32_t ch = REX_LOAD_U32(clip + 104u); ch != 0u; ch = REX_LOAD_U32(ch + 88u)) {
+    if (pf) prefetch_node(REX_LOAD_U32(ch + 88u));
+    Slots s{0u, 0u, 0u, 0u};
+    if (dir) slots(base, REX_LOAD_U32(ch), s);
+    uint32_t a44;
+    if (dir && s.s44 == kLi1) a44 = 1u;
+    else if (dir && s.s44 == kLi0) a44 = 0u;
+    else a44 = cc_vcall(ctx, base, ch, 44u, 0x8208A858u) & 0xFFu;
     bool draw;
-    if ((cc_vcall(ctx, base, ch, 44u, 0x8208A858u) & 0xFFu) == 0u) {
+    if (a44 == 0u) {
       draw = true;
-    } else if ((REX_LOAD_U8(ch + 140u) & 0x80u) != 0u && (cc_vcall(ctx, base, ch, 180u, 0x8208A888u) & 0xFFu) != 0u) {
+    } else if ((REX_LOAD_U8(ch + 140u) & 0x80u) == 0u) {
+      draw = false;
+    } else if (dir && s.s180 == kQuery) {
+      // ch's parents as the query walks them are this clip's chain when
+      // ch's slot 156 is +96 and that is this clip.
+      const bool mine = inh && s.s156 == kParent && REX_LOAD_U32(ch + 96u) == clip;
+      if (mine && chain == 0u) chain = chain_of(base, clip);
+      if (mine && (chain == 1u || chain == 2u)) {
+        REX_STORE_U32(r1 - 112u, r1);  // the query's frame word
+        const uint32_t answer = chain == 1u ? (REX_LOAD_U8(ch + 140u) & 1u) : 0u;
+#ifndef CC_XBOX_DRIVER
+        static const bool oracle = std::getenv("CC_ORACLE") != nullptr;
+        if (oracle) oracle_query(ctx, base, ch, answer);
+#endif
+        draw = answer != 0u;
+      } else {
+        ctx.r3.u64 = ch; ctx.lr = 0x8208A888u;
+        sub_8208AF08(ctx, base);
+        draw = (ctx.r3.u32 & 0xFFu) != 0u;
+      }
+    } else if (dir && s.s180 == kLi1) {
       draw = true;
     } else {
+      draw = (cc_vcall(ctx, base, ch, 180u, 0x8208A888u) & 0xFFu) != 0u;
+    }
+    if (!draw) {
       if (stop == ch) { r23 = 2u; break; }
       continue;
     }
-    if (!draw || (REX_LOAD_U8(ch + 86u) & 0x10u) == 0u) continue;
+    if ((REX_LOAD_U8(ch + 86u) & 0x10u) == 0u) continue;
     {
       const uint32_t n = REX_LOAD_U32(st + 8248u) + 1u;
       REX_STORE_U32(st + 8248u, n);
@@ -121,7 +272,30 @@ static CC_HOT_FN void sub_8208A7A0(Context& ctx, Machine& base) {
       }
     }
     ctx.r4.u64 = st; ctx.r5.u64 = rnd; ctx.r6.u64 = stop;
-    const uint32_t r = cc_vcall(ctx, base, ch, 68u, 0x8208AB28u);
+    uint32_t r;
+    if (dir && s.s68 == kWalk) {
+      // The child's chain fails at the child itself when it answers slot 44
+      // with bit 0 of +140 clear, else continues with this clip's when the
+      // child's parent (slot 156) is this clip.
+      uint8_t cc = 0u;
+      if (inh) {
+        if (s.s44 == kLi1 && (REX_LOAD_U8(ch + 140u) & 1u) == 0u) cc = 2u;
+        else if ((s.s44 == kLi1 || s.s44 == kLi0) && s.s156 == kParent && REX_LOAD_U32(ch + 96u) == clip &&
+                 (chain == 1u || chain == 2u))
+          cc = chain;
+      }
+      g_chain_node = cc ? ch : 0u; g_chain = cc;
+      ctx.r3.u64 = ch; ctx.lr = 0x8208AB28u;
+      sub_8208A7A0(ctx, base);
+      g_chain_node = 0u;
+      r = ctx.r3.u32;
+    } else if (dir && s.s68 == kSprite) {
+      ctx.r3.u64 = ch; ctx.lr = 0x8208AB28u;
+      sub_820855D8(ctx, base);
+      r = ctx.r3.u32;
+    } else {
+      r = cc_vcall(ctx, base, ch, 68u, 0x8208AB28u);
+    }
     if (REX_LOAD_U32(ch + 76u) != 0u) REX_STORE_U32(st + 10048u, REX_LOAD_U32(st + 10048u) - 1u);
     if ((REX_LOAD_U8(ch + 86u) & 0x80u) != 0u) REX_STORE_U32(st + 9532u, REX_LOAD_U32(st + 9532u) - 1u);
     flags |= r;

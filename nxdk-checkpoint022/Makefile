@@ -75,6 +75,18 @@ endif
 ifneq ($(SPRITERING),)
 CXXFLAGS += -DCC_SPRITE_RING_BUILD
 endif
+# Draw walk bisect: WALKVCALL=1 (every method through cc_vcall, no visibility
+# chains), WALKNOINHERIT=1 (the visibility query for every child),
+# WALKNOPREFETCH=1 (no next-sibling prefetch)
+ifneq ($(WALKVCALL),)
+CXXFLAGS += -DCC_WALK_VCALL_BUILD
+endif
+ifneq ($(WALKNOINHERIT),)
+CXXFLAGS += -DCC_WALK_NOINHERIT_BUILD
+endif
+ifneq ($(WALKNOPREFETCH),)
+CXXFLAGS += -DCC_WALK_NOPREFETCH_BUILD
+endif
 ifneq ($(NOFMAFAST),)
 CXXFLAGS += -DCC_NO_FMA_FAST
 endif
