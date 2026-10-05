@@ -72,3 +72,10 @@ logs/xemu_*/
 logs/run_*.txt
 logs/console/
 nxdk-checkpoint022/main.map
+# Console power tool build outputs
+tools/xbox_power/bin/
+tools/xbox_power/*.obj
+tools/xbox_power/*.d
+tools/xbox_power/*.xbe
+tools/xbox_power/main.exe*
+tools/xbox_power/main.lib

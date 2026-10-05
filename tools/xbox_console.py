@@ -13,6 +13,11 @@ XboxSDK\\XboxName, or --xbox). Commands:
   profile <delay> <secs> <out>  sample the running game's threads (Eip, Esp,
                            top of stack) every 5 ms after <delay> seconds
   reboot                   warm reboot to the default title
+  ledtest                  run tools/xbox_power/ledtest.xbe: the front LED
+                           blinks orange for 10 s (checks the SMBus path the
+                           power-off uses), then returns to normal
+  poweroff                 run tools/xbox_power/poweroff.xbe: switches the
+                           console off (it has to be powered on by hand)
   cmd <text>               send one XBDM command and print the reply
 
 File copies, launches and captures use the XDK command-line tools in
@@ -197,6 +202,18 @@ def main(argv):
         print("captured", argv[1])
     elif op == "profile":
         profile(float(argv[1]), float(argv[2]), argv[3])
+    elif op in ("ledtest", "poweroff"):
+        here = os.path.dirname(os.path.abspath(__file__))
+        src = os.path.join(here, "xbox_power", op + ".xbe")
+        tool("xbmkdir", GAME_DIR + r"\power", check=False)
+        tool("xbcp", "/y", "/q", src, GAME_DIR + r"\power\default.xbe")
+        listen(15.0 if op == "ledtest" else 8.0, None, launch=GAME_DIR + r"\power\default.xbe")
+        if op == "poweroff":
+            try:
+                Xbdm(XBOX, timeout=3.0)
+                print("console still answers")
+            except (OSError, RuntimeError):
+                print("console is off")
     elif op == "reboot":
         tool("xbreboot")
         print("rebooted")
