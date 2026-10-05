@@ -233,6 +233,63 @@ static std::set<uint32_t> g_committed_pages;
 #include "generated/sub_820B6D48.inc"
 
 #ifdef CC_FAST
+// Display-list child-by-name cache (sub_82085078). The answer for (list,
+// id) depends only on the list's links (the head word and each node's
+// +88), each node's class (vtable word +0) and, for the three named
+// classes, the name: clips 0x8203E878 / 0x8203F510 keep it as u16 +100,
+// text fields 0x8203F680 as u16 +150 (slots 52/72 of those vtables read
+// exactly that; slots 76/80 write it). Results, "not found" included, sit
+// in a direct-mapped table stamped with the version clock at fill time.
+// An entry is valid while neither its list's version nor its id's version
+// has moved past the stamp:
+//  - list versions are bumped by every list primitive (insert, remove,
+//    remove by depth, clear, sort) and by the clip constructor and reset
+//    for the object's own list at +104 (a recycled address starts fresh);
+//  - id versions are bumped for the old and the new name by every name
+//    setter; the _name property setter, which stores the name itself,
+//    flushes the table.
+// Version slots are indexed by hash; a shared slot only costs misses.
+// While a list primitive runs (it calls guest code with the list
+// half-changed) the table is neither read nor filled. A walk that meets a
+// node of any other class whose slot 52/72 answer is not a constant calls
+// the methods as the original does and is not cached.
+struct CcDlEnt { uint32_t list, id, stamp, result; };
+static CcDlEnt g_dl_cache[2048];
+static uint32_t g_dl_lver[2048], g_dl_iver[2048];
+static uint32_t g_dl_tick = 1u, g_dl_busy = 0u;
+#ifndef CC_XBOX_DRIVER
+// Host census (CC_DLCACHE_STATS=1), printed every 300 frames.
+static struct { uint64_t calls, hits, fills, uncached, busy, nodes, list_bumps, name_bumps, flushes; } g_dl_st;
+#define CC_DL_STAT(f) (++g_dl_st.f)
+#else
+#define CC_DL_STAT(f) ((void)0)
+#endif
+static inline uint32_t& cc_dl_lv(uint32_t list) { return g_dl_lver[((list >> 3) ^ (list >> 14)) & 2047u]; }
+static inline uint32_t& cc_dl_iv(uint32_t id) { return g_dl_iver[id & 2047u]; }
+static __attribute__((noinline)) void cc_dl_flush() {
+  CC_DL_STAT(flushes);
+  __builtin_memset(g_dl_cache, 0, sizeof(g_dl_cache));
+}
+static inline uint32_t cc_dl_new_version() {
+  if (__builtin_expect(++g_dl_tick == 0u, 0)) {  // clock wrapped: start over
+    cc_dl_flush();
+    __builtin_memset(g_dl_lver, 0, sizeof(g_dl_lver));
+    __builtin_memset(g_dl_iver, 0, sizeof(g_dl_iver));
+    g_dl_tick = 1u;
+  }
+  return g_dl_tick;
+}
+static inline void cc_dl_list_changed(uint32_t list) { CC_DL_STAT(list_bumps); cc_dl_lv(list) = cc_dl_new_version(); }
+static inline void cc_dl_name_changed(uint32_t id) { CC_DL_STAT(name_bumps); cc_dl_iv(id & 0xFFFFu) = cc_dl_new_version(); }
+// A list primitive in progress on one list.
+struct CcDlMutate {
+  uint32_t list;
+  explicit CcDlMutate(uint32_t l) : list(l) { ++g_dl_busy; cc_dl_list_changed(l); }
+  ~CcDlMutate() { cc_dl_list_changed(list); --g_dl_busy; }
+};
+#endif
+
+#ifdef CC_FAST
 #define sub_82082390 sub_82082390_exact
 #endif
 #include "generated/sub_82082390.inc"
@@ -929,7 +986,18 @@ static void __imp__RtlInitializeCriticalSection(Context& ctx, Machine& base) {
 #include "generated/sub_82095C20.inc"
 #include "generated/sub_8209C340.inc"
 #include "generated/sub_8209CED0.inc"
+#ifdef CC_FAST
+#define sub_82084BE8 sub_82084BE8_exact
+#endif
 #include "generated/sub_82084BE8.inc"
+#ifdef CC_FAST
+#undef sub_82084BE8
+// Display-list clear (exact sub_82084BE8: list r3), seen by the name cache.
+static void sub_82084BE8(Context& ctx, Machine& base) {
+  const CcDlMutate m(ctx.r3.u32);
+  sub_82084BE8_exact(ctx, base);
+}
+#endif
 #ifdef CC_FAST
 #define sub_82079A00 sub_82079A00_exact
 #endif
@@ -939,9 +1007,45 @@ static void __imp__RtlInitializeCriticalSection(Context& ctx, Machine& base) {
 #endif
 #include "generated/sub_8207A0D0.inc"
 #include "generated/sub_82079F38.inc"
+#ifdef CC_FAST
+#define sub_820867B8 sub_820867B8_exact
+#endif
 #include "generated/sub_820867B8.inc"
+#ifdef CC_FAST
+#undef sub_820867B8
+#define sub_82086BA8 sub_82086BA8_exact
+#endif
 #include "generated/sub_82086BA8.inc"
+#ifdef CC_FAST
+#undef sub_82086BA8
+#define sub_820869B0 sub_820869B0_exact
+#endif
 #include "generated/sub_820869B0.inc"
+#ifdef CC_FAST
+#undef sub_820869B0
+// Clip name clear (exact sub_820867B8: clip r3; u16 +100 = 0), clip reset
+// (exact sub_82086BA8, the clip vtable's slot 4: clears the clip's own
+// list at +104, then its depth, link +88, name and parent) and clip
+// constructor (exact sub_820869B0: list head +104 = 0), seen by the name
+// cache. The reset also counts as a change of the list it may still be
+// linked into (its parent's, [clip+96]+104).
+static void sub_820867B8(Context& ctx, Machine& base) {
+  const uint32_t old = REX_LOAD_U16(ctx.r3.u32 + 100u);
+  sub_820867B8_exact(ctx, base);
+  cc_dl_name_changed(old);
+}
+static void sub_82086BA8(Context& ctx, Machine& base) {
+  const uint32_t clip = ctx.r3.u32, parent = REX_LOAD_U32(clip + 96u);
+  const CcDlMutate own(clip + 104u);
+  if (parent) cc_dl_list_changed(parent + 104u);
+  sub_82086BA8_exact(ctx, base);
+  if (parent) cc_dl_list_changed(parent + 104u);
+}
+static void sub_820869B0(Context& ctx, Machine& base) {
+  const CcDlMutate own(ctx.r3.u32 + 104u);
+  sub_820869B0_exact(ctx, base);
+}
+#endif
 #include "generated/sub_82094C30.inc"
 #include "generated/sub_82129FA0.inc"
 #include "generated/sub_8208CFA0.inc"
@@ -2304,6 +2408,15 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
            double(base.timebase_virtual_ticks - t_last) * 1000.0 / double(Machine::timebase_hz), 10);
     t_last = base.timebase_virtual_ticks;
     g_clip_ticks = 0;
+  }
+  static const bool dl_stats = std::getenv("CC_DLCACHE_STATS") != nullptr;
+  if (dl_stats && (g_frame_delay_calls + 1u) % 300u == 0u) {
+    cc_log("DLCACHE frame=%u calls=%llu hits=%llu fills=%llu uncached=%llu busy=%llu nodes=%llu list_bumps=%llu name_bumps=%llu flushes=%llu\n",
+           g_frame_delay_calls + 1u, (unsigned long long)g_dl_st.calls, (unsigned long long)g_dl_st.hits,
+           (unsigned long long)g_dl_st.fills, (unsigned long long)g_dl_st.uncached, (unsigned long long)g_dl_st.busy,
+           (unsigned long long)g_dl_st.nodes, (unsigned long long)g_dl_st.list_bumps, (unsigned long long)g_dl_st.name_bumps,
+           (unsigned long long)g_dl_st.flushes);
+    g_dl_st = {};
   }
 #endif
   if (std::getenv("CC_WORKSET") && (g_frame_delay_calls + 1u) % 1000u == 0u)
@@ -3808,7 +3921,20 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_82092FA0.inc"
 #include "generated/sub_82093918.inc"
 #include "generated/sub_82094688.inc"
+#ifdef CC_FAST
+#define sub_82094730 sub_82094730_exact
+#endif
 #include "generated/sub_82094730.inc"
+#ifdef CC_FAST
+#undef sub_82094730
+// Text-field name clear (exact sub_82094730: field r3; u16 +150 = 0), seen
+// by the name cache.
+static void sub_82094730(Context& ctx, Machine& base) {
+  const uint32_t old = REX_LOAD_U16(ctx.r3.u32 + 150u);
+  sub_82094730_exact(ctx, base);
+  cc_dl_name_changed(old);
+}
+#endif
 #include "generated/sub_820956B0.inc"
 #include "generated/sub_82095B60.inc"
 #include "generated/sub_82095B98.inc"
@@ -5078,7 +5204,20 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_8208CEA8.inc"
 #include "generated/sub_8208CD38.inc"
 #include "generated/sub_82094678.inc"
+#ifdef CC_FAST
+#define sub_82084EE0 sub_82084EE0_exact
+#endif
 #include "generated/sub_82084EE0.inc"
+#ifdef CC_FAST
+#undef sub_82084EE0
+// Display-list sort by depth (exact sub_82084EE0: list r3), seen by the
+// name cache. It calls nothing, so one version change after it suffices.
+static void sub_82084EE0(Context& ctx, Machine& base) {
+  const uint32_t list = ctx.r3.u32;
+  sub_82084EE0_exact(ctx, base);
+  cc_dl_list_changed(list);
+}
+#endif
 #include "generated/sub_82086748.inc"
 #include "generated/sub_820866A0.inc"
 #include "generated/sub_820868B0.inc"
@@ -5640,10 +5779,32 @@ static void sub_82062990(Context& ctx, Machine& base) {
 #include "generated/sub_8207AE58.inc"
 #include "generated/sub_8207CF70.inc"
 #include "generated/sub_8207BFE8.inc"
+#ifdef CC_FAST
+#define sub_82084D18 sub_82084D18_exact
+#endif
 #include "generated/sub_82084D18.inc"
+#ifdef CC_FAST
+#undef sub_82084D18
+#endif
 #include "generated/sub_82086828.inc"
 #include "generated/sub_8207F4D8.inc"
+#ifdef CC_FAST
+#define sub_82084C78 sub_82084C78_exact
+#endif
 #include "generated/sub_82084C78.inc"
+#ifdef CC_FAST
+#undef sub_82084C78
+// Display-list remove (exact sub_82084D18: list r3, node r4) and remove by
+// depth (exact sub_82084C78: list r3, depth r4), seen by the name cache.
+static void sub_82084D18(Context& ctx, Machine& base) {
+  const CcDlMutate m(ctx.r3.u32);
+  sub_82084D18_exact(ctx, base);
+}
+static void sub_82084C78(Context& ctx, Machine& base) {
+  const CcDlMutate m(ctx.r3.u32);
+  sub_82084C78_exact(ctx, base);
+}
+#endif
 #include "generated/sub_82127E48.inc"
 #include "generated/sub_820B8678.inc"
 #include "generated/sub_820BAD80.inc"
@@ -5781,8 +5942,33 @@ static void sub_82062990(Context& ctx, Machine& base) {
 #include "generated/sub_8208BAE0.inc"
 #include "generated/sub_82087E50.inc"
 #include "generated/sub_82092238.inc"
+#ifdef CC_FAST
+#define sub_82094760 sub_82094760_exact
+#endif
 #include "generated/sub_82094760.inc"
+#ifdef CC_FAST
+#undef sub_82094760
+#define sub_82094EF0 sub_82094EF0_exact
+#endif
 #include "generated/sub_82094EF0.inc"
+#ifdef CC_FAST
+#undef sub_82094EF0
+// Text-field name set (exact sub_82094760: field r3, id r4; u16 +150) and
+// text-field copy (exact sub_82094EF0: from r3, to r4; copies the name
+// among other fields), seen by the name cache.
+static void sub_82094760(Context& ctx, Machine& base) {
+  const uint32_t old = REX_LOAD_U16(ctx.r3.u32 + 150u), id = ctx.r4.u32;
+  sub_82094760_exact(ctx, base);
+  cc_dl_name_changed(old);
+  cc_dl_name_changed(id);
+}
+static void sub_82094EF0(Context& ctx, Machine& base) {
+  const uint32_t to = ctx.r4.u32, old = REX_LOAD_U16(to + 150u);
+  sub_82094EF0_exact(ctx, base);
+  cc_dl_name_changed(old);
+  cc_dl_name_changed(REX_LOAD_U16(to + 150u));
+}
+#endif
 #include "generated/sub_82094E88.inc"
 #include "generated/sub_82083428.inc"
 #include "generated/sub_82094720.inc"
@@ -6098,27 +6284,94 @@ static void sub_820A89F8(Context& ctx, Machine& base) {
 #undef sub_82085078
 // Display-list lookup (exact sub_82085078: list r3, id r4): the first node
 // in the list at [r3] (linked through +88) that answers slot 52 and whose
-// slot 72 value matches id in the low 16 bits; 0 when none does.
+// slot 72 value matches id in the low 16 bits; 0 when none does. Answered
+// from the name cache (see CcDlEnt) while its versions hold.
+//
+// The walk answers the three named classes from their name field (their
+// slot 52 is "name != 0", slot 72 the name) and classes whose two methods
+// are constant leaves from the constants; from the first node of any
+// other class on, it calls the methods as the original does and the
+// result is not cached. The next node's lines are prefetched as soon as
+// its address is known.
+static __attribute__((noinline)) uint32_t cc_dl_walk_calls(Context& ctx, Machine& base, uint32_t n, uint32_t id) {
+  CcFrame frame(ctx, base, 112u);
+  for (; n; n = REX_LOAD_U32(n + 88u)) {
+    if ((cc_vcall(ctx, base, n, 52u, 0x820850B0u) & 0xFFu) != 0u &&
+        (cc_vcall(ctx, base, n, 72u, 0x820850D0u) & 0xFFFFu) == id)
+      return n;
+  }
+  return 0u;
+}
+static CC_HOT_FN uint32_t cc_dl_walk(Context& ctx, Machine& base, uint32_t list, uint32_t id, bool& cacheable) {
+  uint32_t n = REX_LOAD_U32(list);
+  while (n) {
+    cc_prefetch(n + 88u);
+    cc_prefetch(n + 100u);
+    const uint32_t vt = REX_LOAD_U32(n);
+    CC_DL_STAT(nodes);
+    if (vt == 0x8203E878u || vt == 0x8203F510u || vt == 0x8203F680u) {
+      const uint32_t name = REX_LOAD_U16(n + (vt == 0x8203F680u ? 150u : 100u));
+      if (name != 0u && name == id) return n;
+    } else {
+      const CcLeaf& m52 = cc_leaf_info(base, REX_LOAD_U32(vt + 52u));
+      if (m52.kind != 2) { cacheable = false; return cc_dl_walk_calls(ctx, base, n, id); }
+      if ((uint32_t(m52.imm) & 0xFFu) != 0u) {
+        const CcLeaf& m72 = cc_leaf_info(base, REX_LOAD_U32(vt + 72u));
+        if (m72.kind != 2) { cacheable = false; return cc_dl_walk_calls(ctx, base, n, id); }
+        if ((uint32_t(m72.imm) & 0xFFFFu) == id) return n;
+      }
+    }
+    n = REX_LOAD_U32(n + 88u);
+    if (n) cc_prefetch(n);
+  }
+  return 0u;
+}
 static CC_HOT_FN void sub_82085078(Context& ctx, Machine& base) {
 #ifndef CC_XBOX_DRIVER
   static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
   if (walk_exact) { sub_82085078_exact(ctx, base); return; }
+  static const bool use_cache = std::getenv("CC_DLCACHE_OFF") == nullptr;  // host A/B switch
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr || std::getenv("CC_DLCACHE_ORACLE") != nullptr;
 #else
   #ifdef CC_WALK_EXACT_BUILD
   sub_82085078_exact(ctx, base); return;  // Xbox bisect build
 #endif
   static_cast<void>(&sub_82085078_exact);
+#ifdef CC_DLCACHE_OFF_BUILD
+  constexpr bool use_cache = false;  // Xbox bisect build
+#else
+  constexpr bool use_cache = true;
 #endif
-  const uint32_t id = ctx.r4.u32 & 0xFFFFu;
-  CcFrame frame(ctx, base, 112u);
-  for (uint32_t n = REX_LOAD_U32(ctx.r3.u32); n; n = REX_LOAD_U32(n + 88u)) {
-    if ((cc_vcall(ctx, base, n, 52u, 0x820850B0u) & 0xFFu) != 0u &&
-        (cc_vcall(ctx, base, n, 72u, 0x820850D0u) & 0xFFFFu) == id) {
-      ctx.r3.u64 = n;
+#endif
+  const uint32_t list = ctx.r3.u32, id = ctx.r4.u32 & 0xFFFFu;
+  CC_DL_STAT(calls);
+  CcDlEnt& e = g_dl_cache[((list >> 3) * 0x9E3779B1u ^ id * 0x85EBCA6Bu) >> 21];
+  const bool usable = use_cache && g_dl_busy == 0u;
+  if (usable && e.list == list && e.id == id && cc_dl_lv(list) <= e.stamp && cc_dl_iv(id) <= e.stamp) {
+    CC_DL_STAT(hits);
+#ifndef CC_XBOX_DRIVER
+    if (oracle) {  // the uncached walk on every hit; its answer stays in effect
+      bool c = true;
+      const uint32_t r = cc_dl_walk(ctx, base, list, id, c);
+      if (r != e.result || !c) cc_oracle_mismatch("sub_82085078", int(id), r, e.result);
+      ctx.r3.u64 = r;
       return;
     }
+#endif
+    ctx.r3.u64 = e.result;
+    return;
   }
-  ctx.r3.u64 = 0u;
+  bool cacheable = true;
+  const uint32_t r = cc_dl_walk(ctx, base, list, id, cacheable);
+  if (usable && cacheable && g_dl_busy == 0u) {
+    CC_DL_STAT(fills);
+    e.list = list; e.id = id; e.stamp = g_dl_tick; e.result = r;
+  } else if (!usable) {
+    CC_DL_STAT(busy);
+  } else {
+    CC_DL_STAT(uncached);
+  }
+  ctx.r3.u64 = r;
 }
 #endif
 #ifdef CC_FAST
@@ -6639,13 +6892,38 @@ static CC_HOT_FN void sub_8207AA50(Context& ctx, Machine& base) {
 static void sub_820B0F18(Context& ctx, Machine& base) { base.hooked_fast(1, ctx); sub_820B0F18_exact(ctx, base); }
 #endif
 #include "generated/sub_820868C8.inc"
+#ifdef CC_FAST
+#define sub_820867E8 sub_820867E8_exact
+#endif
 #include "generated/sub_820867E8.inc"
+#ifdef CC_FAST
+#undef sub_820867E8
+#endif
 #include "generated/sub_8208BBB0.inc"
 #include "generated/sub_8208BCF8.inc"
 #include "generated/sub_8207BD00.inc"
 #include "generated/sub_82086DE8.inc"
 #include "generated/sub_82086F78.inc"
+#ifdef CC_FAST
+#define sub_82084DB8 sub_82084DB8_exact
+#endif
 #include "generated/sub_82084DB8.inc"
+#ifdef CC_FAST
+#undef sub_82084DB8
+// Clip name set (exact sub_820867E8: clip r3, id r4; u16 +100) and
+// display-list insert by depth (exact sub_82084DB8: list r3, node r4,
+// replace flag r5), seen by the name cache.
+static void sub_820867E8(Context& ctx, Machine& base) {
+  const uint32_t old = REX_LOAD_U16(ctx.r3.u32 + 100u), id = ctx.r4.u32;
+  sub_820867E8_exact(ctx, base);
+  cc_dl_name_changed(old);
+  cc_dl_name_changed(id);
+}
+static void sub_82084DB8(Context& ctx, Machine& base) {
+  const CcDlMutate m(ctx.r3.u32);
+  sub_82084DB8_exact(ctx, base);
+}
+#endif
 #include "generated/sub_82083550.inc"
 #include "generated/sub_82085540.inc"
 #include "generated/sub_820867F0.inc"
@@ -9309,5 +9587,16 @@ void cc_op_dbg();
 #endif
 #ifdef CC_FAST
 // Native ActionScript interpreter (play build): runtime021/as_native.inc.
+// Its clip property setter (as_ops_clip.inc) is wrapped below.
+#define sub_82089F70 sub_82089F70_as
 #include "as_native.inc"
+#undef sub_82089F70
+// Clip property set (sub_82089F70, native in as_ops_clip.inc): id 91,
+// _name, stores the clip's name u16 +100 itself (no name setter), so the
+// display-list name cache is flushed once it has run.
+static void sub_82089F70(Context& ctx, Machine& base) {
+  if (ctx.r4.u32 != 91u) { sub_82089F70_as(ctx, base); return; }
+  sub_82089F70_as(ctx, base);
+  cc_dl_flush();
+}
 #endif
