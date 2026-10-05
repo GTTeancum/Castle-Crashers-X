@@ -416,6 +416,49 @@ static CC_HOT_FN void sub_82082390(Context& ctx, Machine& base) {
 #include "generated/sub_820772B0.inc"
 #include "generated/sub_820A1AC0.inc"
 #ifdef CC_FAST
+// Display-node classes the advance and frame-update walkers answer without
+// a method call (vtables live in the image's read-only data): the clip
+// class 0x8203E878 is active (slot 44 = li 1); the second clip class
+// 0x8203F510 and the text field 0x8203F680 are not (li 0). Both clip
+// classes share slot 84 (advance sub_82088A08), 88 (frame update
+// sub_8208A228), 92 (sub_8208ADE8), 124 (bit 2 of byte +140) and 148
+// (setParent, stw r4,96(r3)). Checked once against the mapped image; any
+// difference leaves every call to cc_vcall. Host switch CC_WALK_VCALL=1,
+// Xbox build CC_WALK_VCALL_BUILD: always the method calls.
+enum : uint32_t { kVtClip = 0x8203E878u, kVtClip2 = 0x8203F510u, kVtText = 0x8203F680u };
+static bool cc_walk_classes_check(Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  if (std::getenv("CC_WALK_VCALL") != nullptr) return false;
+#elif defined(CC_WALK_VCALL_BUILD)
+  return false;
+#endif
+  auto slot = [&](uint32_t vt, uint32_t s) { uint64_t v = 0; base.memory.load_be(vt + s, 4, v); return uint32_t(v); };
+  for (const uint32_t vt : {kVtClip, kVtClip2}) {
+    if (slot(vt, 84u) != 0x82088A08u || slot(vt, 88u) != 0x8208A228u || slot(vt, 92u) != 0x8208ADE8u ||
+        slot(vt, 124u) != 0x82086818u || slot(vt, 148u) != 0x820868C8u)
+      return false;
+  }
+  return slot(kVtClip, 44u) == 0x820619E8u && slot(kVtClip2, 44u) == 0x82053A98u && slot(kVtText, 44u) == 0x82053A98u &&
+         slot(0x820619E8u, 0u) == 0x38600001u && slot(0x82053A98u, 0u) == 0x38600000u && slot(0x820868C8u, 0u) == 0x90830060u &&
+         slot(0x82086818u, 0u) == 0x8963008Cu && slot(0x82086818u, 4u) == 0x5563F7FEu &&
+         slot(0x82086818u, 8u) == 0x4E800020u;
+}
+static inline bool cc_walk_classes_ok(Machine& base) {
+  static const bool ok = cc_walk_classes_check(base);
+  return ok;
+}
+// Slot 44 ("active") of child ch whose vtable word is vt: 1 / 0 for the
+// classes above (r3 as the leaf leaves it), else the method call at return
+// address lr.
+#define cc_walk_active(CTX, BASE, CH, VT, OK, LR) ([&]() __attribute__((always_inline)) -> uint32_t { \
+    if ((OK) && (VT) == kVtClip) { (CTX).r3.u64 = 1u; return 1u; } \
+    if ((OK) && ((VT) == kVtClip2 || (VT) == kVtText)) { (CTX).r3.u64 = 0u; return 0u; } \
+    return cc_vcall(CTX, BASE, CH, 44u, LR) & 0xFFu; }())
+// The manager of node n's movie, [[[n+156]+76]+156] (its update stack:
+// count +8248, entries at +(count+1998)*4).
+static inline __attribute__((always_inline)) uint32_t cc_walk_mgr(Machine& base, uint32_t n) {
+  return REX_LOAD_U32(REX_LOAD_U32(REX_LOAD_U32(n + 156u) + 76u) + 156u);
+}
 #define sub_82088A08 sub_82088A08_exact
 #endif
 #include "generated/sub_82088A08.inc"
@@ -432,7 +475,9 @@ static CC_HOT_FN void sub_82082390(Context& ctx, Machine& base) {
 // +82 differs from the node's +144 is released via sub_82084C78(list,
 // [child+28]); otherwise its +82 is cleared and, if active (slot 44), it
 // advances (slot 148, r4 = node) and updates (slot 84). The stack entry is
-// popped at the end.
+// popped at the end. The known classes skip the method calls
+// (cc_walk_classes_ok); the next sibling's lines are prefetched while the
+// current child is visited.
 static CC_HOT_FN void sub_82088A08(Context& ctx, Machine& base) {
 #ifndef CC_XBOX_DRIVER
   static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
@@ -446,15 +491,25 @@ static CC_HOT_FN void sub_82088A08(Context& ctx, Machine& base) {
   const uint32_t node = ctx.r3.u32;
   if ((REX_LOAD_U8(node + 140u) & 0x80u) == 0u) return;
   CcFrame frame(ctx, base, 128u);
-  auto mgr_of = [&]() { return REX_LOAD_U32(REX_LOAD_U32(REX_LOAD_U32(node + 156u) + 76u) + 156u); };
+  if (const uint32_t first = REX_LOAD_U32(node + 104u)) cc_prefetch_node(first);
+  const bool ok = cc_walk_classes_ok(base);
+  const uint32_t nvt = REX_LOAD_U32(node);
+  const bool nclip = ok && (nvt == kVtClip || nvt == kVtClip2);
   {
-    const uint32_t mgr = mgr_of();
+    const uint32_t mgr = cc_walk_mgr(base, node);
     const uint32_t cnt = REX_LOAD_U32(mgr + 8248u) + 1u;
     REX_STORE_U32(mgr + 8248u, cnt);
     REX_STORE_U32(mgr + (cnt + 1998u) * 4u, node);
   }
   bool wrapped = false;
-  if ((cc_vcall(ctx, base, node, 124u, 0x82088A64u) & 0xFFu) != 0u) {
+  uint32_t playing;
+  if (nclip) {
+    playing = (REX_LOAD_U8(node + 140u) >> 2) & 1u;
+    ctx.r3.u64 = playing;
+  } else {
+    playing = cc_vcall(ctx, base, node, 124u, 0x82088A64u) & 0xFFu;
+  }
+  if (playing != 0u) {
     const uint32_t f = (REX_LOAD_U16(node + 146u) + 1u) & 0xFFFFu;
     REX_STORE_U16(node + 146u, uint16_t(f));
     if (f > REX_LOAD_U16(node + 148u)) {
@@ -475,23 +530,36 @@ static CC_HOT_FN void sub_82088A08(Context& ctx, Machine& base) {
     }
     REX_STORE_U16(node + 144u, REX_LOAD_U16(node + 146u));
     ctx.r4.u64 = 1u;
-    cc_vcall(ctx, base, node, 92u, 0x82088AF8u);
+    if (nclip) {
+      ctx.r3.u64 = node; ctx.lr = 0x82088AF8u;
+      sub_8208ADE8(ctx, base);
+    } else {
+      cc_vcall(ctx, base, node, 92u, 0x82088AF8u);
+    }
   }
   for (uint32_t ch = REX_LOAD_U32(node + 104u); ch; ch = REX_LOAD_U32(ch + 88u)) {
+    if (const uint32_t next = REX_LOAD_U32(ch + 88u)) cc_prefetch_node(next);
     if (wrapped && REX_LOAD_U16(node + 144u) != REX_LOAD_U16(ch + 82u)) {
       ctx.r3.u64 = node + 104u; ctx.r4.u64 = REX_LOAD_U32(ch + 28u); ctx.lr = 0x82088B30u;
       sub_82084C78(ctx, base);
       continue;
     }
     REX_STORE_U16(ch + 82u, 0u);
-    if ((cc_vcall(ctx, base, ch, 44u, 0x82088B4Cu) & 0xFFu) != 0u) {
+    const uint32_t vt = REX_LOAD_U32(ch);
+    if (cc_walk_active(ctx, base, ch, vt, ok, 0x82088B4Cu) != 0u) {
       ctx.r4.u64 = node;
-      cc_vcall(ctx, base, ch, 148u, 0x82088B70u);
-      cc_vcall(ctx, base, ch, 84u, 0x82088B84u);
+      if (ok && vt == kVtClip) {
+        REX_STORE_U32(ch + 96u, node);  // setParent
+        ctx.r3.u64 = ch; ctx.lr = 0x82088B84u;
+        sub_82088A08(ctx, base);
+      } else {
+        cc_vcall(ctx, base, ch, 148u, 0x82088B70u);
+        cc_vcall(ctx, base, ch, 84u, 0x82088B84u);
+      }
     }
   }
   {
-    const uint32_t mgr = mgr_of();
+    const uint32_t mgr = cc_walk_mgr(base, node);
     const uint32_t idx = REX_LOAD_U32(mgr + 8248u);
     REX_STORE_U32(mgr + (idx + 1998u) * 4u, 0u);
     REX_STORE_U32(mgr + 8248u, idx - 1u);
@@ -517,6 +585,8 @@ static CC_HOT_FN void sub_82088A08(Context& ctx, Machine& base) {
 // into the return value; active children while bit 6 is set, and inactive
 // children with bit 4 of their +86, set bit 0. Without bit 0 the node's
 // bit 4 of +86 is cleared; bit 6 of +140 is cleared and the stack popped.
+// As in the advance walk, the known classes skip the method calls and the
+// next sibling's lines are prefetched.
 #ifndef CC_XBOX_DRIVER
 static uint32_t g_clip_ticks = 0;  // host CC_TICK_STATS: clip frame updates per frame
 #endif
@@ -542,9 +612,10 @@ static CC_HOT_FN void sub_8208A228(Context& ctx, Machine& base) {
   }
   if (REX_LOAD_U16(node + 144u) == 0u) REX_STORE_U16(node + 144u, 1u);
   if (REX_LOAD_U16(node + 146u) == 0u) REX_STORE_U16(node + 146u, 1u);
-  auto mgr_of = [&]() { return REX_LOAD_U32(REX_LOAD_U32(REX_LOAD_U32(node + 156u) + 76u) + 156u); };
+  if (const uint32_t first = REX_LOAD_U32(node + 104u)) cc_prefetch_node(first);
+  const bool ok = cc_walk_classes_ok(base);
   {
-    const uint32_t mgr = mgr_of();
+    const uint32_t mgr = cc_walk_mgr(base, node);
     const uint32_t cnt = REX_LOAD_U32(mgr + 8248u) + 1u;
     REX_STORE_U32(mgr + 8248u, cnt);
     REX_STORE_U32(mgr + (cnt + 1998u) * 4u, node);
@@ -558,9 +629,23 @@ static CC_HOT_FN void sub_8208A228(Context& ctx, Machine& base) {
     sub_8207B8B8(ctx, base);
     REX_STORE_U8(node + 140u, uint8_t(REX_LOAD_U8(node + 140u) | 8u));
   }
-  if ((cc_vcall(ctx, base, node, 124u, 0x8208A30Cu) & 0xFFu) != 0u) {
+  const uint32_t nvt = REX_LOAD_U32(node);
+  const bool nclip = ok && (nvt == kVtClip || nvt == kVtClip2);
+  uint32_t playing;
+  if (nclip) {
+    playing = (REX_LOAD_U8(node + 140u) >> 2) & 1u;
+    ctx.r3.u64 = playing;
+  } else {
+    playing = cc_vcall(ctx, base, node, 124u, 0x8208A30Cu) & 0xFFu;
+  }
+  if (playing != 0u) {
     ctx.r4.u64 = 2u;
-    cc_vcall(ctx, base, node, 92u, 0x8208A330u);
+    if (nclip) {
+      ctx.r3.u64 = node; ctx.lr = 0x8208A330u;
+      sub_8208ADE8(ctx, base);
+    } else {
+      cc_vcall(ctx, base, node, 92u, 0x8208A330u);
+    }
     ctx.r3.u64 = node + 160u;
     ctx.lr = 0x8208A338u;
     sub_8207B630(ctx, base);
@@ -571,11 +656,18 @@ static CC_HOT_FN void sub_8208A228(Context& ctx, Machine& base) {
   }
   uint64_t acc = 0u;
   for (uint32_t ch = REX_LOAD_U32(node + 104u); ch; ch = REX_LOAD_U32(ch + 88u)) {
+    if (const uint32_t next = REX_LOAD_U32(ch + 88u)) cc_prefetch_node(next);
     uint32_t bit;
-    if ((cc_vcall(ctx, base, ch, 44u, 0x8208A380u) & 0xFFu) != 0u) {
+    const uint32_t vt = REX_LOAD_U32(ch);
+    if (cc_walk_active(ctx, base, ch, vt, ok, 0x8208A380u) != 0u) {
       if ((REX_LOAD_U8(node + 140u) & 0x40u) == 0u || REX_LOAD_U16(ch + 82u) == REX_LOAD_U16(node + 144u)) {
         ctx.r4.u64 = 0u;
-        cc_vcall(ctx, base, ch, 88u, 0x8208A3C4u);
+        if (ok && vt == kVtClip) {
+          ctx.r3.u64 = ch; ctx.lr = 0x8208A3C4u;
+          sub_8208A228(ctx, base);
+        } else {
+          cc_vcall(ctx, base, ch, 88u, 0x8208A3C4u);
+        }
         acc |= ctx.r3.u64;
       }
       bit = REX_LOAD_U8(node + 140u) & 0x40u;
@@ -587,7 +679,7 @@ static CC_HOT_FN void sub_8208A228(Context& ctx, Machine& base) {
   if ((acc & 1u) == 0u) REX_STORE_U8(node + 86u, uint8_t(REX_LOAD_U8(node + 86u) & ~16u));
   REX_STORE_U8(node + 140u, uint8_t(REX_LOAD_U8(node + 140u) & ~64u));
   {
-    const uint32_t mgr = mgr_of();
+    const uint32_t mgr = cc_walk_mgr(base, node);
     const uint32_t idx = REX_LOAD_U32(mgr + 8248u);
     REX_STORE_U32(mgr + (idx + 1998u) * 4u, 0u);
     REX_STORE_U32(mgr + 8248u, idx - 1u);

@@ -627,6 +627,21 @@ static inline __attribute__((always_inline)) void cc_prefetch(uint32_t a) {
   uint8_t* b = g_page_host[a >> 16];
   if (__builtin_expect(uintptr_t(b) > 1u, 1)) __builtin_prefetch(b + (a & 0xFFFFu));
 }
+// The lines of display node n that one walker visit reads: the vtable, the
+// sibling link and frame fields +82..+88, parent +96 and children +104,
+// flags and frame counters +140..+148 and the movie +156 (one translation;
+// a node whose first 160 bytes cross a 64 KiB page is skipped).
+static inline __attribute__((always_inline)) void cc_prefetch_node(uint32_t n) {
+  uint8_t* b = g_page_host[n >> 16];
+  if (__builtin_expect(uintptr_t(b) > 1u && (n & 0xFFFFu) < 0xFF60u, 1)) {
+    const uint8_t* p = b + (n & 0xFFFFu);
+    __builtin_prefetch(p);
+    __builtin_prefetch(p + 84);
+    __builtin_prefetch(p + 104);
+    __builtin_prefetch(p + 140);
+    __builtin_prefetch(p + 156);
+  }
+}
 #define sub_8208AF08 sub_8208AF08_exact
 #endif
 #include "generated/sub_8208AF08.inc"
