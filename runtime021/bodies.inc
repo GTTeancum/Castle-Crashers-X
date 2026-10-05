@@ -82,14 +82,393 @@ HARD_BOUNDARY(sub_82053648, 0x82053648u)
 // size) / sub_8209BF18 free(heap, ptr)) with their caller, for
 // CC_MEM_REPORT.
 static std::map<uint32_t, std::pair<uint32_t, uint32_t>> g_heap_live;  // ptr -> (size, lr)
+#endif
+#if !defined(CC_XBOX_DRIVER) || defined(CC_FAST)
 #define sub_8209BDD8 sub_8209BDD8_exact
 #define sub_8209BF18 sub_8209BF18_exact
 #endif
 #include "generated/sub_8209BDD8.inc"
 #include "generated/sub_8209BF18.inc"
-#ifndef CC_XBOX_DRIVER
+#if !defined(CC_XBOX_DRIVER) || defined(CC_FAST)
 #undef sub_8209BDD8
 #undef sub_8209BF18
+#endif
+#ifdef CC_FAST
+// Game heap index (sub_8209BDD8 alloc(heap, size) / sub_8209BF18
+// free(heap, ptr)). A heap keeps alignment A at +32, its range [+8, +12),
+// the current tag at +24 and per-tag count/bytes at +1060/+1064 + 12*tag.
+// Blocks have a header of H = (A + 15) & ~(A - 1) bytes: physical previous
+// +0 and next +4, payload size +8 (signed), and at +12 the tag 1..53 when
+// in use or, when free, the link of one address-ordered free list (head at
+// heap +16, 0 ends it). Alloc takes the first free block in that order
+// whose size is at least the rounded request, splitting off the rest when
+// it is at least H; free merges with free physical neighbours or links the
+// block in at its place in the order. Both find their block by walking the
+// list from the head: 6-15 nodes a call in 4P combat, each a cache miss.
+//
+// A host mirror of the list - address and size of every free block, in
+// address order, in chunks of up to 64 entries with each chunk's largest
+// size - answers "first fit" and "free block before b" without touching
+// guest memory; all guest reads and writes of the result are the
+// original's, in its order of effect. A heap's mirror is built from the
+// guest list on first use and after heap init (sub_8209BC98). Before each
+// call the list head, and the chosen block's size and link, are checked
+// against the mirror; a disagreement rebuilds it from the list (before any
+// write of that call). The original's red-zone saves of r30/r31 in alloc
+// are written as it writes them (dead stack can be copied into the heap by
+// later code). Switches: CC_HEAP_EXACT=1 (host) / CC_HEAP_EXACT_BUILD
+// (Xbox) run the original walks; CC_ORACLE=1 or CC_HEAP_ORACLE=1 compare
+// every answer with the walk and the whole mirror with the list.
+struct CcHeapEnt { uint32_t addr; int32_t size; };
+struct CcHeapChunk { uint32_t n; int32_t max; CcHeapEnt e[64]; };
+struct CcHeapIdx {
+  uint32_t heap = 0;
+  bool built = false;
+  std::vector<CcHeapChunk*> ch;  // address order, none empty
+  std::vector<CcHeapChunk*> spare;
+};
+struct CcHeapPos { uint32_t c, i; };
+static CcHeapIdx g_heap_idx[4];
+#ifndef CC_XBOX_DRIVER
+static struct { uint64_t allocs, frees, builds, fallbacks; } g_heap_st;
+#endif
+static void cc_heap_chunk_max(CcHeapChunk* c) {
+  int32_t m = INT32_MIN;
+  for (uint32_t i = 0; i < c->n; ++i) m = c->e[i].size > m ? c->e[i].size : m;
+  c->max = m;
+}
+static CcHeapChunk* cc_heap_chunk_new(CcHeapIdx& x) {
+  if (!x.spare.empty()) { CcHeapChunk* c = x.spare.back(); x.spare.pop_back(); c->n = 0; c->max = INT32_MIN; return c; }
+  CcHeapChunk* c = new CcHeapChunk;
+  c->n = 0; c->max = INT32_MIN;
+  return c;
+}
+static void cc_heap_clear(CcHeapIdx& x) {
+  for (CcHeapChunk* c : x.ch) x.spare.push_back(c);
+  x.ch.clear();
+  x.built = false;
+}
+// Mirror of heap h's free list read from guest memory; false (and no
+// mirror) when the list is longer than any real heap's or loops.
+static bool cc_heap_build(Machine& base, CcHeapIdx& x, uint32_t h) {
+  cc_heap_clear(x);
+  x.heap = h;
+#ifndef CC_XBOX_DRIVER
+  ++g_heap_st.builds;
+#endif
+  uint32_t last = 0u, count = 0u;
+  for (uint32_t b = REX_LOAD_U32(h + 16u); b != 0u; b = REX_LOAD_U32(b + 12u)) {
+    if (++count > 1000000u || (count > 1u && b <= last)) { cc_heap_clear(x); return false; }
+    if (x.ch.empty() || x.ch.back()->n == 48u) x.ch.push_back(cc_heap_chunk_new(x));
+    CcHeapChunk* c = x.ch.back();
+    c->e[c->n++] = {b, int32_t(REX_LOAD_U32(b + 8u))};
+    if (c->e[c->n - 1u].size > c->max) c->max = c->e[c->n - 1u].size;
+    last = b;
+  }
+  x.built = true;
+  return true;
+}
+static inline uint32_t cc_heap_first_addr(const CcHeapIdx& x) { return x.ch.empty() ? 0u : x.ch[0]->e[0].addr; }
+static inline const CcHeapEnt& cc_heap_at(const CcHeapIdx& x, CcHeapPos p) { return x.ch[p.c]->e[p.i]; }
+// Address of the entry after / before p, 0 at the ends.
+static inline uint32_t cc_heap_next_addr(const CcHeapIdx& x, CcHeapPos p) {
+  if (p.i + 1u < x.ch[p.c]->n) return x.ch[p.c]->e[p.i + 1u].addr;
+  return p.c + 1u < x.ch.size() ? x.ch[p.c + 1u]->e[0].addr : 0u;
+}
+static inline uint32_t cc_heap_prev_addr(const CcHeapIdx& x, CcHeapPos p) {
+  if (p.i > 0u) return x.ch[p.c]->e[p.i - 1u].addr;
+  return p.c > 0u ? x.ch[p.c - 1u]->e[x.ch[p.c - 1u]->n - 1u].addr : 0u;
+}
+// First entry in address order with size >= need (signed), as the walk.
+static bool cc_heap_first_fit(const CcHeapIdx& x, int32_t need, CcHeapPos& out) {
+  for (uint32_t c = 0; c < x.ch.size(); ++c) {
+    const CcHeapChunk* k = x.ch[c];
+    if (k->max < need) continue;
+    for (uint32_t i = 0; i < k->n; ++i)
+      if (k->e[i].size >= need) { out = {c, i}; return true; }
+  }
+  return false;
+}
+// Last entry whose address is below a; false when there is none.
+static bool cc_heap_before(const CcHeapIdx& x, uint32_t a, CcHeapPos& out) {
+  uint32_t lo = 0, hi = uint32_t(x.ch.size());  // chunks with e[0].addr < a: [0, lo)
+  while (lo < hi) {
+    const uint32_t mid = (lo + hi) / 2u;
+    if (x.ch[mid]->e[0].addr < a) lo = mid + 1u; else hi = mid;
+  }
+  if (lo == 0u) return false;
+  const CcHeapChunk* k = x.ch[lo - 1u];
+  uint32_t l = 1u, r = k->n;  // e[0] < a; entries below a: [0, l)
+  while (l < r) {
+    const uint32_t mid = (l + r) / 2u;
+    if (k->e[mid].addr < a) l = mid + 1u; else r = mid;
+  }
+  out = {lo - 1u, l - 1u};
+  return true;
+}
+// Entry with address a exactly.
+static bool cc_heap_find(const CcHeapIdx& x, uint32_t a, CcHeapPos& out) {
+  return cc_heap_before(x, a + 1u, out) && cc_heap_at(x, out).addr == a;
+}
+static void cc_heap_remove(CcHeapIdx& x, CcHeapPos p) {
+  CcHeapChunk* k = x.ch[p.c];
+  const int32_t old = k->e[p.i].size;
+  __builtin_memmove(&k->e[p.i], &k->e[p.i + 1u], (k->n - p.i - 1u) * sizeof(CcHeapEnt));
+  if (--k->n == 0u) {
+    x.spare.push_back(k);
+    x.ch.erase(x.ch.begin() + p.c);
+  } else if (old == k->max) {
+    cc_heap_chunk_max(k);
+  }
+}
+static void cc_heap_set(CcHeapIdx& x, CcHeapPos p, uint32_t addr, int32_t size) {
+  CcHeapChunk* k = x.ch[p.c];
+  const int32_t old = k->e[p.i].size;
+  k->e[p.i] = {addr, size};
+  if (size > k->max) k->max = size;
+  else if (old == k->max && size < old) cc_heap_chunk_max(k);
+}
+static void cc_heap_insert(CcHeapIdx& x, uint32_t addr, int32_t size) {
+  CcHeapPos p;
+  uint32_t c, i;
+  if (cc_heap_before(x, addr, p)) { c = p.c; i = p.i + 1u; }
+  else {
+    if (x.ch.empty()) x.ch.push_back(cc_heap_chunk_new(x));
+    c = 0u; i = 0u;
+  }
+  CcHeapChunk* k = x.ch[c];
+  if (k->n == 64u) {  // split: the upper half moves to a new chunk
+    CcHeapChunk* u = cc_heap_chunk_new(x);
+    u->n = 32u;
+    __builtin_memcpy(u->e, &k->e[32], 32u * sizeof(CcHeapEnt));
+    k->n = 32u;
+    cc_heap_chunk_max(k);
+    cc_heap_chunk_max(u);
+    x.ch.insert(x.ch.begin() + c + 1u, u);
+    if (i > 32u) { k = u; i -= 32u; }
+  }
+  __builtin_memmove(&k->e[i + 1u], &k->e[i], (k->n - i) * sizeof(CcHeapEnt));
+  k->e[i] = {addr, size};
+  ++k->n;
+  if (size > k->max) k->max = size;
+}
+static CcHeapIdx* cc_heap_idx(Machine& base, uint32_t h) {
+  for (CcHeapIdx& x : g_heap_idx)
+    if (x.heap == h) {
+      if (!x.built && !cc_heap_build(base, x, h)) return nullptr;
+      return &x;
+    }
+  for (CcHeapIdx& x : g_heap_idx)
+    if (x.heap == 0u) return cc_heap_build(base, x, h) ? &x : nullptr;
+  return nullptr;
+}
+static void cc_heap_forget(uint32_t h) {
+  for (CcHeapIdx& x : g_heap_idx)
+    if (x.heap == h) cc_heap_clear(x);
+}
+#ifndef CC_XBOX_DRIVER
+// Host oracle: the mirror against the guest list, entry by entry.
+static void cc_heap_check(Machine& base, const CcHeapIdx& x, uint32_t h, const char* when) {
+  uint32_t b = REX_LOAD_U32(h + 16u);
+  uint32_t k = 0;
+  for (uint32_t c = 0; c < x.ch.size(); ++c)
+    for (uint32_t i = 0; i < x.ch[c]->n; ++i, ++k) {
+      const CcHeapEnt& e = x.ch[c]->e[i];
+      if (b != e.addr || REX_LOAD_U32(b + 8u) != uint32_t(e.size)) {
+        cc_oracle_mismatch(when, int(k), b, e.addr);
+        return;
+      }
+      b = REX_LOAD_U32(b + 12u);
+    }
+  if (b != 0u) cc_oracle_mismatch(when, int(k), b, 0u);
+}
+#endif
+// Alloc as sub_8209BDD8; false when the mirror cannot answer (the caller
+// then runs the original).
+static bool cc_heap_alloc(Context& ctx, Machine& base) {
+  const uint32_t h = ctx.r3.u32;
+  CcHeapIdx* x = cc_heap_idx(base, h);
+  if (!x) return false;
+  uint32_t size = ctx.r4.u32;
+  if (size == 0u) size = 1u;
+  const uint32_t A = REX_LOAD_U32(h + 32u);
+  const uint32_t need = (size + A - 1u) & ~(A - 1u);
+  const uint32_t H = (A + 15u) & ~(A - 1u);
+  CcHeapPos p{};
+  bool found = false;
+  uint32_t r10 = 0u, link = 0u;
+  int32_t sz = 0;
+  for (int attempt = 0;; ++attempt) {
+    found = cc_heap_first_fit(*x, int32_t(need), p);
+    bool agree = REX_LOAD_U32(h + 16u) == cc_heap_first_addr(*x);
+    if (agree && found) {
+      r10 = cc_heap_at(*x, p).addr;
+      sz = int32_t(REX_LOAD_U32(r10 + 8u));
+      link = REX_LOAD_U32(r10 + 12u);
+      agree = sz == cc_heap_at(*x, p).size && link == cc_heap_next_addr(*x, p);
+    }
+    if (agree) break;
+    if (attempt == 1 || !cc_heap_build(base, *x, h)) { cc_heap_clear(*x); return false; }
+  }
+#ifndef CC_XBOX_DRIVER
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr || std::getenv("CC_HEAP_ORACLE") != nullptr;
+  if (oracle) {
+    cc_heap_check(base, *x, h, "sub_8209BDD8 mirror");
+    uint32_t w = REX_LOAD_U32(h + 16u);
+    while (w != 0u && int32_t(need) > int32_t(REX_LOAD_U32(w + 8u))) w = REX_LOAD_U32(w + 12u);
+    if (w != (found ? r10 : 0u)) cc_oracle_mismatch("sub_8209BDD8 first fit", 0, w, found ? r10 : 0u);
+  }
+  ++g_heap_st.allocs;
+#endif
+  const int32_t rem = int32_t(uint32_t(sz) - H - need);
+  if (found && rem == -1) return false;  // the original would take the block twice; leave it to it
+  REX_STORE_U64(ctx.r1.u32 - 16u, ctx.r30.u64);  // the original's red-zone saves
+  REX_STORE_U64(ctx.r1.u32 - 8u, ctx.r31.u64);
+  if (!found) { ctx.r3.u64 = 0u; return true; }
+  const uint32_t prev = cc_heap_prev_addr(*x, p);
+  uint32_t r6;
+  if (rem < int32_t(H)) {
+    r6 = link;
+    cc_heap_remove(*x, p);
+  } else {
+    r6 = r10 + H + need;
+    REX_STORE_U32(r6 + 0u, r10);
+    REX_STORE_U32(r6 + 8u, uint32_t(rem));
+    const uint32_t r9 = REX_LOAD_U32(r10 + 4u);
+    REX_STORE_U32(r6 + 4u, r9);
+    if (r9 != 0u) REX_STORE_U32(r9 + 0u, r6);
+    REX_STORE_U32(r6 + 12u, REX_LOAD_U32(r10 + 12u));
+    REX_STORE_U32(r10 + 4u, r6);
+    REX_STORE_U32(r10 + 8u, need);
+    cc_heap_set(*x, p, r6, rem);
+  }
+  const uint32_t cnt = h + REX_LOAD_U32(h + 24u) * 12u + 1060u;
+  REX_STORE_U32(cnt, REX_LOAD_U32(cnt) + 1u);
+  const uint32_t bytes = REX_LOAD_U32(r10 + 8u);
+  const uint32_t tot = h + REX_LOAD_U32(h + 24u) * 12u + 1064u;
+  REX_STORE_U32(tot, bytes + REX_LOAD_U32(tot));
+  REX_STORE_U32(r10 + 12u, REX_LOAD_U32(h + 24u));
+  if (prev != 0u) REX_STORE_U32(prev + 12u, r6);
+  else REX_STORE_U32(h + 16u, r6);
+  ctx.r3.u64 = uint64_t(H) + r10;
+  return true;
+}
+// Free as sub_8209BF18; false when the mirror cannot answer.
+static bool cc_heap_free(Context& ctx, Machine& base) {
+  const uint32_t h = ctx.r3.u32, ptr = ctx.r4.u32;
+  if (ptr <= REX_LOAD_U32(h + 8u) || ptr >= REX_LOAD_U32(h + 12u)) return true;
+  const uint32_t H = (REX_LOAD_U32(h + 32u) + 15u) & ~(REX_LOAD_U32(h + 32u) - 1u);
+  const uint32_t b = ptr - H;
+  const uint32_t tag = REX_LOAD_U32(b + 12u), prev = REX_LOAD_U32(b + 0u), next = REX_LOAD_U32(b + 4u);
+  if (tag < 1u || tag > 53u) return true;
+  CcHeapIdx* x = cc_heap_idx(base, h);
+  if (!x) return false;
+  auto is_free = [&](uint32_t blk) { const uint32_t t = REX_LOAD_U32(blk + 12u); return t == 0u || t > 53u; };
+  const bool merge_prev = prev != 0u && is_free(prev);
+  const bool merge_next = next != 0u && is_free(next);
+  // Mirror positions, checked against the guest list before any write.
+  CcHeapPos pp{}, pn{};
+  uint32_t head = 0u, before = 0u, after = 0u;
+  for (int attempt = 0;; ++attempt) {
+    head = REX_LOAD_U32(h + 16u);
+    bool agree = head == cc_heap_first_addr(*x);
+    if (agree && merge_prev) agree = cc_heap_find(*x, prev, pp);
+    if (agree && !merge_prev && head != 0u && b > head) {
+      agree = cc_heap_before(*x, b, pp);
+      if (agree) {
+        before = cc_heap_at(*x, pp).addr;
+        after = cc_heap_next_addr(*x, pp);
+        agree = REX_LOAD_U32(before + 12u) == after;
+      }
+    }
+    if (agree && merge_next) agree = cc_heap_find(*x, next, pn);
+    if (agree) break;
+    if (attempt == 1 || !cc_heap_build(base, *x, h)) { cc_heap_clear(*x); return false; }
+  }
+#ifndef CC_XBOX_DRIVER
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr || std::getenv("CC_HEAP_ORACLE") != nullptr;
+  if (oracle) {
+    cc_heap_check(base, *x, h, "sub_8209BF18 mirror");
+    if (!merge_prev && head != 0u && b > head) {
+      uint32_t r9 = head, r10 = head;
+      while (r10 != 0u && r10 < b) { r9 = r10; r10 = REX_LOAD_U32(r10 + 12u); }
+      if (r9 != before || r10 != after) cc_oracle_mismatch("sub_8209BF18 place", 0, r9, before);
+    }
+  }
+  ++g_heap_st.frees;
+#endif
+  const uint32_t cnt = h + tag * 12u + 1060u;
+  REX_STORE_U32(cnt, REX_LOAD_U32(cnt) - 1u);
+  REX_STORE_U32(cnt + 4u, REX_LOAD_U32(cnt + 4u) - REX_LOAD_U32(b + 8u));
+  uint32_t r11;
+  if (merge_prev) {
+    REX_STORE_U32(prev + 8u, H + REX_LOAD_U32(prev + 8u) + REX_LOAD_U32(b + 8u));
+    REX_STORE_U32(prev + 4u, REX_LOAD_U32(b + 4u));
+    if (next != 0u) REX_STORE_U32(next + 0u, prev);
+    r11 = prev;
+    cc_heap_set(*x, pp, prev, int32_t(REX_LOAD_U32(prev + 8u)));
+  } else {
+    if (head == 0u || b <= head) {
+      REX_STORE_U32(b + 12u, head);
+      REX_STORE_U32(h + 16u, b);
+    } else {
+      REX_STORE_U32(before + 12u, b);
+      REX_STORE_U32(b + 12u, after);
+    }
+    r11 = b;
+    cc_heap_insert(*x, b, int32_t(REX_LOAD_U32(b + 8u)));
+  }
+  if (merge_next) {
+    REX_STORE_U32(r11 + 8u, H + REX_LOAD_U32(next + 8u) + REX_LOAD_U32(r11 + 8u));
+    const uint32_t nn = REX_LOAD_U32(next + 4u);
+    if (nn != 0u) REX_STORE_U32(nn + 0u, r11);
+    REX_STORE_U32(r11 + 4u, REX_LOAD_U32(next + 4u));
+    REX_STORE_U32(r11 + 12u, REX_LOAD_U32(next + 12u));
+    CcHeapPos q;
+    cc_heap_find(*x, next, q);
+    cc_heap_remove(*x, q);
+    cc_heap_find(*x, r11, q);
+    cc_heap_set(*x, q, r11, int32_t(REX_LOAD_U32(r11 + 8u)));
+  }
+  return true;
+}
+#endif
+#if !defined(CC_XBOX_DRIVER) || defined(CC_FAST)
+#ifdef CC_FAST
+static inline bool cc_heap_exact() {
+#ifndef CC_XBOX_DRIVER
+  static const bool exact = std::getenv("CC_HEAP_EXACT") != nullptr;
+  return exact;
+#elif defined(CC_HEAP_EXACT_BUILD)
+  return true;
+#else
+  return false;
+#endif
+}
+// The original or the mirror; after the original runs in place of the
+// mirror, the mirror is rebuilt on the next call.
+static inline void cc_heap_alloc_any(Context& ctx, Machine& base) {
+  const uint32_t h = ctx.r3.u32;
+  if (cc_heap_exact() || !cc_heap_alloc(ctx, base)) {
+#ifndef CC_XBOX_DRIVER
+    if (!cc_heap_exact()) ++g_heap_st.fallbacks;
+#endif
+    sub_8209BDD8_exact(ctx, base);
+    cc_heap_forget(h);
+  }
+}
+static inline void cc_heap_free_any(Context& ctx, Machine& base) {
+  const uint32_t h = ctx.r3.u32;
+  if (cc_heap_exact() || !cc_heap_free(ctx, base)) {
+#ifndef CC_XBOX_DRIVER
+    if (!cc_heap_exact()) ++g_heap_st.fallbacks;
+#endif
+    sub_8209BF18_exact(ctx, base);
+    cc_heap_forget(h);
+  }
+}
+#endif
+#ifndef CC_XBOX_DRIVER
 // Host census (CC_HEAP_WALK=1): free-list nodes before the chosen block
 // (alloc) / the insertion point (free), averaged per 2000 calls.
 static uint64_t g_hw_alloc_calls, g_hw_alloc_nodes, g_hw_free_calls, g_hw_free_nodes;
@@ -109,10 +488,18 @@ static void cc_heap_walk_census(Machine& base, uint32_t heap, uint32_t stop_addr
                  double(g_hw_alloc_nodes) / double(g_hw_alloc_calls ? g_hw_alloc_calls : 1),
                  double(g_hw_free_nodes) / double(g_hw_free_calls ? g_hw_free_calls : 1));
 }
+#endif
 static void sub_8209BDD8(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
   const uint32_t size = ctx.r4.u32, lr = uint32_t(ctx.lr);
   cc_heap_walk_census(base, ctx.r3.u32, 0u, false, size + 16u);
+#endif
+#ifdef CC_FAST
+  cc_heap_alloc_any(ctx, base);
+#else
   sub_8209BDD8_exact(ctx, base);
+#endif
+#ifndef CC_XBOX_DRIVER
   if (ctx.r3.u32) g_heap_live[ctx.r3.u32] = {size, lr};
   // Host oracle aid (CC_HEAP_ZERO=1): new blocks are zeroed, so stale bytes
   // (the padding of copied script values, which the game fills from
@@ -124,8 +511,10 @@ static void sub_8209BDD8(Context& ctx, Machine& base) {
     for (; k + 4u <= size; k += 4u) base.store(ctx.r3.u32 + k, 4, 0u);
     for (; k < size; ++k) base.store(ctx.r3.u32 + k, 1, 0u);
   }
+#endif
 }
 static void sub_8209BF18(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
   cc_heap_walk_census(base, ctx.r3.u32, ctx.r4.u32, true, 0u);
   // CC_HEAP_ZERO=1 also clears a block before it is freed.
   static const bool zero = std::getenv("CC_HEAP_ZERO") != nullptr;
@@ -137,7 +526,12 @@ static void sub_8209BF18(Context& ctx, Machine& base) {
     for (; k < size; ++k) base.store(p + k, 1, 0u);
   }
   if (it != g_heap_live.end()) g_heap_live.erase(it);
+#endif
+#ifdef CC_FAST
+  cc_heap_free_any(ctx, base);
+#else
   sub_8209BF18_exact(ctx, base);
+#endif
 }
 #endif
 #ifdef CC_VIEW_ACTIVE
@@ -2647,6 +3041,18 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     g_dl_st = {};
     g_dl_rst = {};
   }
+  static const bool heap_stats = std::getenv("CC_HEAP_STATS") != nullptr;  // heap index census
+  if (heap_stats && (g_frame_delay_calls + 1u) % 300u == 0u) {
+    size_t entries = 0, chunks = 0;
+    for (const CcHeapIdx& x : g_heap_idx) {
+      chunks += x.ch.size();
+      for (const CcHeapChunk* c : x.ch) entries += c->n;
+    }
+    cc_log("HEAPIDX frame=%u allocs=%llu frees=%llu builds=%llu fallbacks=%llu free_blocks=%zu chunks=%zu\n",
+           g_frame_delay_calls + 1u, (unsigned long long)g_heap_st.allocs, (unsigned long long)g_heap_st.frees,
+           (unsigned long long)g_heap_st.builds, (unsigned long long)g_heap_st.fallbacks, entries, chunks);
+    g_heap_st = {};
+  }
 #endif
   if (std::getenv("CC_WORKSET") && (g_frame_delay_calls + 1u) % 1000u == 0u)
     cc_log("RASTER frame=%u count=%u seconds=%.3f update=%.3f render=%.3f%c", g_frame_delay_calls + 1u, g_raster_count, g_raster_seconds, g_update_seconds, g_render_seconds, 10);
@@ -3517,7 +3923,20 @@ static void __imp__MmAllocatePhysicalMemoryEx(Context& ctx, Machine& base) {
   base.fail(Error::unsupported, 0x8214A4F4u);
 }
 #include "generated/sub_820B6108.inc"
+#ifdef CC_FAST
+#define sub_8209BC98 sub_8209BC98_exact
+#endif
 #include "generated/sub_8209BC98.inc"
+#ifdef CC_FAST
+#undef sub_8209BC98
+// Heap init (exact sub_8209BC98: heap r3): one free block; the heap's
+// free-list mirror (cc_heap_idx) starts over.
+static void sub_8209BC98(Context& ctx, Machine& base) {
+  const uint32_t h = ctx.r3.u32;
+  sub_8209BC98_exact(ctx, base);
+  cc_heap_forget(h);
+}
+#endif
 #ifdef CC_VIEW_ACTIVE
 #undef DEFINE_REX_FUNC
 #define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
