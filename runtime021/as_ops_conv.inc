@@ -229,32 +229,32 @@ struct CcAsConvNum2 {
   uint32_t a, b;
   double fa, fb, z;
 };
-static CC_HOT_FN inline CcAsConvNum2 cc_asconv_num2(Context& ctx, Machine& base, uint32_t s, uint32_t lr_a1, uint32_t lr_a2,
+static CC_HOT_FN inline CcAsConvNum2 cc_asconv_num2(Context& ctx, Machine& base, const CcAsOp& o, uint32_t lr_a1, uint32_t lr_a2,
                                           uint32_t lr_b1, uint32_t lr_b2) {
   CcAsConvNum2 n;
-  n.a = cc_as_pop_release(ctx, base, s, lr_a1, lr_a2);
-  n.b = cc_as_pop_release(ctx, base, s, lr_b1, lr_b2);
+  n.a = cc_as_pop_release(ctx, base, o, lr_a1, lr_a2);
+  n.b = cc_as_pop_release(ctx, base, o, lr_b1, lr_b2);
   ctx.fpscr.disableFlushMode();
   n.z = cc_asconv_k(base, 9536u);
   n.fa = REX_LOAD_U32(n.a) != kAsUndef ? cc_as_tonum(ctx, base, n.a) : n.z;
   n.fb = REX_LOAD_U32(n.b) != kAsUndef ? cc_as_tonum(ctx, base, n.b) : n.z;
   return n;
 }
-// Boolean result of a binary handler: b = {2, r} (byte), pushed (pool
-// re-read from S), then a's slot freed.
-static CC_HOT_FN inline void cc_asconv_put_bool(Machine& base, uint32_t s, uint32_t a, uint32_t b, uint32_t r) {
+// Boolean result of a binary handler: b = {2, r} (byte), pushed, then a's
+// slot freed.
+static CC_HOT_FN inline void cc_asconv_put_bool(Machine& base, const CcAsOp& o, uint32_t a, uint32_t b, uint32_t r) {
   REX_STORE_U8(b + 4u, uint8_t(r));
   REX_STORE_U32(b + 0u, 2u);
-  cc_as_push(base, cc_as_pool(base, s), b);
+  cc_as_push(base, o, b);
   cc_as_free(base, a);
 }
 // Number result of a binary handler: b = {16, r}, pushed, a's slot freed.
-static CC_HOT_FN inline void cc_asconv_put_num(Machine& base, uint32_t s, uint32_t a, uint32_t b, float r) {
+static CC_HOT_FN inline void cc_asconv_put_num(Machine& base, const CcAsOp& o, uint32_t a, uint32_t b, float r) {
   PPCRegister x{};
   x.f32 = r;
   REX_STORE_U32(b + 4u, x.u32);
   REX_STORE_U32(b + 0u, 16u);
-  cc_as_push(base, cc_as_pool(base, s), b);
+  cc_as_push(base, o, b);
   cc_as_free(base, a);
 }
 
@@ -262,16 +262,16 @@ static CC_HOT_FN inline void cc_asconv_put_num(Machine& base, uint32_t s, uint32
 // precision) into b.
 static CC_HOT_FN uint32_t cc_as_op_0B(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_0B);
-  const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o.s, 0x8207C0C8u, 0x8207C0D4u, 0x8207C148u, 0x8207C154u);
-  cc_asconv_put_num(base, o.s, n.a, n.b, float(n.fb - n.fa));
+  const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o, 0x8207C0C8u, 0x8207C0D4u, 0x8207C148u, 0x8207C154u);
+  cc_asconv_put_num(base, o, n.a, n.b, float(n.fb - n.fa));
   return 0u;
 }
 
 // Multiply (exact sub_8207C1F8, op 0x0C): b * a into b.
 static CC_HOT_FN uint32_t cc_as_op_0C(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_0C);
-  const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o.s, 0x8207C278u, 0x8207C284u, 0x8207C2F8u, 0x8207C304u);
-  cc_asconv_put_num(base, o.s, n.a, n.b, float(n.fb * n.fa));
+  const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o, 0x8207C278u, 0x8207C284u, 0x8207C2F8u, 0x8207C304u);
+  cc_asconv_put_num(base, o, n.a, n.b, float(n.fb * n.fa));
   return 0u;
 }
 
@@ -280,7 +280,7 @@ static CC_HOT_FN uint32_t cc_as_op_0C(Context& ctx, Machine& base, const CcAsOp&
 // slot freed.
 static CC_HOT_FN uint32_t cc_as_op_0D(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_0D);
-  const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o.s, 0x8207C42Cu, 0x8207C438u, 0x8207C4ACu, 0x8207C4B8u);
+  const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o, 0x8207C42Cu, 0x8207C438u, 0x8207C4ACu, 0x8207C4B8u);
   if (n.fa == n.z) {
     REX_STORE_U32(n.b + 0u, kAsUndef);
     REX_STORE_U32(n.b + 4u, 0u);
@@ -290,9 +290,8 @@ static CC_HOT_FN uint32_t cc_as_op_0D(Context& ctx, Machine& base, const CcAsOp&
     REX_STORE_U32(n.b + 4u, x.u32);
     REX_STORE_U32(n.b + 0u, 16u);
   }
-  const uint32_t p = cc_as_pool(base, o.s);
   cc_as_ref(ctx, base, n.b, 0x8207C570u);
-  cc_as_push(base, p, n.b);
+  cc_as_push(base, o, n.b);
   cc_as_free(base, n.a);
   return 0u;
 }
@@ -301,8 +300,8 @@ static CC_HOT_FN uint32_t cc_as_op_0D(Context& ctx, Machine& base, const CcAsOp&
 // zero constant.
 static CC_HOT_FN uint32_t cc_as_op_10(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_10);
-  const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o.s, 0x8207C62Cu, 0x8207C638u, 0x8207C6ACu, 0x8207C6B8u);
-  cc_asconv_put_bool(base, o.s, n.a, n.b, (n.fa == n.z || n.fb == n.z) ? 0u : 1u);
+  const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o, 0x8207C62Cu, 0x8207C638u, 0x8207C6ACu, 0x8207C6B8u);
+  cc_asconv_put_bool(base, o, n.a, n.b, (n.fa == n.z || n.fb == n.z) ? 0u : 1u);
   return 0u;
 }
 
@@ -310,8 +309,8 @@ static CC_HOT_FN uint32_t cc_as_op_10(Context& ctx, Machine& base, const CcAsOp&
 // zero constant.
 static CC_HOT_FN uint32_t cc_as_op_11(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_11);
-  const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o.s, 0x8207C7FCu, 0x8207C808u, 0x8207C87Cu, 0x8207C888u);
-  cc_asconv_put_bool(base, o.s, n.a, n.b, (n.fa == n.z && n.fb == n.z) ? 0u : 1u);
+  const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o, 0x8207C7FCu, 0x8207C808u, 0x8207C87Cu, 0x8207C888u);
+  cc_asconv_put_bool(base, o, n.a, n.b, (n.fa == n.z && n.fb == n.z) ? 0u : 1u);
   return 0u;
 }
 
@@ -319,12 +318,12 @@ static CC_HOT_FN uint32_t cc_as_op_11(Context& ctx, Machine& base, const CcAsOp&
 // ToBoolean == 0} (undefined: true) and is pushed again.
 static CC_HOT_FN uint32_t cc_as_op_12(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_12);
-  const uint32_t v = cc_as_pop_release(ctx, base, o.s, 0x8207C9C0u, 0x8207C9CCu);
+  const uint32_t v = cc_as_pop_release(ctx, base, o, 0x8207C9C0u, 0x8207C9CCu);
   uint32_t r = 1u;
   if (REX_LOAD_U32(v) != kAsUndef) r = (cc_as_tobool(ctx, base, v) & 0xFFu) == 0u ? 1u : 0u;
   REX_STORE_U8(v + 4u, uint8_t(r));
   REX_STORE_U32(v + 0u, 2u);
-  cc_as_push(base, cc_as_pool(base, o.s), v);
+  cc_as_push(base, o, v);
   return 0u;
 }
 
@@ -332,12 +331,12 @@ static CC_HOT_FN uint32_t cc_as_op_12(Context& ctx, Machine& base, const CcAsOp&
 // slot becomes {4, ToInt} (undefined: 0) and is pushed again.
 static CC_HOT_FN uint32_t cc_as_op_18(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_18);
-  const uint32_t v = cc_as_pop_release(ctx, base, o.s, 0x8207F2D8u, 0x8207F2E4u);
+  const uint32_t v = cc_as_pop_release(ctx, base, o, 0x8207F2D8u, 0x8207F2E4u);
   uint32_t r = 0u;
   if (REX_LOAD_U32(v) != kAsUndef) r = cc_as_toint(ctx, base, v);
   REX_STORE_U32(v + 4u, r);
   REX_STORE_U32(v + 0u, 4u);
-  cc_as_push(base, cc_as_pool(base, o.s), v);
+  cc_as_push(base, o, v);
   return 0u;
 }
 
@@ -348,8 +347,8 @@ static CC_HOT_FN uint32_t cc_as_op_18(Context& ctx, Machine& base, const CcAsOp&
 // freed. The result is referenced and pushed.
 static CC_HOT_FN uint32_t cc_as_op_47(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_47);
-  const uint32_t a = cc_as_pop_release(ctx, base, o.s, 0x8207ED38u, 0x8207ED44u);
-  const uint32_t b = cc_as_pop_release(ctx, base, o.s, 0x8207EDB8u, 0x8207EDC4u);
+  const uint32_t a = cc_as_pop_release(ctx, base, o, 0x8207ED38u, 0x8207ED44u);
+  const uint32_t b = cc_as_pop_release(ctx, base, o, 0x8207EDB8u, 0x8207EDC4u);
   const uint32_t ta = REX_LOAD_U32(a), tb = REX_LOAD_U32(b);
   uint32_t res;
   if (ta == kAsUndef) {
@@ -364,26 +363,23 @@ static CC_HOT_FN uint32_t cc_as_op_47(Context& ctx, Machine& base, const CcAsOp&
     REX_STORE_U32(b + 4u, 0u);
     REX_STORE_U8(b + 8u, 0u);
   } else {
-    ctx.r3.u64 = cc_as_pool(base, o.s); ctx.lr = 0x8207EE34u;
-    sub_82082488(ctx, base);
-    res = ctx.r3.u32;
-    ctx.r4.u64 = cc_as_vm(base, o.s); ctx.r5.u64 = a; ctx.r6.u64 = b; ctx.lr = 0x8207EE50u;
+    res = cc_as_alloc(ctx, base, o, 0x8207EE34u);
+    ctx.r3.u64 = res; ctx.r4.u64 = o.vm; ctx.r5.u64 = a; ctx.r6.u64 = b; ctx.lr = 0x8207EE50u;
     sub_82082F18(ctx, base);
     cc_as_free(base, a);
     REX_STORE_U32(b + 4u, 0u);
     REX_STORE_U8(b + 8u, 0u);
   }
-  const uint32_t p = cc_as_pool(base, o.s);
   cc_as_ref(ctx, base, res, 0x8207EEA4u);
-  cc_as_push(base, p, res);
+  cc_as_push(base, o, res);
   return 0u;
 }
 
 // Less (exact sub_8207EEC8, op 0x48): b < a (ToNumber) into b.
 static CC_HOT_FN uint32_t cc_as_op_48(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_48);
-  const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o.s, 0x8207EF48u, 0x8207EF54u, 0x8207EFC8u, 0x8207EFD4u);
-  cc_asconv_put_bool(base, o.s, n.a, n.b, n.fb < n.fa ? 1u : 0u);
+  const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o, 0x8207EF48u, 0x8207EF54u, 0x8207EFC8u, 0x8207EFD4u);
+  cc_asconv_put_bool(base, o, n.a, n.b, n.fb < n.fa ? 1u : 0u);
   return 0u;
 }
 
@@ -393,8 +389,8 @@ static CC_HOT_FN uint32_t cc_as_op_48(Context& ctx, Machine& base, const CcAsOp&
 // b as {2, byte}, pushed; a's slot freed.
 static CC_HOT_FN uint32_t cc_as_op_49(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_49);
-  const uint32_t a = cc_as_pop_release(ctx, base, o.s, 0x8207F100u, 0x8207F10Cu);
-  const uint32_t b = cc_as_pop_release(ctx, base, o.s, 0x8207F180u, 0x8207F18Cu);
+  const uint32_t a = cc_as_pop_release(ctx, base, o, 0x8207F100u, 0x8207F10Cu);
+  const uint32_t b = cc_as_pop_release(ctx, base, o, 0x8207F180u, 0x8207F18Cu);
   const uint32_t ta = REX_LOAD_U32(a);
   uint32_t r = 0u;
   if (ta == kAsUndef) {
@@ -407,7 +403,7 @@ static CC_HOT_FN uint32_t cc_as_op_49(Context& ctx, Machine& base, const CcAsOp&
       r = ctx.r3.u32;
     }
   }
-  cc_asconv_put_bool(base, o.s, a, b, r);
+  cc_asconv_put_bool(base, o, a, b, r);
   return 0u;
 }
 
@@ -417,13 +413,13 @@ static CC_HOT_FN uint32_t cc_as_op_49(Context& ctx, Machine& base, const CcAsOp&
 static CC_HOT_FN uint32_t cc_as_op_4B(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_4B);
   CcFrame frame(ctx, base, 128u);
-  const uint32_t v = cc_as_pop_release(ctx, base, o.s, 0x8207F3C8u, 0x8207F3D4u);
+  const uint32_t v = cc_as_pop_release(ctx, base, o, 0x8207F3C8u, 0x8207F3D4u);
   uint32_t id;
   if (REX_LOAD_U32(v) != kAsUndef) id = cc_as_tostr_id(ctx, base, v);
   else id = REX_LOAD_U16(ctx.r1.u32 + 80u);
   REX_STORE_U16(v + 4u, uint16_t(id));
   REX_STORE_U32(v + 0u, 8u);
-  cc_as_push(base, cc_as_pool(base, o.s), v);
+  cc_as_push(base, o, v);
   return 0u;
 }
 
@@ -431,10 +427,9 @@ static CC_HOT_FN uint32_t cc_as_op_4B(Context& ctx, Machine& base, const CcAsOp&
 // referenced and pushed again (the same slot twice on the stack).
 static CC_HOT_FN uint32_t cc_as_op_4C(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_4C);
-  const uint32_t p = cc_as_pool(base, o.s);
-  const uint32_t v = REX_LOAD_U32(p + REX_LOAD_U32(p + 5024u) * 4u - 4u);
+  const uint32_t v = cc_as_vld(base, o, kAsPool + cc_as_vld(base, o, kAsPool + 5024u) * 4u - 4u);
   cc_as_ref(ctx, base, v, 0x8207F4A4u);
-  cc_as_push(base, p, v);
+  cc_as_push(base, o, v);
   return 0u;
 }
 
@@ -443,7 +438,7 @@ static CC_HOT_FN uint32_t cc_as_op_4C(Context& ctx, Machine& base, const CcAsOp&
 // constant}; other types unchanged. Referenced and pushed again.
 static CC_HOT_FN uint32_t cc_as_op_50(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_50);
-  const uint32_t v = cc_as_pop_release(ctx, base, o.s, 0x8207FBB8u, 0x8207FBC4u);
+  const uint32_t v = cc_as_pop_release(ctx, base, o, 0x8207FBB8u, 0x8207FBC4u);
   const uint32_t t = REX_LOAD_U32(v);
   if (t == kAsUndef) {
     REX_STORE_U32(v + 0u, 4u);
@@ -460,9 +455,8 @@ static CC_HOT_FN uint32_t cc_as_op_50(Context& ctx, Machine& base, const CcAsOp&
     r.f32 = float(x + cc_asconv_k(base, 9540u));
     REX_STORE_U32(v + 4u, r.u32);
   }
-  const uint32_t p = cc_as_pool(base, o.s);
   cc_as_ref(ctx, base, v, 0x8207FC80u);
-  cc_as_push(base, p, v);
+  cc_as_push(base, o, v);
   return 0u;
 }
 
@@ -471,7 +465,7 @@ static CC_HOT_FN uint32_t cc_as_op_50(Context& ctx, Machine& base, const CcAsOp&
 // the one constant}.
 static CC_HOT_FN uint32_t cc_as_op_51(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_51);
-  const uint32_t v = cc_as_pop_release(ctx, base, o.s, 0x8207FD20u, 0x8207FD2Cu);
+  const uint32_t v = cc_as_pop_release(ctx, base, o, 0x8207FD20u, 0x8207FD2Cu);
   const uint32_t t = REX_LOAD_U32(v);
   if (t == kAsUndef) {
     REX_STORE_U32(v + 0u, 4u);
@@ -488,9 +482,8 @@ static CC_HOT_FN uint32_t cc_as_op_51(Context& ctx, Machine& base, const CcAsOp&
     r.f32 = float(x - cc_asconv_k(base, 9540u));
     REX_STORE_U32(v + 4u, r.u32);
   }
-  const uint32_t p = cc_as_pool(base, o.s);
   cc_as_ref(ctx, base, v, 0x8207FDE8u);
-  cc_as_push(base, p, v);
+  cc_as_push(base, o, v);
   return 0u;
 }
 
@@ -499,8 +492,8 @@ static CC_HOT_FN uint32_t cc_as_op_51(Context& ctx, Machine& base, const CcAsOp&
 // else false (undefined too). Into b as {2, byte}, pushed; a's slot freed.
 static CC_HOT_FN uint32_t cc_as_op_66(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_66);
-  const uint32_t a = cc_as_pop_release(ctx, base, o.s, 0x82080E80u, 0x82080E8Cu);
-  const uint32_t b = cc_as_pop_release(ctx, base, o.s, 0x82080F00u, 0x82080F0Cu);
+  const uint32_t a = cc_as_pop_release(ctx, base, o, 0x82080E80u, 0x82080E8Cu);
+  const uint32_t b = cc_as_pop_release(ctx, base, o, 0x82080F00u, 0x82080F0Cu);
   const uint32_t ta = REX_LOAD_U32(a);
   uint32_t r = 0u;
   if (ta != kAsUndef) {
@@ -511,15 +504,15 @@ static CC_HOT_FN uint32_t cc_as_op_66(Context& ctx, Machine& base, const CcAsOp&
       r = ctx.r3.u32;
     }
   }
-  cc_asconv_put_bool(base, o.s, a, b, r);
+  cc_asconv_put_bool(base, o, a, b, r);
   return 0u;
 }
 
 // Greater (exact sub_82080FA0, op 0x67): b > a (ToNumber) into b.
 static CC_HOT_FN uint32_t cc_as_op_67(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_67);
-  const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o.s, 0x82081020u, 0x8208102Cu, 0x820810A0u, 0x820810ACu);
-  cc_asconv_put_bool(base, o.s, n.a, n.b, n.fb > n.fa ? 1u : 0u);
+  const CcAsConvNum2 n = cc_asconv_num2(ctx, base, o, 0x82081020u, 0x8208102Cu, 0x820810A0u, 0x820810ACu);
+  cc_asconv_put_bool(base, o, n.a, n.b, n.fb > n.fa ? 1u : 0u);
   return 0u;
 }
 
@@ -527,11 +520,11 @@ static CC_HOT_FN uint32_t cc_as_op_67(Context& ctx, Machine& base, const CcAsOp&
 // {2, ToBoolean} (undefined: false) and is pushed again. Returns 1.
 static CC_HOT_FN uint32_t cc_as_op_70(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_70);
-  const uint32_t v = cc_as_pop_release(ctx, base, o.s, 0x820811D8u, 0x820811E4u);
+  const uint32_t v = cc_as_pop_release(ctx, base, o, 0x820811D8u, 0x820811E4u);
   uint32_t r = 0u;
   if (REX_LOAD_U32(v) != kAsUndef) r = cc_as_tobool(ctx, base, v);
   REX_STORE_U8(v + 4u, uint8_t(r));
   REX_STORE_U32(v + 0u, 2u);
-  cc_as_push(base, cc_as_pool(base, o.s), v);
+  cc_as_push(base, o, v);
   return 1u;
 }
