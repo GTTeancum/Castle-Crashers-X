@@ -63,6 +63,19 @@ endif
 ifneq ($(NORINGALIAS),)
 CXXFLAGS += -DCC_NO_RING_ALIAS
 endif
+# Flat window: back the hottest guest regions with 4 MiB pages (page
+# directory entries over contiguous memory, 4 KiB pages for any region where
+# a step fails; MEM lines on the debug channel say which path is active):
+# make LARGEPAGES=1 (stack/TLS/game heap and the game data image),
+# LARGEPAGES=heap or LARGEPAGES=image for one of them (only
+# runtime021/update_boundary_tests.cpp reads it; touch it)
+ifeq ($(LARGEPAGES),1)
+CXXFLAGS += -DCC_LARGE_PAGES=3
+else ifeq ($(LARGEPAGES),heap)
+CXXFLAGS += -DCC_LARGE_PAGES=1
+else ifeq ($(LARGEPAGES),image)
+CXXFLAGS += -DCC_LARGE_PAGES=2
+endif
 # Console census of slow-path memory pages (page-table builds only):
 # make PAGETABLE=1 SLOWSTATS=1
 ifneq ($(SLOWSTATS),)

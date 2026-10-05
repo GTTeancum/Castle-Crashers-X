@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Flat guest window (guest_window.h): reserving the window and backing the
-// guest regions and the aliased 360 command ring.
+// guest regions, the aliased 360 command ring and, in Xbox LARGEPAGES
+// builds, 4 MiB pages for the hottest regions.
 #include "guest_window.h"
 #ifdef CC_FLAT_WINDOW
 #include "cc_log.h"
@@ -51,8 +52,9 @@ static long __stdcall fault_report(CcExceptionPointers* ep) {
 #endif
 
 namespace {
-constexpr uint32_t kPage = 0x1000u;
+constexpr uint32_t kPage = 0x1000u, kChunk = 0x400000u;  // 4 KiB and 4 MiB pages
 constexpr uint32_t kNone = 0xFFFFFFFFu;
+constexpr unsigned kMaxGroups = 12;
 
 // Sorted list of window-offset ranges.
 struct List {
@@ -77,6 +79,15 @@ struct List {
     }
     n = m;
   }
+};
+
+// A run of 4 MiB chunks (window offsets c0 * 4 MiB ..) to back with large pages.
+struct Group {
+  uint32_t c0, n;
+  void* block;  // contiguous memory (Xbox), the kernel's own mapping of it
+  uint32_t phys;
+  bool on;
+  const char* why;  // why not, when off
 };
 
 uint32_t g_committed = 0;  // bytes committed as 4 KiB pages
@@ -139,6 +150,59 @@ uint32_t pte_template(uintptr_t va, const char** why) {
   return pte & 0x1Fu;
 }
 
+// Point the page-directory entries of the group's chunks at its contiguous
+// block as 4 MiB pages. Why this cannot disturb the kernel's own mappings:
+// - only entries for the window's own reservation change (directory entries
+//   0x100..0x103 and 0x188, all below 0x80000000; the kernel's are above),
+//   and only ones that are not present: no page table exists there because
+//   nothing was committed in those chunks, and the reservation keeps the
+//   kernel from placing anything else there;
+// - the memory is the kernel's contiguous memory, which it never moves (its
+//   own mapping is fixed at 0x80000000 + physical) and which nothing else
+//   owns; both mappings are write-back, so the caches stay consistent;
+// - nothing in the window is ever decommitted or freed, so the kernel never
+//   walks these entries (a quick reboot re-initialises memory management;
+//   only memory marked persistent survives it).
+// 4 MiB pages must be enabled (CR4.PSE, checked). CR3 is reloaded after the
+// writes.
+bool map_large(Group& g, uint32_t tmpl) {
+  if (!(read_cr4() & 0x10u)) { g.why = "no 4 MiB pages (CR4.PSE)"; return false; }
+  const uintptr_t va = kBase + uintptr_t(g.c0) * kChunk;
+  uint32_t saved[8];
+  if (g.n > 8u) { g.why = "too many chunks"; return false; }
+  for (uint32_t i = 0; i < g.n; ++i) {
+    saved[i] = *pde_of(va + i * kChunk);
+    if (saved[i] & 1u) { g.why = "page table present"; return false; }
+  }
+  __builtin_memset(g.block, 0, size_t(g.n) * kChunk);  // through the kernel's mapping
+  // present, writable, user as the template; accessed, dirty, 4 MiB page;
+  // write-back caching like the kernel's own mapping of the block.
+  const uint32_t flags = (tmpl & 0x07u) | 0x60u | 0x80u;
+  const uint32_t f = irq_off();
+  for (uint32_t i = 0; i < g.n; ++i) *pde_of(va + i * kChunk) = (g.phys + i * kChunk) | flags;
+  flush_tlb();
+  irq_restore(f);
+  // A word written through the window must read back through the kernel's
+  // mapping of the block.
+  bool ok = true;
+  for (uint32_t i = 0; i < g.n; ++i) {
+    volatile uint32_t* w = reinterpret_cast<volatile uint32_t*>(va + i * kChunk + 0x1230u);
+    volatile uint32_t* k = reinterpret_cast<volatile uint32_t*>(static_cast<uint8_t*>(g.block) + i * kChunk + 0x1230u);
+    *w = 0x5AA5C33Cu ^ i;
+    ok = ok && *k == (0x5AA5C33Cu ^ i);
+    *w = 0;
+  }
+  if (!ok) {
+    const uint32_t f2 = irq_off();
+    for (uint32_t i = 0; i < g.n; ++i) *pde_of(va + i * kChunk) = saved[i];
+    flush_tlb();
+    irq_restore(f2);
+    g.why = "read-back mismatch";
+    return false;
+  }
+  return true;
+}
+
 // Point the page-table entries of window pages [lo, hi) at the contiguous
 // block, page p at block byte (p - lo) % period. Only entries that are not
 // present are written (reserved, never committed pages); the page table
@@ -146,7 +210,6 @@ uint32_t pte_template(uintptr_t va, const char** why) {
 // and it stays because nothing in the window is ever decommitted.
 bool alias_pages(uint32_t lo, uint32_t hi, uint32_t period, void* block, uint32_t phys, uint32_t tmpl,
                  const char** why) {
-  constexpr uint32_t kChunk = 0x400000u;  // one page table's span
   static uint32_t saved[0x200];
   if ((hi - lo) / kPage > 0x200u) { *why = "range too long"; return false; }
   const uintptr_t a = kBase + lo, b = kBase + hi;
@@ -270,7 +333,19 @@ bool open(const Layout& L) {
     ahi = uint32_t(offset(L.alias.hi - 1u) + 1u) & ~0xFFFFu;
     if (ahi < alo + 2u * period) alo = ahi = 0;
   }
-  uint32_t ring_bytes = 0;
+  Group groups[kMaxGroups];
+  unsigned ng = 0;
+  for (unsigned i = 0; i < L.large_count && ng < 4u; ++i) {
+    const Range& g = L.large[i];
+    if (g.hi <= g.lo) continue;
+    const uint32_t c0 = uint32_t(offset(g.lo)) >> 22, c1 = uint32_t(offset(g.hi - 1u)) >> 22;
+    groups[ng++] = Group{c0, c1 - c0 + 1u, nullptr, 0, false, "not tried"};
+  }
+  // Chunks may end past the window (the image's): reserve up to the last.
+  uint32_t tail = kSpan;
+  for (unsigned i = 0; i < ng; ++i)
+    if ((groups[i].c0 + groups[i].n) * kChunk > tail) tail = (groups[i].c0 + groups[i].n) * kChunk;
+  uint32_t large_bytes = 0, ring_bytes = 0;
   bool ring_on = false;
   const char* ring_why = alo < ahi ? "not tried" : "off";
   List excl;
@@ -281,6 +356,34 @@ bool open(const Layout& L) {
   if (!NT_SUCCESS(st) || base != reinterpret_cast<PVOID>(kBase)) {
     DbgPrint("MEM flat window: reserve %08x+%08x failed status=%08x\n", unsigned(kBase), unsigned(kSpan), unsigned(st));
     return false;
+  }
+  bool tail_ok = tail == kSpan;
+  if (!tail_ok) {
+    PVOID tb = reinterpret_cast<PVOID>(kBase + kSpan);
+    SIZE_T ts = tail - kSpan;
+    tail_ok = NT_SUCCESS(NtAllocateVirtualMemory(&tb, 0, &ts, MEM_RESERVE, PAGE_READWRITE)) &&
+              tb == reinterpret_cast<PVOID>(kBase + kSpan);
+  }
+  // Contiguous memory first, before the 4 KiB commits scatter free memory:
+  // one block per group (compact), else one per chunk.
+  for (unsigned i = 0; i < ng; ++i) {
+    Group& g = groups[i];
+    if ((g.c0 + g.n) * kChunk > kSpan && !tail_ok) { g.why = "past the window"; continue; }
+    g.block = MmAllocateContiguousMemoryEx(size_t(g.n) * kChunk, 0, kRetailTop, kChunk, PAGE_READWRITE);
+    if (!g.block && g.n > 1u && ng + g.n - 1u <= kMaxGroups) {
+      for (uint32_t k = 1; k < g.n; ++k) groups[ng++] = Group{g.c0 + k, 1u, nullptr, 0, false, "not tried"};
+      g.n = 1u;
+      g.block = MmAllocateContiguousMemoryEx(kChunk, 0, kRetailTop, kChunk, PAGE_READWRITE);
+    }
+    if (!g.block) { g.why = "no contiguous memory"; continue; }
+    g.phys = uint32_t(MmGetPhysicalAddress(g.block));
+    if (g.phys & (kChunk - 1u)) {
+      MmFreeContiguousMemory(g.block);
+      g.block = nullptr;
+      g.why = "unaligned block";
+      continue;
+    }
+    excl.add(g.c0 * kChunk, (g.c0 + g.n) * kChunk);
   }
   void* ring_block = nullptr;
   uint32_t ring_phys = 0;
@@ -295,18 +398,31 @@ bool open(const Layout& L) {
   }
   excl.merge();
   if (!commit_pages(pages, 0, kNone, excl)) return false;
+  // The kernel's entry for a committed page: the bits the new entries copy.
+  const char* pt_why = "no committed page";
+  const uint32_t t = first_committed(pages, excl);
+  const uint32_t tmpl = t == kNone ? 0u : pte_template(kBase + t, &pt_why);
+  const List none{};
+  for (unsigned i = 0; i < ng; ++i) {
+    Group& g = groups[i];
+    if (!g.block) continue;
+    if (!tmpl) g.why = pt_why;
+    if (tmpl && map_large(g, tmpl)) {
+      g.on = true;
+      large_bytes += g.n * kChunk;
+      continue;
+    }
+    MmFreeContiguousMemory(g.block);
+    g.block = nullptr;
+    if (!commit_pages(pages, g.c0 * kChunk, (g.c0 + g.n) * kChunk, none)) return false;
+  }
   if (ring_block) {
-    // The kernel's entry for a committed page: the bits the new entries copy.
-    const char* pt_why = "no committed page";
-    const uint32_t t = first_committed(pages, excl);
-    const uint32_t tmpl = t == kNone ? 0u : pte_template(kBase + t, &pt_why);
     if (!tmpl) ring_why = pt_why;
     if (tmpl && alias_pages(alo, ahi, period, ring_block, ring_phys, tmpl, &ring_why)) {
       ring_on = true;
       ring_bytes = period;
     } else {
       MmFreeContiguousMemory(ring_block);
-      const List none{};
       if (!commit_pages(pages, alo, ahi, none)) return false;
     }
   }
@@ -325,22 +441,44 @@ bool open(const Layout& L) {
     if (!g_base) return false;
   }
   AddVectoredExceptionHandler(1, fault_report);
+  // 4 MiB chunks: committed whole, the layout the Xbox maps with large pages.
+  const bool tail_ok = tail == kSpan || VirtualAlloc(g_base + kSpan, tail - kSpan, 0x2000u, 0x01u) == g_base + kSpan;
+  for (unsigned i = 0; i < ng; ++i) {
+    Group& g = groups[i];
+    const uint32_t lo = g.c0 * kChunk, hi = (g.c0 + g.n) * kChunk;
+    if (hi > kSpan && !tail_ok) { g.why = "past the window"; continue; }
+    // A reservation boundary splits the commit (the tail is its own region).
+    const uint32_t mid = lo < kSpan && hi > kSpan ? kSpan : hi;
+    if (!VirtualAlloc(g_base + lo, mid - lo, 0x1000u, 0x04u) ||
+        (mid < hi && !VirtualAlloc(g_base + mid, hi - mid, 0x1000u, 0x04u))) {
+      g.why = "commit failed";
+      continue;
+    }
+    g.on = true;
+    large_bytes += hi - lo;
+    excl.add(lo, hi);
+  }
   excl.merge();
   if (!commit_pages(pages, 0, kNone, excl)) return false;
 #endif
-  const unsigned total_k = unsigned((g_committed + ring_bytes) >> 10);
+  const unsigned total_k = unsigned((g_committed + large_bytes + ring_bytes) >> 10);
 #ifdef CC_XBOX_DRIVER
 #define CC_WIN_LOG DbgPrint
 #else
 #define CC_WIN_LOG cc_log
 #endif
+  for (unsigned i = 0; i < ng; ++i) {
+    const Group& g = groups[i];
+    CC_WIN_LOG("MEM large pages window %08x+%08x: %s phys=%08x\n", unsigned(g.c0 * kChunk), unsigned(g.n * kChunk),
+               g.on ? "on" : g.why, unsigned(g.phys));
+  }
   if (alo < ahi) {
     CC_WIN_LOG("MEM ring alias window %08x..%08x on one %uK block: %s\n", unsigned(alo), unsigned(ahi),
                unsigned(period >> 10), ring_on ? "on" : ring_why);
   }
-  CC_WIN_LOG("MEM flat window base=%08llx span=%08x committed=%uK (4K pages %uK, ring block %uK) ranges=%u\n",
+  CC_WIN_LOG("MEM flat window base=%08llx span=%08x committed=%uK (4K pages %uK, 4M pages %uK, ring block %uK) ranges=%u\n",
              (unsigned long long)CC_WINDOW_BASE, unsigned(kSpan), total_k, unsigned(g_committed >> 10),
-             unsigned(ring_bytes >> 10), pages.n);
+             unsigned(large_bytes >> 10), unsigned(ring_bytes >> 10), pages.n);
 #undef CC_WIN_LOG
 #ifdef CC_XBOX_DRIVER
   cc_xbox_mem_line("startup");

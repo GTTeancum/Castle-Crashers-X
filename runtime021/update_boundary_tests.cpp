@@ -526,19 +526,32 @@ static void renderer_caller_prefix_controls(const char* image_path) {
     };
     // The command ring's whole pages share one 256 KiB block (nothing reads
     // the ring); host CC_RING_ALIAS=0 / Xbox NORINGALIAS=1 commit it in full.
+    // 4 MiB pages (mask 1: stack, TLS and game heap; 2: game data image):
+    // Xbox make LARGEPAGES=..., host CC_LARGE_PAGES=<mask> (same layout).
 #ifdef CC_XBOX_DRIVER
 #ifdef CC_NO_RING_ALIAS
     const bool ring_alias = false;
 #else
     const bool ring_alias = true;
 #endif
+#ifdef CC_LARGE_PAGES
+    const unsigned large_mask = CC_LARGE_PAGES;
+#else
+    const unsigned large_mask = 0u;
+#endif
 #else
     const char* ring_env = std::getenv("CC_RING_ALIAS");
     const bool ring_alias = !(ring_env && ring_env[0] == '0');
+    const char* large_env = std::getenv("CC_LARGE_PAGES");
+    const unsigned large_mask = large_env ? unsigned(std::strtoul(large_env, nullptr, 0)) : 0u;
 #endif
+    cc_win::Range large[2];
+    unsigned large_count = 0;
+    if (large_mask & 1u) large[large_count++] = {0x30000u, 0x71000u + kHeapBytes};
+    if (large_mask & 2u) large[large_count++] = {cc_win::kImageGuest, cc_win::kImageGuest + kImageBytes};
     const cc_win::Layout layout{ranges, unsigned(std::size(ranges)),
                                 {cc_win::kRingLo, cc_win::kRingLo + cc_win::kRingBytes},
-                                ring_alias ? cc_win::kRingBlock : 0u};
+                                ring_alias ? cc_win::kRingBlock : 0u, large, large_count};
     if (!cc_win::open(layout)) {
       cc_elog("FAIL flat guest window unavailable\n");
 #ifdef CC_XBOX_DRIVER
