@@ -430,9 +430,13 @@ static CC_HOT_FN void sub_82088A08(Context& ctx, Machine& base) {
 // into the return value; active children while bit 6 is set, and inactive
 // children with bit 4 of their +86, set bit 0. Without bit 0 the node's
 // bit 4 of +86 is cleared; bit 6 of +140 is cleared and the stack popped.
+#ifndef CC_XBOX_DRIVER
+static uint32_t g_clip_ticks = 0;  // host CC_TICK_STATS: clip frame updates per frame
+#endif
 static CC_HOT_FN void sub_8208A228(Context& ctx, Machine& base) {
 #ifndef CC_XBOX_DRIVER
   static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
+  ++g_clip_ticks;
   if (walk_exact) { sub_8208A228_exact(ctx, base); return; }
 #else
   #ifdef CC_WALK_EXACT_BUILD
@@ -2293,6 +2297,15 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
       cc_log("STATEALL frame=%u hash=%016llx%c", f, (unsigned long long)all, 10);
     }
   }
+#ifdef CC_FAST
+  if (std::getenv("CC_TICK_STATS")) {
+    static uint64_t t_last = 0;
+    cc_log("TICKS frame=%u clips=%u ms=%.2f%c", g_frame_delay_calls + 1u, g_clip_ticks,
+           double(base.timebase_virtual_ticks - t_last) * 1000.0 / double(Machine::timebase_hz), 10);
+    t_last = base.timebase_virtual_ticks;
+    g_clip_ticks = 0;
+  }
+#endif
   if (std::getenv("CC_WORKSET") && (g_frame_delay_calls + 1u) % 1000u == 0u)
     cc_log("RASTER frame=%u count=%u seconds=%.3f update=%.3f render=%.3f%c", g_frame_delay_calls + 1u, g_raster_count, g_raster_seconds, g_update_seconds, g_render_seconds, 10);
   if (std::getenv("CC_WORKSET") && (g_frame_delay_calls + 1u) % 250u == 0u)

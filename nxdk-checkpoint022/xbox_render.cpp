@@ -36,6 +36,8 @@ struct Texture {
   bool normalized = false;  // swizzled/compressed textures take 0..1 UVs
   uint32_t sig = 0;         // converted copies: sample hash of the source
   uint32_t checked = 0xFFFFFFFFu;  // frame of the last signature check
+  uint32_t slice_sig[8] = {};      // per-slice sample hashes (rows split in 8)
+  uint32_t slice_next = 0;         // slice checked next frame
 };
 
 bool g_init = false, g_failed = false, g_in_frame = false, g_shown = false;
@@ -227,21 +229,42 @@ void convert_into(uint8_t* dst, const uint8_t* src, uint32_t w, uint32_t h, int 
 const Texture* converted(uint32_t key, const uint8_t* src, uint32_t w, uint32_t h, int kind) {
   const uint32_t bpp = kind == 1 ? 4u : 2u;
   const uint32_t bytes = w * h * bpp;
-  for (Texture& t : g_converted)
-    if (t.key == key && t.w == w && t.h == h && t.pitch == w * bpp) {
+  // Most recent hit first (the same few linear textures are bound over and
+  // over), then the full list.
+  static size_t last = 0;
+  if (last < g_converted.size()) {
+    const Texture& c = g_converted[last];
+    if (!(c.key == key && c.w == w && c.h == h && c.pitch == w * bpp)) last = g_converted.size();
+  }
+  if (last >= g_converted.size())
+    for (size_t i = 0; i < g_converted.size(); ++i) {
+      const Texture& c = g_converted[i];
+      if (c.key == key && c.w == w && c.h == h && c.pitch == w * bpp) { last = i; break; }
+    }
+  if (last < g_converted.size()) {
+    Texture& t = g_converted[last];
+    {
       // The source is sampled once per frame per texture: the font atlas
       // (1024x1024 A4R4G4B4, 2 MB, ~34K samples) is bound several times a
       // frame, and glyphs added mid-frame show from the next frame on.
+      // One eighth of the rows is sampled per frame (round robin) and only
+      // a changed slice is converted again: sampling the whole 2 MB atlas
+      // every frame was ~34K cache misses per frame on the console. Glyphs
+      // the game adds show within 8 frames.
       if (t.checked != g_frames) {
         t.checked = g_frames;
-        const uint32_t sig = sample_sig(src, bytes);
-        if (t.sig != sig) {
-          convert_into(static_cast<uint8_t*>(const_cast<void*>(t.gpu)), src, w, h, kind);
-          t.sig = sig;
+        const uint32_t k = t.slice_next++ & 7u;
+        const uint32_t row0 = h * k / 8u, row1 = h * (k + 1u) / 8u;
+        const uint32_t off = row0 * w * bpp, len = (row1 - row0) * w * bpp;
+        const uint32_t sig = sample_sig(src + off, len);
+        if (t.slice_sig[k] != sig) {
+          convert_into(static_cast<uint8_t*>(const_cast<void*>(t.gpu)) + off, src + off, w, row1 - row0, kind);
+          t.slice_sig[k] = sig;
         }
       }
       return &t;
     }
+  }
   const uint32_t sig = sample_sig(src, bytes);
   uint8_t* dst = static_cast<uint8_t*>(MmAllocateContiguousMemoryEx(
       bytes, 0, kMaxGpuAddress, 0, PAGE_READWRITE | PAGE_WRITECOMBINE));
@@ -249,6 +272,10 @@ const Texture* converted(uint32_t key, const uint8_t* src, uint32_t w, uint32_t 
   convert_into(dst, src, w, h, kind);
   Texture t;
   t.key = key; t.w = w; t.h = h; t.gpu = dst; t.pitch = w * bpp; t.normalized = false; t.sig = sig; t.checked = g_frames;
+  for (uint32_t k = 0; k < 8u; ++k) {
+    const uint32_t row0 = h * k / 8u, row1 = h * (k + 1u) / 8u;
+    t.slice_sig[k] = sample_sig(src + row0 * w * bpp, (row1 - row0) * w * bpp);
+  }
   t.format = 0x0000002Au |
              ((kind == 1 ? NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A8R8G8B8
                          : NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A4R4G4B4) << 8) |
