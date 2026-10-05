@@ -524,7 +524,22 @@ static void renderer_caller_prefix_controls(const char* image_path) {
       {0x1E000000u, 0x1E000000u + kPhysSmallBytes},
       {cc_win::kImageGuest, cc_win::kImageGuest + kImageBytes},
     };
-    if (!cc_win::open(ranges, uint32_t(std::size(ranges)))) {
+    // The command ring's whole pages share one 256 KiB block (nothing reads
+    // the ring); host CC_RING_ALIAS=0 / Xbox NORINGALIAS=1 commit it in full.
+#ifdef CC_XBOX_DRIVER
+#ifdef CC_NO_RING_ALIAS
+    const bool ring_alias = false;
+#else
+    const bool ring_alias = true;
+#endif
+#else
+    const char* ring_env = std::getenv("CC_RING_ALIAS");
+    const bool ring_alias = !(ring_env && ring_env[0] == '0');
+#endif
+    const cc_win::Layout layout{ranges, unsigned(std::size(ranges)),
+                                {cc_win::kRingLo, cc_win::kRingLo + cc_win::kRingBytes},
+                                ring_alias ? cc_win::kRingBlock : 0u};
+    if (!cc_win::open(layout)) {
       cc_elog("FAIL flat guest window unavailable\n");
 #ifdef CC_XBOX_DRIVER
       cc_xr_show_fail(3u, uint32_t(cc_win::kBase));
@@ -589,9 +604,10 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // block repeated over its 2 MiB.
   // Default on (identical instruction and memory-op counts with and without
   // aliasing: the game never reads these back). CC_GFX_ALIAS=none disables.
-  // Flat window (play build): no aliasing (the MMU cannot alias at these
-  // byte offsets); every piece sits at its own window address, the ring is
-  // committed in full and the surfaces' interior pages are not committed.
+  // Flat window (play build): every piece sits at its own window address;
+  // the surfaces' interior pages are not committed and the ring's whole
+  // pages share one 256 KiB block at page granularity (cc_win::open; the
+  // byte-offset aliasing below needs the page table).
 #ifdef CC_FLAT_WINDOW
   const bool alias_surfaces = false, alias_ring = false;
 #else
@@ -605,7 +621,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
     // Pieces are packed into one compact backing block; aliased ranges share
     // storage, so only the distinct bytes are allocated (5 MiB -> ~2.1 MiB).
     struct Piece { uint32_t lo, len; int share; };  // share: -1 own storage, else index
-    constexpr uint32_t ring_lo = 0x0200F140u, ring_len = 0x200000u;
+    constexpr uint32_t ring_lo = cc_win::kRingLo, ring_len = cc_win::kRingBytes;
     constexpr uint32_t surf_a = cc_win::kSurfaceA, surf_b = cc_win::kSurfaceB, surf_len = cc_win::kSurfaceBytes;
     std::vector<Piece> pieces = {
       {0x02000000u, ring_lo - 0x02000000u, -1},

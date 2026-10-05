@@ -11,9 +11,33 @@
 //   PMC (make PMC=1): two Pentium III performance counters, rotating through
 //          event pairs one second at a time. The title runs in ring 0, so it
 //          programs PerfEvtSel0/1 (MSR 0x186/0x187) and reads with rdpmc.
+//   MEM: the kernel's free physical memory, after the first second and then
+//          once a minute (also printed at startup by the guest window).
 #include <windows.h>
 #include <xboxkrnl/xboxkrnl.h>
 #include <cstdint>
+
+// MEM line from the kernel's memory statistics, in KiB:
+//   MEM <when> free=<free> retail_free=<estimate> total=<physical>
+//       vm=<committed virtual memory> image=<XBE image> pool=<kernel pool>
+//       stack=<thread stacks> cache=<file cache>
+// A development console has 128 MiB, a retail one 64 MiB; retail_free is
+// free minus the extra 64 MiB, what the same title would have left on a
+// retail console (a little low: the debug kernel and monitor use some too).
+// Contiguous memory (GPU buffers, texture zone, the window's 4 MiB pages and
+// ring block) is not in any of the categories, only in free.
+void cc_xbox_mem_line(const char* when) {
+  MM_STATISTICS s;
+  __builtin_memset(&s, 0, sizeof(s));
+  s.Length = sizeof(s);
+  if (!NT_SUCCESS(MmQueryStatistics(&s))) return;
+  const unsigned free_k = unsigned(s.AvailablePages) * 4u, total_k = unsigned(s.TotalPhysicalPages) * 4u;
+  const int retail_k = int(free_k) - (total_k > 65536u ? int(total_k - 65536u) : 0);
+  DbgPrint("MEM %s free=%uK retail_free=%dK total=%uK vm=%uK image=%uK pool=%uK stack=%uK cache=%uK\n", when, free_k,
+           retail_k, total_k, unsigned(s.VirtualMemoryBytesCommitted >> 10), unsigned(s.ImagePagesCommitted) * 4u,
+           unsigned(s.PoolPagesCommitted) * 4u, unsigned(s.StackPagesCommitted) * 4u,
+           unsigned(s.CachePagesCommitted) * 4u);
+}
 
 // runtime021 (bridge.cpp): FRAME line counters since the last call, reset:
 // {frames, baked-texture reads, baked-texture bytes, then microseconds of
@@ -68,6 +92,13 @@ void cc_xbox_perf_second([[maybe_unused]] unsigned frames) {
            unsigned(fs[3] / f / 100u), unsigned(fs[4] / f / 100u), unsigned(fs[5] / f / 100u),
            unsigned(fs[6] / f / 100u), unsigned(fs[7] / f / 100u), unsigned(other / f / 100u),
            unsigned(fs[1]), unsigned(fs[2] >> 10));
+  static unsigned seconds = 0;
+  if (seconds % 60u == 0u) {
+    char when[16];
+    __builtin_snprintf(when, sizeof(when), "t=%us", seconds + 1u);
+    cc_xbox_mem_line(when);
+  }
+  ++seconds;
 #ifdef CC_PMC
   const unsigned n = frames ? frames : 1u;
   if (g_armed) {

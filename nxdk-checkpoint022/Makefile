@@ -10,6 +10,7 @@ SRCS = \
   $(CURDIR)/../runtime007/numeric/target_fma.cpp \
   $(CURDIR)/../runtime021/update_boundary_tests.cpp \
   $(CURDIR)/../runtime021/bridge.cpp \
+  $(CURDIR)/../runtime021/guest_window.cpp \
   $(CURDIR)/../runtime021/selftest.cpp \
   $(CURDIR)/../runtime011/selftest.cpp \
   $(CURDIR)/../runtime008/fixtures.cpp \
@@ -55,6 +56,12 @@ endif
 # window (verification build; see runtime021/guest_window.h): make PAGETABLE=1
 ifneq ($(PAGETABLE),)
 CXXFLAGS += -DCC_PAGE_TABLE
+endif
+# Flat window: commit the 360 command ring in full instead of sharing one
+# 256 KiB block between its pages (runtime021/guest_window.h): make NORINGALIAS=1
+# (only runtime021/update_boundary_tests.cpp reads it; touch it)
+ifneq ($(NORINGALIAS),)
+CXXFLAGS += -DCC_NO_RING_ALIAS
 endif
 # Console census of slow-path memory pages (page-table builds only):
 # make PAGETABLE=1 SLOWSTATS=1
@@ -104,6 +111,7 @@ include $(NXDK_DIR)/Makefile
 
 $(CURDIR)/../runtime021/bridge.obj: $(CURDIR)/../runtime021/audio.inc $(CURDIR)/../runtime021/bodies.inc $(wildcard $(CURDIR)/../runtime021/as_*.inc) $(CURDIR)/../runtime008/bodies.inc $(CURDIR)/../runtime021/decls.inc $(CURDIR)/../runtime021/dispatch.inc $(wildcard $(CURDIR)/../runtime021/generated/*.inc) $(CURDIR)/../runtime021/cc_log.h $(CURDIR)/../runtime021/guest_window.h
 $(CURDIR)/../runtime021/update_boundary_tests.obj: $(CURDIR)/../runtime021/cc_log.h $(CURDIR)/../runtime021/selftest.h $(CURDIR)/../runtime021/guest_window.h
+$(CURDIR)/../runtime021/guest_window.obj: $(CURDIR)/../runtime021/cc_log.h $(CURDIR)/../runtime021/guest_window.h
 
 # Disc payload: the boundary chain's inputs live under D:\data on the ISO.
 .PHONY: discdata
