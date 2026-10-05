@@ -732,6 +732,13 @@ struct CcFrame {
   }
   ~CcFrame() { c.r1.u64 = saved; }
 };
+// Cache hint for a guest address the walkers will read soon (x86 prefetch
+// never faults; pages without a direct host mapping are skipped). All
+// guest-to-host address use of the display natives goes through here.
+static inline __attribute__((always_inline)) void cc_prefetch(uint32_t a) {
+  uint8_t* b = g_page_host[a >> 16];
+  if (__builtin_expect(uintptr_t(b) > 1u, 1)) __builtin_prefetch(b + (a & 0xFFFFu));
+}
 #define sub_8208AF08 sub_8208AF08_exact
 #endif
 #include "generated/sub_8208AF08.inc"
