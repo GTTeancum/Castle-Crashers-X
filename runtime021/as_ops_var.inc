@@ -24,7 +24,7 @@ static CC_HOT_FN inline uint32_t cc_as_game_heap(Context& ctx, Machine& base, ui
 // float}; objects 1, 64, 128, 512, 1024, 16384, 32768 -> type 1 with +0 the
 // value's object (counted, 4096 or 8192 payload, else 0) and
 // sub_82066EA8(+0, 1), even for 0; anything else -> undefined, returns 0.
-static CC_HOT_FN inline uint32_t cc_as_var_assign(Context& ctx, Machine& base, uint32_t var, uint32_t v) {
+static CC_HOT_FN uint32_t cc_as_var_assign(Context& ctx, Machine& base, uint32_t var, uint32_t v) {
   if (REX_LOAD_U32(var + 0u) != 0u && (REX_LOAD_U32(var + 4u) & kAsRef) != 0u)
     cc_as_unref_obj(ctx, base, var + 0u, 0x8208BF9Cu, 0x8208BFA8u);
   REX_STORE_U32(var + 0u, 0u);
@@ -42,20 +42,15 @@ static CC_HOT_FN inline uint32_t cc_as_var_assign(Context& ctx, Machine& base, u
       return 1u;
     case 4u:
       REX_STORE_U32(var + 4u, 4u);
-      ctx.r3.u64 = v; ctx.lr = 0x8208C020u;
-      sub_82082BB0(ctx, base);
-      REX_STORE_U32(var + 8u, ctx.r3.u32);
+      REX_STORE_U32(var + 8u, cc_as_toint(ctx, base, v));  // sub_82082BB0
       return 1u;
     case 8u: case 32u:
       REX_STORE_U32(var + 4u, 8u);
-      ctx.r3.u64 = v; ctx.lr = 0x8208C05Cu;
-      sub_82082890(ctx, base);
-      REX_STORE_U16(var + 8u, ctx.r3.u16);
+      REX_STORE_U16(var + 8u, uint16_t(cc_as_tostr_id(ctx, base, v)));  // sub_82082890
       return 1u;
     case 16u: {
       REX_STORE_U32(var + 4u, 16u);
-      ctx.r3.u64 = v; ctx.lr = 0x8208C044u;
-      sub_82082700(ctx, base);
+      ctx.f1.f64 = cc_as_tonum(ctx, base, v);  // sub_82082700
       ctx.fpscr.disableFlushMode();
       PPCRegister temp{};
       temp.f32 = float(ctx.f1.f64);
@@ -66,8 +61,7 @@ static CC_HOT_FN inline uint32_t cc_as_var_assign(Context& ctx, Machine& base, u
       REX_STORE_U32(var + 4u, 1u);
       const uint32_t obj = cc_as_obj_of(base, v);
       REX_STORE_U32(var + 0u, obj);
-      ctx.r3.u64 = obj; ctx.r4.u64 = 1u; ctx.lr = 0x8208C0F0u;
-      sub_82066EA8(ctx, base);
+      cc_as_rc(ctx, base, obj, 1u, 0x8208C0F0u);
       return 1u;
     }
     default:
@@ -110,17 +104,33 @@ static CC_HOT_FN void sub_8208C2A0(Context& ctx, Machine& base) {
   cc_as_set_member(ctx, base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
 }
 
+// Clip GetMember (as_ops_clip.inc).
+static uint32_t cc_clip_get_member(Context& ctx, Machine& base, uint32_t clip, uint64_t id, uint64_t out);
+// An object's slot-12 member read with r4 (id) and r5 (out) already set, as
+// the callers' virtual call: objects whose slot 12 is the clip GetMember
+// sub_8208B438 run it directly. Returns r3.
+static CC_AS_INL uint32_t cc_as_slot12(Context& ctx, Machine& base, uint32_t obj, uint32_t lr, CcVSite& vs) {
+  if (g_as_gm_direct && REX_LOAD_U32(REX_LOAD_U32(obj) + 12u) == 0x8208B438u) {
+    ctx.r3.u64 = cc_clip_get_member(ctx, base, obj, ctx.r4.u64, ctx.r5.u64);
+    return ctx.r3.u32;
+  }
+  return cc_vcall_site(ctx, base, obj, 12u, lr, vs);
+}
+
 // GetVariable (exact sub_8207AF80: S r3, name id r4, out value r5; returns 1
 // when found). Ids 102..108 (jump table on id - 102): 102 the current clip's
 // slot-156 object, 103 the player ([S+0]+76), 107 / 108 the player's +280 /
 // +284 object, each as a typed reference (sub_8206F918(out, object)); 106 is
 // {2, true}. Any other id (104 and 105 too): the active function's locals
 // (sub_82079BE0) and members (sub_8208C140), then the current clip's slot 12
-// (r4 id, r5 out); not found: out = {undefined, 0}, returns 0.
-static CC_HOT_FN inline uint32_t cc_as_get_variable(Context& ctx, Machine& base, uint32_t s, uint32_t id, uint32_t out) {
+// (r4 id, r5 out; the clip GetMember directly when slot 12 is sub_8208B438,
+// which answers 'this' (98) and the other property ids without its virtual
+// calls); not found: out = {undefined, 0}, returns 0.
+static CC_HOT_FN uint32_t cc_as_get_variable(Context& ctx, Machine& base, const CcAsLoop& L, uint32_t id, uint32_t out) {
+  const uint32_t s = L.s;
   switch ((id & 0xFFFFu) - 102u) {
     case 0u: {
-      const uint32_t r = cc_vcall(ctx, base, cc_as_top_clip(base, cc_as_vm(base, s)), 156u, 0x8207B064u);
+      const uint32_t r = cc_vcall(ctx, base, cc_as_top_clip(base, L), 156u, 0x8207B064u);
       ctx.r3.u64 = out; ctx.r4.u64 = r; ctx.lr = 0x8207B070u;
       sub_8206F918(ctx, base);
       return 1u;
@@ -147,8 +157,7 @@ static CC_HOT_FN inline uint32_t cc_as_get_variable(Context& ctx, Machine& base,
       break;
   }
   {
-    const uint32_t vm = cc_as_vm(base, s);
-    const uint32_t act = REX_LOAD_U32(vm + (REX_LOAD_U32(vm + 10180u) + 2513u) * 4u);
+    const uint32_t act = cc_as_act(base, L);
     if (act != 0u) {
       ctx.r3.u64 = act; ctx.r4.u64 = id; ctx.r5.u64 = out; ctx.lr = 0x8207B0CCu;
       sub_82079BE0(ctx, base);
@@ -158,9 +167,10 @@ static CC_HOT_FN inline uint32_t cc_as_get_variable(Context& ctx, Machine& base,
       if ((ctx.r3.u32 & 0xFFu) != 0u) return 1u;
     }
   }
-  const uint32_t clip = cc_as_top_clip(base, cc_as_vm(base, s));
+  const uint32_t clip = cc_as_top_clip(base, L);
   ctx.r4.u64 = id; ctx.r5.u64 = out;
-  if ((cc_vcall(ctx, base, clip, 12u, 0x8207B128u) & 0xFFu) != 0u) return 1u;
+  static CcVSite vs{};
+  if ((cc_as_slot12(ctx, base, clip, 0x8207B128u, vs) & 0xFFu) != 0u) return 1u;
   REX_STORE_U32(out + 4u, 0u);
   REX_STORE_U32(out + 0u, kAsUndef);
   return 0u;
@@ -168,7 +178,8 @@ static CC_HOT_FN inline uint32_t cc_as_get_variable(Context& ctx, Machine& base,
 static CC_HOT_FN void sub_8207AF80(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8207AF80);
   CC_FPROF_SCOPE(sub_8207AF80_native);
-  ctx.r3.u64 = cc_as_get_variable(ctx, base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+  const CcAsLoop L = cc_as_loop_of(base, ctx.r3.u32);
+  ctx.r3.u64 = cc_as_get_variable(ctx, base, L, ctx.r4.u32, ctx.r5.u32);
 }
 
 // Function member release after a call (exact sub_82079A00: function r3).
@@ -213,8 +224,8 @@ static CC_HOT_FN void sub_82079A00(Context& ctx, Machine& base) {
 // value's ToString id (sub_82082890) looked up in the VM's string table
 // (VM+10316: id 0 -> table+12, else [table+28][id]; the table pointer read
 // before the call); the value becomes {4, strlen}.
-static CC_HOT_FN inline void cc_as_strlen_value(Context& ctx, Machine& base, uint32_t s, uint32_t v, uint32_t lr) {
-  const uint32_t names = REX_LOAD_U32(cc_as_vm(base, s) + 10316u);
+static CC_HOT_FN void cc_as_strlen_value(Context& ctx, Machine& base, const CcAsOp& o, uint32_t v, uint32_t lr) {
+  const uint32_t names = cc_as_vld(base, o, 10316u);
   ctx.r3.u64 = v; ctx.lr = lr;
   sub_82082890(ctx, base);
   const uint32_t id = ctx.r3.u32 & 0xFFFFu;
@@ -230,13 +241,12 @@ static CC_HOT_FN inline void cc_as_strlen_value(Context& ctx, Machine& base, uin
 // and is referenced and pushed.
 static CC_HOT_FN uint32_t cc_as_op_1C(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_1C);
-  const uint32_t slot = cc_as_pop_release(ctx, base, o.s, 0x8207CED8u, 0x8207CEE4u);
+  const uint32_t slot = cc_as_pop_release(ctx, base, o, 0x8207CED8u, 0x8207CEE4u);
   ctx.r3.u64 = slot; ctx.lr = 0x8207CEF8u;
   sub_82082890(ctx, base);
-  cc_as_get_variable(ctx, base, o.s, ctx.r3.u32, slot);
-  const uint32_t p = cc_as_pool(base, o.s);
+  cc_as_get_variable(ctx, base, o, ctx.r3.u32, slot);
   cc_as_ref(ctx, base, slot, 0x8207CF48u);
-  cc_as_push(base, p, slot);
+  cc_as_push(base, o, slot);
   return 0u;
 }
 
@@ -245,8 +255,8 @@ static CC_HOT_FN uint32_t cc_as_op_1C(Context& ctx, Machine& base, const CcAsOp&
 // id of the name, value). Both slots freed.
 static CC_HOT_FN uint32_t cc_as_op_1D(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_1D);
-  const uint32_t val = cc_as_pop_release(ctx, base, o.s, 0x8207CFE8u, 0x8207CFF4u);
-  const uint32_t name = cc_as_pop_release(ctx, base, o.s, 0x8207D068u, 0x8207D074u);
+  const uint32_t val = cc_as_pop_release(ctx, base, o, 0x8207CFE8u, 0x8207CFF4u);
+  const uint32_t name = cc_as_pop_release(ctx, base, o, 0x8207D068u, 0x8207D074u);
   if (REX_LOAD_U32(name) != kAsUndef) {
     ctx.r3.u64 = name; ctx.lr = 0x8207D098u;
     sub_82082890(ctx, base);
@@ -264,9 +274,9 @@ static CC_HOT_FN uint32_t cc_as_op_1D(Context& ctx, Machine& base, const CcAsOp&
 // r5 = the value. The three slots freed.
 static CC_HOT_FN uint32_t cc_as_op_23(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_23);
-  const uint32_t val = cc_as_pop_release(ctx, base, o.s, 0x8207D318u, 0x8207D324u);
-  const uint32_t idx = cc_as_pop_release(ctx, base, o.s, 0x8207D398u, 0x8207D3A4u);
-  const uint32_t tgt = cc_as_pop_release(ctx, base, o.s, 0x8207D418u, 0x8207D424u);
+  const uint32_t val = cc_as_pop_release(ctx, base, o, 0x8207D318u, 0x8207D324u);
+  const uint32_t idx = cc_as_pop_release(ctx, base, o, 0x8207D398u, 0x8207D3A4u);
+  const uint32_t tgt = cc_as_pop_release(ctx, base, o, 0x8207D418u, 0x8207D424u);
   ctx.r3.u64 = tgt; ctx.lr = 0x8207D438u;
   sub_82082890(ctx, base);
   ctx.r4.u64 = ctx.r3.u32; ctx.r3.u64 = o.s; ctx.lr = 0x8207D444u;
@@ -288,18 +298,17 @@ static CC_HOT_FN uint32_t cc_as_op_23(Context& ctx, Machine& base, const CcAsOp&
 // through the current clip's slot 16 (r4 id, r5 value). Both slots freed.
 static CC_HOT_FN uint32_t cc_as_op_3C(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_3C);
-  const uint32_t val = cc_as_pop_release(ctx, base, o.s, 0x8207DF30u, 0x8207DF3Cu);
-  const uint32_t name = cc_as_pop_release(ctx, base, o.s, 0x8207DFB0u, 0x8207DFBCu);
+  const uint32_t val = cc_as_pop_release(ctx, base, o, 0x8207DF30u, 0x8207DF3Cu);
+  const uint32_t name = cc_as_pop_release(ctx, base, o, 0x8207DFB0u, 0x8207DFBCu);
   ctx.r3.u64 = name; ctx.lr = 0x8207DFD0u;
   sub_82082890(ctx, base);
   const uint32_t id = ctx.r3.u32;
-  const uint32_t vm = cc_as_vm(base, o.s);
-  const uint32_t act = REX_LOAD_U32(vm + (REX_LOAD_U32(vm + 10180u) + 2513u) * 4u);
+  const uint32_t act = cc_as_act(base, o);
   if (act != 0u) {
     cc_as_set_member(ctx, base, act, id, val);
   } else {
     ctx.r4.u64 = id; ctx.r5.u64 = val;
-    cc_vcall(ctx, base, cc_as_top_clip(base, vm), 16u, 0x8207E028u);
+    cc_vcall(ctx, base, cc_as_top_clip(base, o), 16u, 0x8207E028u);
   }
   cc_as_free(base, val);
   cc_as_free(base, name);
@@ -316,20 +325,19 @@ static CC_HOT_FN uint32_t cc_as_op_41(Context& ctx, Machine& base, const CcAsOp&
   CC_FPROF_SCOPE(cc_as_op_41);
   CcFrame frame(ctx, base, 144u);
   const uint32_t tmp = ctx.r1.u32 + 80u;
-  const uint32_t name = cc_as_pop_release(ctx, base, o.s, 0x8207EBE0u, 0x8207EBECu);
+  const uint32_t name = cc_as_pop_release(ctx, base, o, 0x8207EBE0u, 0x8207EBECu);
   ctx.r3.u64 = name; ctx.lr = 0x8207EC00u;
   sub_82082890(ctx, base);
   const uint32_t id = ctx.r3.u32;
   REX_STORE_U32(tmp + 0u, kAsUndef);
   REX_STORE_U8(tmp + 8u, 0u);
   REX_STORE_U32(tmp + 4u, 0u);
-  const uint32_t vm = cc_as_vm(base, o.s);
-  const uint32_t act = REX_LOAD_U32(vm + (REX_LOAD_U32(vm + 10180u) + 2513u) * 4u);
+  const uint32_t act = cc_as_act(base, o);
   if (act != 0u) {
     if (cc_asmap_find(base, act + 4u, id & 0xFFFFu) == 0u) cc_as_set_member(ctx, base, act, id, tmp);
   } else {
     ctx.r4.u64 = id; ctx.r5.u64 = tmp;
-    cc_vcall(ctx, base, cc_as_top_clip(base, vm), 16u, 0x8207ECA8u);
+    cc_vcall(ctx, base, cc_as_top_clip(base, o), 16u, 0x8207ECA8u);
   }
   cc_as_free(base, name);
   return 0u;
@@ -345,8 +353,8 @@ static CC_HOT_FN uint32_t cc_as_op_41(Context& ctx, Machine& base, const CcAsOp&
 // the name slot freed.
 static CC_HOT_FN uint32_t cc_as_op_4E(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_4E);
-  const uint32_t name = cc_as_pop_release(ctx, base, o.s, 0x8207F550u, 0x8207F55Cu);
-  const uint32_t obj = cc_as_pop_release(ctx, base, o.s, 0x8207F5D0u, 0x8207F5DCu);
+  const uint32_t name = cc_as_pop_release(ctx, base, o, 0x8207F550u, 0x8207F55Cu);
+  const uint32_t obj = cc_as_pop_release(ctx, base, o, 0x8207F5D0u, 0x8207F5DCu);
   const uint32_t t = REX_LOAD_U32(obj);
   bool undef = t == kAsUndef || REX_LOAD_U32(name) == kAsUndef;
   if (!undef) {
@@ -373,20 +381,20 @@ static CC_HOT_FN uint32_t cc_as_op_4E(Context& ctx, Machine& base, const CcAsOp&
     } else if (st == 8) {
       ctx.r3.u64 = name; ctx.lr = 0x8207F650u;
       sub_82082890(ctx, base);
-      if ((ctx.r3.u32 & 0xFFFFu) == 1u) cc_as_strlen_value(ctx, base, o.s, obj, 0x8207F674u);
+      if ((ctx.r3.u32 & 0xFFFFu) == 1u) cc_as_strlen_value(ctx, base, o, obj, 0x8207F674u);
     }
     if (call) {
       ctx.r5.u64 = obj;
-      undef = (cc_vcall(ctx, base, target, 12u, 0x8207F7ECu) & 0xFFu) == 0u;
+      static CcVSite vs{};
+      undef = (cc_as_slot12(ctx, base, target, 0x8207F7ECu, vs) & 0xFFu) == 0u;
     }
   }
   if (undef) {
     REX_STORE_U32(obj + 0u, kAsUndef);
     REX_STORE_U32(obj + 4u, 0u);
   }
-  const uint32_t p = cc_as_pool(base, o.s);
   cc_as_ref(ctx, base, obj, 0x8207F840u);
-  cc_as_push(base, p, obj);
+  cc_as_push(base, o, obj);
   cc_as_free(base, name);
   return 0u;
 }
@@ -401,9 +409,9 @@ static CC_HOT_FN uint32_t cc_as_op_4E(Context& ctx, Machine& base, const CcAsOp&
 // value). The three slots freed.
 static CC_HOT_FN uint32_t cc_as_op_4F(Context& ctx, Machine& base, const CcAsOp& o) {
   CC_FPROF_SCOPE(cc_as_op_4F);
-  const uint32_t val = cc_as_pop_release(ctx, base, o.s, 0x8207F8E8u, 0x8207F8F4u);
-  const uint32_t name = cc_as_pop_release(ctx, base, o.s, 0x8207F968u, 0x8207F974u);
-  const uint32_t obj = cc_as_pop_release(ctx, base, o.s, 0x8207F9E8u, 0x8207F9F4u);
+  const uint32_t val = cc_as_pop_release(ctx, base, o, 0x8207F8E8u, 0x8207F8F4u);
+  const uint32_t name = cc_as_pop_release(ctx, base, o, 0x8207F968u, 0x8207F974u);
+  const uint32_t obj = cc_as_pop_release(ctx, base, o, 0x8207F9E8u, 0x8207F9F4u);
   if (REX_LOAD_U32(obj) != kAsUndef && REX_LOAD_U32(name) != kAsUndef) {
     const uint32_t target = cc_as_obj_of(base, obj);
     if (cc_vcall(ctx, base, target, 40u, 0x8207FA78u) == 128u) {
@@ -451,7 +459,7 @@ static CC_HOT_FN uint32_t cc_as_op_88(Context& ctx, Machine& base, const CcAsOp&
     REX_STORE_U16(hdr + 4u, 0u);
   }
   REX_STORE_U32(o.s + 4u, hdr);
-  ctx.r3.u64 = hdr; ctx.r4.u64 = cc_as_vm(base, o.s); ctx.r5.u64 = o.data; ctx.lr = 0x82081494u;
+  ctx.r3.u64 = hdr; ctx.r4.u64 = o.vm; ctx.r5.u64 = o.data; ctx.lr = 0x82081494u;
   sub_82083900(ctx, base);
   return 0u;
 }
@@ -471,8 +479,8 @@ static CC_HOT_FN uint32_t cc_as_op_A2(Context& ctx, Machine& base, const CcAsOp&
   uint32_t pos = 0;
   REX_STORE_U32(tmp + 4u, 0u);
   REX_STORE_U8(tmp + 8u, 0u);
-  cc_as_decode(ctx, base, o.s, tmp, o.data, pos);
-  const uint32_t obj = cc_as_pop_release(ctx, base, o.s, 0x82081EB4u, 0x82081EC0u);
+  cc_as_decode(ctx, base, o, tmp, o.data, pos);
+  const uint32_t obj = cc_as_pop_release(ctx, base, o, 0x82081EB4u, 0x82081EC0u);
   const uint32_t t = REX_LOAD_U32(obj);
   bool undef = t == kAsUndef || REX_LOAD_U32(tmp) == kAsUndef;
   if (!undef) {
@@ -482,23 +490,23 @@ static CC_HOT_FN uint32_t cc_as_op_A2(Context& ctx, Machine& base, const CcAsOp&
       ctx.r3.u64 = tmp; ctx.lr = 0x82081FD8u;
       sub_82082890(ctx, base);
       ctx.r4.u64 = ctx.r3.u32; ctx.r5.u64 = obj;
-      undef = (cc_vcall(ctx, base, target, 12u, 0x82081FF4u) & 0xFFu) == 0u;
+      static CcVSite vs{};
+      undef = (cc_as_slot12(ctx, base, target, 0x82081FF4u, vs) & 0xFFu) == 0u;
     } else if (st == 128) {
       ctx.r3.u64 = REX_LOAD_U32(obj + 4u); ctx.r4.u64 = tmp; ctx.r5.u64 = obj; ctx.lr = 0x82082090u;  // counted
       sub_8207A3F0(ctx, base);
     } else if (st == 8) {
       ctx.r3.u64 = tmp; ctx.lr = 0x82081F0Cu;
       sub_82082890(ctx, base);
-      if ((ctx.r3.u32 & 0xFFFFu) == 1u) cc_as_strlen_value(ctx, base, o.s, obj, 0x82081F30u);
+      if ((ctx.r3.u32 & 0xFFFFu) == 1u) cc_as_strlen_value(ctx, base, o, obj, 0x82081F30u);
     }
   }
   if (undef) {
     REX_STORE_U32(obj + 4u, 0u);
     REX_STORE_U32(obj + 0u, kAsUndef);
   }
-  const uint32_t p = cc_as_pool(base, o.s);
   cc_as_ref(ctx, base, obj, 0x82082048u);
-  cc_as_push(base, p, obj);
+  cc_as_push(base, o, obj);
   return 1u;
 }
 
@@ -512,15 +520,15 @@ static CC_HOT_FN uint32_t cc_as_op_A3(Context& ctx, Machine& base, const CcAsOp&
   CC_FPROF_SCOPE(cc_as_op_A3);
   CcFrame frame(ctx, base, 176u);
   const uint32_t key = ctx.r1.u32 + 88u, val = ctx.r1.u32 + 104u;
-  const uint32_t obj = cc_as_pop_release(ctx, base, o.s, 0x82082154u, 0x82082160u);
+  const uint32_t obj = cc_as_pop_release(ctx, base, o, 0x82082154u, 0x82082160u);
   if (REX_LOAD_U32(obj) != kAsUndef) {
     uint32_t pos = 0;
     REX_STORE_U32(key + 4u, 0u);
     REX_STORE_U8(key + 8u, 0u);
-    cc_as_decode(ctx, base, o.s, key, o.data, pos);
+    cc_as_decode(ctx, base, o, key, o.data, pos);
     REX_STORE_U32(val + 4u, 0u);
     REX_STORE_U8(val + 8u, 0u);
-    cc_as_decode(ctx, base, o.s, val, o.data, pos);
+    cc_as_decode(ctx, base, o, val, o.data, pos);
     if (REX_LOAD_U32(key) != kAsUndef) {
       const uint32_t target = cc_as_obj_of(base, obj);
       if (cc_vcall(ctx, base, target, 40u, 0x82082228u) == 128u) {

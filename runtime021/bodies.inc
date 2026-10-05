@@ -6515,7 +6515,13 @@ static CC_HOT_FN void sub_8206F918(Context& ctx, Machine& base) {
 #include "generated/sub_8208B7F8.inc"
 #include "generated/sub_820877A0.inc"
 #include "generated/sub_82089668.inc"
+#ifdef CC_FAST
+#define sub_82088CF0 sub_82088CF0_exact  // native CharToFunc: runtime021/as_ops_call.inc
+#endif
 #include "generated/sub_82088CF0.inc"
+#ifdef CC_FAST
+#undef sub_82088CF0
+#endif
 #ifdef CC_FAST
 #define sub_82082890 sub_82082890_exact
 #endif
@@ -6579,122 +6585,8 @@ static CC_HOT_FN void sub_82082488(Context& ctx, Machine& base) {
 #include "generated/sub_8207AA50.inc"
 #ifdef CC_FAST
 #undef sub_8207AA50
-// ActionScript Push item decode (exact sub_8207AA50: script r3, out value
-// r4, data r5, pos* r6). type = data[pos++]; then, as the original reads
-// the bytes b0.. that follow:
-//  0 string: copied and interned (sub_82053A00, sub_8209D948 on the VM's
-//    string table VM+10316) -> {8, id}; pos += length + 1
-//  1 float: bits b0b1b2b3 (big-endian) -> {16, float}; pos += 4
-//  2 nothing; 3 undefined {0x80000000, 0}; 4 -> {4, VM+30476}, pos += 1
-//  5 bool: {2, b0 == 1}; pos += 1
-//  6 double: bytes b3 b2 b1 b0 b7 b6 b5 b4 (big-endian) -> {16, float}
-//  7 int: little-endian b0..b3 -> {4, int}; pos += 4
-//  8/9 constant-pool index (u8 / LE u16) -> {8, pool[index]} from the
-//    active function's pool (VM[(VM[10180] + 2513) * 4] -> +140 -> +0), or
-//    the script's own pool ([r3+4] -> +0) when none is active
-// VM = [[r3+0]+76]+156. Float values pass through f0 as in the original.
-// The decode with the position in a host variable (also used directly by the
-// native interpreter, runtime021/as_ops.inc).
-static CC_HOT_FN void cc_as_decode(Context& ctx, Machine& base, uint32_t as, uint32_t out, uint32_t data, uint32_t& pos) {
-  const uint32_t type = REX_LOAD_U8(data + pos);
-  ++pos;
-  auto b = [&](uint32_t k) { return uint32_t(REX_LOAD_U8(data + pos + k)); };
-  auto vm_of = [&]() { return REX_LOAD_U32(REX_LOAD_U32(REX_LOAD_U32(as + 0u) + 76u) + 156u); };
-  auto pool_id = [&](uint32_t idx2) {
-    const uint32_t vm = vm_of();
-    const uint32_t act = REX_LOAD_U32(vm + (REX_LOAD_U32(vm + 10180u) + 2513u) * 4u);
-    const uint32_t tbl = act ? REX_LOAD_U32(REX_LOAD_U32(act + 140u)) : REX_LOAD_U32(REX_LOAD_U32(as + 4u));
-    REX_STORE_U32(out + 0u, 8u);
-    REX_STORE_U16(out + 4u, REX_LOAD_U16(tbl + idx2));
-  };
-  switch (type) {
-    case 0: {
-      CcFrame frame(ctx, base, 208u);
-      const uint32_t buf = ctx.r1.u32 + 96u;
-      ctx.r3.u64 = buf; ctx.r4.u64 = data + pos; ctx.lr = 0x8207AACCu;
-      sub_82053A00(ctx, base);
-      pos = pos + REX_LOAD_U32(buf) + 1u;
-      ctx.r3.u64 = REX_LOAD_U32(vm_of() + 10316u); ctx.r4.u64 = buf + 4u; ctx.lr = 0x8207AAF8u;
-      sub_8209D948(ctx, base);
-      REX_STORE_U16(out + 4u, ctx.r3.u16);
-      REX_STORE_U32(out + 0u, 8u);
-      return;
-    }
-    case 1: {
-      const uint32_t bits = (b(0) << 24) | (b(1) << 16) | (b(2) << 8) | b(3);
-      pos += 4u;
-      REX_STORE_U32(out + 0u, 16u);
-      ctx.fpscr.disableFlushMode();
-      PPCRegister temp{};
-      temp.u32 = bits;
-      ctx.f0.f64 = double(temp.f32);
-      temp.f32 = float(ctx.f0.f64);
-      REX_STORE_U32(out + 4u, temp.u32);
-      return;
-    }
-    case 3: REX_STORE_U32(out + 0u, 0x80000000u); REX_STORE_U32(out + 4u, 0u); return;
-    case 4:
-      pos += 1u;
-      REX_STORE_U32(out + 0u, 4u);
-      REX_STORE_U32(out + 4u, REX_LOAD_U32(vm_of() + 30476u));
-      return;
-    case 5: {
-      const uint32_t v = b(0);
-      REX_STORE_U32(out + 0u, 2u);
-      pos += 1u;
-      REX_STORE_U8(out + 4u, v == 1u ? 1u : 0u);
-      return;
-    }
-    case 6: {
-      const uint64_t bits = (uint64_t(b(3)) << 56) | (uint64_t(b(2)) << 48) | (uint64_t(b(1)) << 40) | (uint64_t(b(0)) << 32) |
-                            (uint64_t(b(7)) << 24) | (uint64_t(b(6)) << 16) | (uint64_t(b(5)) << 8) | uint64_t(b(4));
-      pos += 8u;
-      REX_STORE_U32(out + 0u, 16u);
-      ctx.fpscr.disableFlushMode();
-      ctx.f0.u64 = bits;
-      ctx.f13.f64 = double(float(ctx.f0.f64));
-      PPCRegister temp{};
-      temp.f32 = float(ctx.f13.f64);
-      REX_STORE_U32(out + 4u, temp.u32);
-      return;
-    }
-    case 7: {
-      const uint32_t v = (b(3) << 24) | (b(2) << 16) | (b(1) << 8) | b(0);
-      pos += 4u;
-      REX_STORE_U32(out + 0u, 4u);
-      REX_STORE_U32(out + 4u, v);
-      return;
-    }
-    case 8: {
-      const uint32_t idx = b(0);
-      pos += 1u;
-      pool_id((idx << 1) & 0x1FEu);
-      return;
-    }
-    case 9: {
-      const uint32_t idx = (b(1) << 8) | b(0);
-      pos += 2u;
-      pool_id((idx << 1) & 0x1FFFEu);
-      return;
-    }
-    default: return;  // 2 and anything above 9: nothing more
-  }
-}
-static CC_HOT_FN void sub_8207AA50(Context& ctx, Machine& base) {
-#ifndef CC_XBOX_DRIVER
-  static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;
-  if (walk_exact) { sub_8207AA50_exact(ctx, base); return; }
-#else
-  #ifdef CC_WALK_EXACT_BUILD
-  sub_8207AA50_exact(ctx, base); return;  // Xbox bisect build
-#endif
-  static_cast<void>(&sub_8207AA50_exact);
-#endif
-  const uint32_t posp = ctx.r6.u32;
-  uint32_t pos = REX_LOAD_U32(posp);
-  cc_as_decode(ctx, base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, pos);
-  REX_STORE_U32(posp, pos);
-}
+// The native Push item decode cc_as_decode and sub_8207AA50 are in
+// runtime021/as_ops.inc (they take the interpreter loop state).
 #endif
 #include "generated/sub_820814A0.inc"
 #include "generated/sub_82083900.inc"

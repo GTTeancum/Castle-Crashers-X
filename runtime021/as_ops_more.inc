@@ -3,3 +3,4 @@
 #include "as_ops_var.inc"
 #include "as_ops_map.inc"
 #include "as_ops_clip.inc"
+#include "as_ops_call.inc"
