@@ -419,26 +419,61 @@ static __attribute__((noinline)) void cc_sprite_fused_oracle(Context& ctx, Machi
   if (e != culled) cc_oracle_mismatch("sub_820855D8 fused cull", 0, e, culled);
 }
 #endif
+// The packed colour and the uv extents are pure functions of the four
+// colour words and the texture's four size words; the last sprite's are
+// kept (consecutive sprites mostly repeat them). With CC_ORACLE=1 the host
+// recomputes them on every hit and logs any difference.
+static inline uint32_t cc_sprite_packed(const uint32_t cw[4]) {
+  auto chan = [](uint32_t w) { return uint32_t(cc_render_fctidz(cc_f32d(w))); };
+  const uint32_t c1 = chan(cw[1]), c2 = chan(cw[2]), c3 = chan(cw[3]), c0 = chan(cw[0]);
+  const uint32_t p1 = ((c0 << 8) & 0xFFFFFF00u) | c1;
+  const uint32_t p2 = ((p1 << 8) & 0xFFFFFF00u) | c2;
+  return ((p2 << 8) & 0xFFFFFF00u) | c3;
+}
+static inline void cc_sprite_uv(const uint32_t tw[4], uint32_t uv[2]) {
+  uv[0] = cc_dbits(double(float(double(int64_t(tw[0])))) / double(float(double(int64_t(tw[2])))));
+  uv[1] = cc_dbits(double(float(double(int64_t(tw[1])))) / double(float(double(int64_t(tw[3])))));
+}
+struct CcSpriteMemo { uint32_t cw[4] = {}, packed = 0, tw[4] = {}, uv[2] = {}; bool has_c = false, has_t = false; };
+static CcSpriteMemo g_sprite_memo;
+static inline bool cc_same4(const uint32_t a[4], const uint32_t b[4]) {
+  return ((a[0] ^ b[0]) | (a[1] ^ b[1]) | (a[2] ^ b[2]) | (a[3] ^ b[3])) == 0u;
+}
+// Renderer slots 40, 92, 108 and 116 of vtable vt are the game's own.
+static inline bool cc_sprite_renderer_ok(Machine& base, uint32_t vt) {
+  if (const uint8_t* p = cc_obj_host(vt + 40u, 80u))
+    return cc_hb32(p) == 0x820A74E0u && cc_hb32(p + 52u) == 0x820A89F8u && cc_hb32(p + 68u) == 0x820A8DD8u &&
+           cc_hb32(p + 76u) == 0x820A9308u;
+  return REX_LOAD_U32(vt + 40u) == 0x820A74E0u && REX_LOAD_U32(vt + 92u) == 0x820A89F8u &&
+         REX_LOAD_U32(vt + 108u) == 0x820A8DD8u && REX_LOAD_U32(vt + 116u) == 0x820A9308u;
+}
 // Returns false, having done nothing, when the renderer is not the game's
 // own; else the leaf's result (1 culled, else 0) in `result`.
 static CC_HOT_FN bool cc_sprite_fused(Context& ctx, Machine& base, uint32_t spr, uint32_t st, uint32_t rnd, uint32_t tex,
                                       uint32_t& result) {
   const uint32_t vt = REX_LOAD_U32(rnd);
-  if (vt != 0x82042048u) return false;
-  {
-    uint32_t s[20];
-    cc_load_words(base, vt + 40u, 20u, s);  // slots 40 .. 116
-    if (s[0] != 0x820A74E0u || s[13] != 0x820A89F8u || s[17] != 0x820A8DD8u || s[19] != 0x820A9308u) return false;
-  }
+  if (vt != 0x82042048u || !cc_sprite_renderer_ok(base, vt)) return false;
+#ifndef CC_XBOX_DRIVER
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr;
+#endif
   REX_STORE_U8(spr + 86u, uint8_t(REX_LOAD_U8(spr + 86u) | 64u));
   CcFrame frame(ctx, base, 288u);
   const uint32_t r1 = ctx.r1.u32;
   // Corners with the state's current matrix (+8252 + 40 * [+9532]).
-  uint32_t sv[4], mv[6], kw[29];
+  // Constants from 0x82042540: zero +0, 0.05 +36, 0.01 +52, 2000 +56 (the
+  // corners read kw[9], kw[13], kw[14]) and the viewport edges +104..+112.
+  uint32_t sv[4], mv[6], kw[16], edge[3];
   const uint32_t m = st + REX_LOAD_U32(st + 9532u) * 40u + 8252u;
   cc_load_words(base, spr + 96u, 4u, sv);
   cc_load_words(base, m + 16u, 6u, mv);
-  cc_load_words(base, 0x82042540u, 29u, kw);  // through the viewport words at 0x820425A8..B0
+  if (const uint8_t* p = cc_obj_host(0x82042540u, 116u)) {
+    kw[0] = cc_hb32(p); kw[9] = cc_hb32(p + 36u); kw[13] = cc_hb32(p + 52u); kw[14] = cc_hb32(p + 56u);
+    edge[0] = cc_hb32(p + 104u); edge[1] = cc_hb32(p + 108u); edge[2] = cc_hb32(p + 112u);
+  } else {
+    kw[0] = REX_LOAD_U32(0x82042540u); kw[9] = REX_LOAD_U32(0x82042564u); kw[13] = REX_LOAD_U32(0x82042574u);
+    kw[14] = REX_LOAD_U32(0x82042578u);
+    edge[0] = REX_LOAD_U32(0x820425A8u); edge[1] = REX_LOAD_U32(0x820425ACu); edge[2] = REX_LOAD_U32(0x820425B0u);
+  }
   ctx.fpscr.disableFlushMode();
   uint32_t c[4][3];
   cc_corners_words(sv, mv, kw, c);
@@ -449,13 +484,12 @@ static CC_HOT_FN bool cc_sprite_fused(Context& ctx, Machine& base, uint32_t spr,
   {
     double x[4], y[4];
     for (int i = 0; i < 4; ++i) { x[i] = cc_f32d(c[i][0]); y[i] = cc_f32d(c[i][1]); }
-    const double right = cc_f32d(kw[28]), left = cc_f32d(kw[27]), bottom = cc_f32d(kw[26]);
+    const double right = cc_f32d(edge[2]), left = cc_f32d(edge[1]), bottom = cc_f32d(edge[0]);
     auto all_gt = [](const double* v, double k) { return v[0] > k && v[1] > k && v[2] > k && v[3] > k; };
     auto all_lt = [](const double* v, double k) { return v[0] < k && v[1] < k && v[2] < k && v[3] < k; };
     culled = all_gt(x, right) || all_lt(x, left) || all_gt(y, bottom) || all_lt(y, left);
   }
 #ifndef CC_XBOX_DRIVER
-  static const bool oracle = std::getenv("CC_ORACLE") != nullptr;
   if (oracle) cc_sprite_fused_oracle(ctx, base, spr, m, rnd, c, culled);
 #endif
   if (culled) { result = 1u; return true; }
@@ -464,14 +498,30 @@ static CC_HOT_FN bool cc_sprite_fused(Context& ctx, Machine& base, uint32_t spr,
   uint32_t cw[4], tw[4];
   cc_load_words(base, st + (REX_LOAD_U32(st + 10048u) + 596u) * 16u, 4u, cw);
   cc_load_words(base, tex + 60u, 4u, tw);
-  auto chan = [](uint32_t w) { return uint32_t(cc_render_fctidz(cc_f32d(w))); };
-  const uint32_t c1 = chan(cw[1]), c2 = chan(cw[2]), c3 = chan(cw[3]), c0 = chan(cw[0]);
-  const uint32_t p1 = ((c0 << 8) & 0xFFFFFF00u) | c1;
-  const uint32_t p2 = ((p1 << 8) & 0xFFFFFF00u) | c2;
-  const uint32_t packed = ((p2 << 8) & 0xFFFFFF00u) | c3;
-  const double fu = double(float(double(int64_t(tw[0])))) / double(float(double(int64_t(tw[2]))));
-  const double fv = double(float(double(int64_t(tw[1])))) / double(float(double(int64_t(tw[3]))));
-  const uint32_t u = cc_dbits(fu), v = cc_dbits(fv), zero = kw[0];
+  CcSpriteMemo& mm = g_sprite_memo;
+  if (!mm.has_c || !cc_same4(cw, mm.cw)) {
+    for (int i = 0; i < 4; ++i) mm.cw[i] = cw[i];
+    mm.packed = cc_sprite_packed(cw);
+    mm.has_c = true;
+  }
+#ifndef CC_XBOX_DRIVER
+  else if (oracle && cc_sprite_packed(cw) != mm.packed) {
+    cc_oracle_mismatch("sub_820855D8 colour memo", 0, cc_sprite_packed(cw), mm.packed);
+  }
+#endif
+  if (!mm.has_t || !cc_same4(tw, mm.tw)) {
+    for (int i = 0; i < 4; ++i) mm.tw[i] = tw[i];
+    cc_sprite_uv(tw, mm.uv);
+    mm.has_t = true;
+  }
+#ifndef CC_XBOX_DRIVER
+  else if (oracle) {
+    uint32_t e[2];
+    cc_sprite_uv(tw, e);
+    if (e[0] != mm.uv[0] || e[1] != mm.uv[1]) cc_oracle_mismatch("sub_820855D8 uv memo", 0, e[0] ^ e[1], mm.uv[0] ^ mm.uv[1]);
+  }
+#endif
+  const uint32_t packed = mm.packed, u = mm.uv[0], v = mm.uv[1], zero = kw[0];
   cc_sprite_frame_quad(base, r1, zero, u, v, packed);
   // The bind and the quad run in the leaf's frame, as in the general path,
   // so their callees (the rasterizer of a texture's first bind, the 360 draw
