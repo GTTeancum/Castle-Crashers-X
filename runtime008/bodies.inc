@@ -204,26 +204,108 @@ static void sub_82129A70(Context&, Machine&);
 #ifdef CC_FAST
 #undef sub_82084100
 static void cc_oracle_mismatch(const char* fn, int slot, uint32_t exact, uint32_t native);
+// Host address of n guest bytes at a for natives that read or write a whole
+// object at once: the play build's page-table entry when all n bytes lie in
+// one mapped 64 KiB page, else nullptr (the caller then takes the checked
+// REX_ accesses, which also fill the table). The render natives reach guest
+// objects only through this helper and the cc_hb*/cc_hput* accessors, so a
+// different memory model changes one place.
+static inline __attribute__((always_inline)) uint8_t* cc_obj_host(uint32_t a, uint32_t n) {
+  uint8_t* b = g_page_host[a >> 16];
+  return (uintptr_t(b) > 1u && (a & 0xFFFFu) <= 0x10000u - n) ? b + (a & 0xFFFFu) : nullptr;
+}
+static inline __attribute__((always_inline)) uint32_t cc_hb32(const uint8_t* p) {
+  uint32_t x; __builtin_memcpy(&x, p, 4); return __builtin_bswap32(x);
+}
+static inline __attribute__((always_inline)) uint16_t cc_hb16(const uint8_t* p) {
+  uint16_t x; __builtin_memcpy(&x, p, 2); return __builtin_bswap16(x);
+}
+static inline __attribute__((always_inline)) void cc_hput32(uint8_t* p, uint32_t v) {
+  const uint32_t x = __builtin_bswap32(v); __builtin_memcpy(p, &x, 4);
+}
+// n big-endian words at guest a into w (one host pointer, or the checked
+// path when the words straddle a page or the page is not in the table).
+static inline __attribute__((always_inline)) void cc_load_words(Machine& base, uint32_t a, uint32_t n, uint32_t* w) {
+  if (const uint8_t* p = cc_obj_host(a, 4u * n)) {
+    for (uint32_t i = 0; i < n; ++i) w[i] = cc_hb32(p + 4u * i);
+  } else {
+    for (uint32_t i = 0; i < n; ++i) w[i] = REX_LOAD_U32(a + 4u * i);
+  }
+}
+static inline __attribute__((always_inline)) void cc_store_words(Machine& base, uint32_t a, uint32_t n, const uint32_t* w) {
+  if (uint8_t* p = cc_obj_host(a, 4u * n)) {
+    for (uint32_t i = 0; i < n; ++i) cc_hput32(p + 4u * i, w[i]);
+  } else {
+    for (uint32_t i = 0; i < n; ++i) REX_STORE_U32(a + 4u * i, w[i]);
+  }
+}
+// Multiply-add of three float operands (held as doubles) for the sprite
+// natives. Plain = true computes x*y+z in double: x*y of two floats is exact
+// in binary64 (at most 48 significant bits, magnitude 2^-298..2^256), so the
+// sum rounds once and, with all three operands finite, gives the fused
+// result bit for bit. It is the same expression the checked std::fma
+// (cc::numeric::fused_nearest_fastpath) evaluates for finite float operands
+// after its operand checks, under the same FloatScope controls: binary64
+// precision and round to nearest on the x87 (Xbox, -march=pentium3) and in
+// SSE2 (host); a nonzero sum is a multiple of 2^-298, far above the
+// subnormal range where the x87's wider exponent could round twice. A
+// non-finite operand anywhere in an output's chain of multiply-adds makes
+// that output inf or NaN (finite + inf = inf, inf - inf, 0 * inf and NaN
+// operands give NaN), so callers check their outputs and redo the call with
+// Plain = false (checked std::fma, which handles non-finite operands in
+// software) when any output is not finite.
+template <bool Plain>
+static inline __attribute__((always_inline)) double cc_fmaf(double x, double y, double z) {
+  if constexpr (Plain) return x * y + z;
+  else return std::fma(x, y, z);
+}
+// A/B switch: the plain form off (every multiply-add checked) with
+// CC_FMA_CHECKED=1 on the host or the NOFMAFAST=1 Xbox build (which also
+// sends the checked fma to software).
+static inline __attribute__((always_inline)) bool cc_plain_fma() {
+#if defined(CC_NO_FMA_FAST)
+  return false;
+#elif defined(CC_XBOX_DRIVER)
+  return true;
+#else
+  static const bool checked = std::getenv("CC_FMA_CHECKED") != nullptr;
+  return !checked;
+#endif
+}
+static inline __attribute__((always_inline)) bool cc_finite_bits(uint32_t b) { return (b & 0x7F800000u) != 0x7F800000u; }
+static inline __attribute__((always_inline)) double cc_f32d(uint32_t b) { float f; __builtin_memcpy(&f, &b, 4); return double(f); }
+static inline __attribute__((always_inline)) uint32_t cc_dbits(double v) { const float f = float(v); uint32_t b; __builtin_memcpy(&b, &f, 4); return b; }
+static inline __attribute__((always_inline)) double cc_rf(double v) { return double(float(v)); }
 // Sprite colour (exact sub_82084100: out r3 = 4 floats, record r4 with
 // int16 multipliers at +28, +30, +32, +40 and offsets at +34, +36, +38,
 // +42, input r5 = 4 floats). out[i] = mul[i]/255 * in[i] + off[i], then
 // clamped to [0, 255] (a NaN becomes 255). Rounding as compiled: the
 // multiplier scaled by 1/255 (0x8204257C) is rounded to float, the
-// multiply-add is fused, the result rounded to float.
+// multiply-add is fused, the result rounded to float. Fields are read as
+// raw words (record +28..+43, input +0..+15); a channel whose multiply-add
+// is not finite before the clamp is recomputed with the checked fma.
+template <bool Plain>
+static inline __attribute__((always_inline)) uint32_t cc_colour_chan(uint32_t mw, uint32_t iw, uint32_t ow, double inv) {
+  auto h = [](uint32_t w) { return double(float(double(int16_t(uint16_t(w))))); };
+  return cc_dbits(cc_fmaf<Plain>(cc_rf(h(mw) * inv), cc_f32d(iw), h(ow)));
+}
 static CC_HOT_FN void cc_colour_native(Machine& base, Context& ctx, uint32_t out[4]) {
   ctx.fpscr.disableFlushMode();
-  auto f32 = [](uint32_t b) { float f; __builtin_memcpy(&f, &b, 4); return double(f); };
-  auto bits = [](double v) { const float f = float(v); uint32_t b; __builtin_memcpy(&b, &f, 4); return b; };
-  auto r = [](double v) { return double(float(v)); };
-  const uint32_t rec = ctx.r4.u32, in = ctx.r5.u32;
-  const double inv = f32(REX_LOAD_U32(0x8204257Cu)), top = f32(REX_LOAD_U32(0x82042548u)), zero = f32(REX_LOAD_U32(0x82042540u));
-  auto h = [&](uint32_t a) { return double(float(double(int16_t(REX_LOAD_U16(a))))); };
-  const uint32_t mo[4] = {28u, 30u, 32u, 40u}, oo[4] = {34u, 36u, 38u, 42u};
+  uint32_t rw[4], iw[4], kw[16];
+  cc_load_words(base, ctx.r4.u32 + 28u, 4u, rw);  // +28 +30 | +32 +34 | +36 +38 | +40 +42
+  cc_load_words(base, ctx.r5.u32, 4u, iw);
+  cc_load_words(base, 0x82042540u, 16u, kw);      // zero +0x00, top +0x08, 1/255 +0x3C
+  const double inv = cc_f32d(kw[15]), top = cc_f32d(kw[2]), zero = cc_f32d(kw[0]);
+  const uint32_t mul[4] = {rw[0] >> 16, rw[0] & 0xFFFFu, rw[1] >> 16, rw[3] >> 16};
+  const uint32_t off[4] = {rw[1] & 0xFFFFu, rw[2] >> 16, rw[2] & 0xFFFFu, rw[3] & 0xFFFFu};
+  const bool plain = cc_plain_fma();
   for (int i = 0; i < 4; ++i) {
-    double v = r(std::fma(r(h(rec + mo[i]) * inv), f32(REX_LOAD_U32(in + 4u * uint32_t(i))), h(rec + oo[i])));
+    uint32_t b = plain ? cc_colour_chan<true>(mul[i], iw[i], off[i], inv) : 0x7F800000u;
+    if (__builtin_expect(!cc_finite_bits(b), 0)) b = cc_colour_chan<false>(mul[i], iw[i], off[i], inv);
+    double v = cc_f32d(b);
     v = (v < top) ? v : top;
     v = (v > zero) ? v : zero;
-    out[i] = bits(v);
+    out[i] = cc_dbits(v);
   }
 }
 static CC_HOT_FN void sub_82084100(Context& ctx, Machine& base) {
@@ -246,7 +328,7 @@ static CC_HOT_FN void sub_82084100(Context& ctx, Machine& base) {
 #else
   static_cast<void>(&sub_82084100_exact);
 #endif
-  for (int k = 0; k < 4; ++k) REX_STORE_U32(o + 4u * uint32_t(k), out[k]);
+  cc_store_words(base, o, 4u, out);
 }
 // Oracle checks (host play build, CC_ORACLE=1): a native routine runs first,
 // then the exact body; any difference in the outputs is logged. The exact
@@ -272,30 +354,49 @@ static void cc_oracle_mismatch(const char* fn, int slot, uint32_t exact, uint32_
 // z = 2000. The compiled original rounds the two products in a different
 // order per corner; the same order is kept here so the results are
 // bit-identical (constants 0x82042564 = 0.05, 0x82042574 = 0.01,
-// 0x82042578 = 2000).
+// 0x82042578 = 2000). sv: the rectangle words (+96..+108), mv: the matrix
+// words (+16..+36), kw: the constant words from 0x82042540 on. The plain
+// form (see cc_fmaf) runs first; any non-finite x or y redoes all corners
+// with the checked fma.
+template <bool Plain>
+static inline __attribute__((always_inline)) void cc_corners_calc(const uint32_t sv[4], const uint32_t mv[6], const uint32_t kw[16],
+                                                                  uint32_t out[4][3]) {
+  auto F = [](double x, double y, double z) { return cc_fmaf<Plain>(x, y, z); };
+  auto cv = [](uint32_t w) { return double(float(double(int32_t(w)))); };
+  const double c05 = cc_f32d(kw[9]), c01 = cc_f32d(kw[13]);  // 0x82042564, 0x82042574
+  const double x0 = cc_rf(cv(sv[0]) * c05), x1 = cc_rf(cv(sv[1]) * c05);
+  const double y0 = cc_rf(cv(sv[2]) * c05), y1 = cc_rf(cv(sv[3]) * c05);
+  const double a = cc_f32d(mv[0]), b = cc_f32d(mv[1]), c = cc_f32d(mv[2]), d = cc_f32d(mv[3]), tx = cc_f32d(mv[4]),
+               ty = cc_f32d(mv[5]);
+  const double a01 = cc_rf(a * c01), b01 = cc_rf(b * c01), c05x = cc_rf(c * c05), d05 = cc_rf(d * c05);
+  out[0][0] = cc_dbits(F(tx, c05, cc_rf(F(d05, y0, cc_rf(a01 * x0)))));   // p0 (x0, y0)
+  out[0][1] = cc_dbits(F(ty, c05, cc_rf(F(c05x, x0, cc_rf(b01 * y0)))));
+  out[1][0] = cc_dbits(F(tx, c05, cc_rf(F(a01, x1, cc_rf(d05 * y0)))));   // p1 (x1, y0)
+  out[1][1] = cc_dbits(F(ty, c05, cc_rf(F(c05x, x1, cc_rf(b01 * y0)))));
+  out[2][0] = cc_dbits(F(tx, c05, cc_rf(F(a01, x1, cc_rf(d05 * y1)))));   // p2 (x1, y1)
+  out[2][1] = cc_dbits(F(ty, c05, cc_rf(F(c05x, x1, cc_rf(b01 * y1)))));
+  out[3][0] = cc_dbits(F(tx, c05, cc_rf(F(a01, x0, cc_rf(d05 * y1)))));   // p3 (x0, y1)
+  out[3][1] = cc_dbits(F(ty, c05, cc_rf(F(c05x, x0, cc_rf(b01 * y1)))));
+  for (int i = 0; i < 4; ++i) out[i][2] = kw[14];  // 0x82042578
+}
+static inline __attribute__((always_inline)) void cc_corners_words(const uint32_t sv[4], const uint32_t mv[6], const uint32_t kw[16],
+                                                                   uint32_t out[4][3]) {
+  if (!cc_plain_fma()) { cc_corners_calc<false>(sv, mv, kw, out); return; }
+  cc_corners_calc<true>(sv, mv, kw, out);
+  const uint32_t all = out[0][0] | out[0][1] | out[1][0] | out[1][1] | out[2][0] | out[2][1] | out[3][0] | out[3][1];
+  if (__builtin_expect((all & 0x7F800000u) == 0x7F800000u, 0)) {  // possibly non-finite: check each
+    bool fin = true;
+    for (int i = 0; i < 4; ++i) fin = fin && cc_finite_bits(out[i][0]) && cc_finite_bits(out[i][1]);
+    if (!fin) cc_corners_calc<false>(sv, mv, kw, out);
+  }
+}
 static CC_HOT_FN void cc_corners_native(Context& ctx, Machine& base, uint32_t out[4][3]) {
   ctx.fpscr.disableFlushMode();
-  auto f32 = [](uint32_t b) { float f; __builtin_memcpy(&f, &b, 4); return double(f); };
-  auto bits = [](double v) { const float f = float(v); uint32_t b; __builtin_memcpy(&b, &f, 4); return b; };
-  auto r = [](double v) { return double(float(v)); };
-  const uint32_t s = ctx.r3.u32, m = ctx.r4.u32;
-  const double c05 = f32(REX_LOAD_U32(0x82042564u)), c01 = f32(REX_LOAD_U32(0x82042574u));
-  const uint32_t zb = REX_LOAD_U32(0x82042578u);
-  auto cv = [&](uint32_t a) { return double(float(double(int32_t(REX_LOAD_U32(a))))); };
-  const double x0 = r(cv(s + 96u) * c05), x1 = r(cv(s + 100u) * c05);
-  const double y0 = r(cv(s + 104u) * c05), y1 = r(cv(s + 108u) * c05);
-  const double a = f32(REX_LOAD_U32(m + 16u)), b = f32(REX_LOAD_U32(m + 20u)), c = f32(REX_LOAD_U32(m + 24u)),
-               d = f32(REX_LOAD_U32(m + 28u)), tx = f32(REX_LOAD_U32(m + 32u)), ty = f32(REX_LOAD_U32(m + 36u));
-  const double a01 = r(a * c01), b01 = r(b * c01), c05x = r(c * c05), d05 = r(d * c05);
-  out[0][0] = bits(std::fma(tx, c05, r(std::fma(d05, y0, r(a01 * x0)))));   // p0 (x0, y0)
-  out[0][1] = bits(std::fma(ty, c05, r(std::fma(c05x, x0, r(b01 * y0)))));
-  out[1][0] = bits(std::fma(tx, c05, r(std::fma(a01, x1, r(d05 * y0)))));   // p1 (x1, y0)
-  out[1][1] = bits(std::fma(ty, c05, r(std::fma(c05x, x1, r(b01 * y0)))));
-  out[2][0] = bits(std::fma(tx, c05, r(std::fma(a01, x1, r(d05 * y1)))));   // p2 (x1, y1)
-  out[2][1] = bits(std::fma(ty, c05, r(std::fma(c05x, x1, r(b01 * y1)))));
-  out[3][0] = bits(std::fma(tx, c05, r(std::fma(a01, x0, r(d05 * y1)))));   // p3 (x0, y1)
-  out[3][1] = bits(std::fma(ty, c05, r(std::fma(c05x, x0, r(b01 * y1)))));
-  for (int i = 0; i < 4; ++i) out[i][2] = zb;
+  uint32_t sv[4], mv[6], kw[16];
+  cc_load_words(base, ctx.r3.u32 + 96u, 4u, sv);
+  cc_load_words(base, ctx.r4.u32 + 16u, 6u, mv);
+  cc_load_words(base, 0x82042540u, 16u, kw);
+  cc_corners_words(sv, mv, kw, out);
 }
 static CC_HOT_FN void sub_82085110(Context& ctx, Machine& base) {
 #ifdef CC_SPRITE_EXACT_BUILD
@@ -318,8 +419,7 @@ static CC_HOT_FN void sub_82085110(Context& ctx, Machine& base) {
 #else
   static_cast<void>(&sub_82085110_exact);
 #endif
-  for (int i = 0; i < 4; ++i)
-    for (int k = 0; k < 3; ++k) REX_STORE_U32(dst[i] + 4u * uint32_t(k), out[i][k]);
+  for (int i = 0; i < 4; ++i) cc_store_words(base, dst[i], 3u, out[i]);
 }
 #endif
 #ifdef CC_FAST
@@ -348,29 +448,63 @@ static CC_HOT_FN void sub_82085110(Context& ctx, Machine& base) {
 // float, the second product fused, the sum rounded). The byte at
 // 0x8228A7B4 selects an extra fix-up call (sub_82085C70) that the harness
 // never runs; that path keeps the exact body. Returns out in r3.
+// aw / bw: the matrix words +16..+36 of A and B; kw: the constant words
+// from 0x82042540 on; k100w: the word at 0x8201473C. The plain form (see
+// cc_fmaf) runs first; a non-finite output redoes the product with the
+// checked fma.
+template <bool Plain>
+static inline __attribute__((always_inline)) void cc_matmul_calc(const uint32_t aw[6], const uint32_t bw[6], const uint32_t kw[16],
+                                                                 uint32_t k100w, uint32_t out[6]) {
+  auto F = [](double x, double y, double z) { return cc_fmaf<Plain>(x, y, z); };
+  const double c05 = cc_f32d(kw[9]), c01 = cc_f32d(kw[13]);  // 0x82042564, 0x82042574
+  const double k20 = cc_f32d(kw[10]), k100 = cc_f32d(k100w);  // 0x82042568, 0x8201473C
+  const double a16c = cc_rf(cc_f32d(aw[0]) * c01), a20c = cc_rf(cc_f32d(aw[1]) * c01);
+  const double a24c = cc_rf(cc_f32d(aw[2]) * c05), a28c = cc_rf(cc_f32d(aw[3]) * c05);
+  const double a32 = cc_f32d(aw[4]), a36 = cc_f32d(aw[5]);
+  const double b16c = cc_rf(cc_f32d(bw[0]) * c01), b20c = cc_rf(cc_f32d(bw[1]) * c01);
+  const double b24c = cc_rf(cc_f32d(bw[2]) * c05), b28c = cc_rf(cc_f32d(bw[3]) * c05);
+  const double b32c = cc_rf(cc_f32d(bw[4]) * c05), b36c = cc_rf(cc_f32d(bw[5]) * c05);
+  const double f6 = cc_rf(F(a28c, b36c, cc_rf(a16c * b32c)));
+  const double f4 = cc_rf(F(a24c, b32c, cc_rf(a20c * b36c)));
+  const double f2 = cc_rf(F(b24c, a28c, cc_rf(b16c * a16c)));
+  const double f12 = cc_rf(F(b28c, a24c, cc_rf(b20c * a20c)));
+  const double f11 = cc_rf(F(b16c, a24c, cc_rf(b24c * a20c)));
+  const double f10 = cc_rf(F(b20c, a28c, cc_rf(b28c * a16c)));
+  const double f9 = cc_rf(F(a32, c05, f6));
+  const double f8 = cc_rf(F(a36, c05, f4));
+  out[0] = cc_dbits(f2 * k100); out[1] = cc_dbits(f12 * k100);
+  out[2] = cc_dbits(f11 * k20); out[3] = cc_dbits(f10 * k20);
+  out[4] = cc_dbits(f9 * k20); out[5] = cc_dbits(f8 * k20);
+}
 static CC_HOT_FN void cc_matmul_native(Machine& base, Context& ctx, uint32_t A, uint32_t B, uint32_t out[6]) {
   ctx.fpscr.disableFlushMode();
-  auto f32 = [](uint32_t b) { float f; __builtin_memcpy(&f, &b, 4); return double(f); };
-  auto bits = [](double v) { const float f = float(v); uint32_t b; __builtin_memcpy(&b, &f, 4); return b; };
-  auto r = [](double v) { return double(float(v)); };
-  const double c05 = f32(REX_LOAD_U32(0x82042564u)), c01 = f32(REX_LOAD_U32(0x82042574u));
-  const double k20 = f32(REX_LOAD_U32(0x82042568u)), k100 = f32(REX_LOAD_U32(0x8201473Cu));
-  auto ld = [&](uint32_t a) { return f32(REX_LOAD_U32(a)); };
-  const double a16c = r(ld(A + 16u) * c01), a20c = r(ld(A + 20u) * c01), a24c = r(ld(A + 24u) * c05), a28c = r(ld(A + 28u) * c05);
-  const double a32 = ld(A + 32u), a36 = ld(A + 36u);
-  const double b16c = r(ld(B + 16u) * c01), b20c = r(ld(B + 20u) * c01), b24c = r(ld(B + 24u) * c05), b28c = r(ld(B + 28u) * c05);
-  const double b32c = r(ld(B + 32u) * c05), b36c = r(ld(B + 36u) * c05);
-  const double f6 = r(std::fma(a28c, b36c, r(a16c * b32c)));
-  const double f4 = r(std::fma(a24c, b32c, r(a20c * b36c)));
-  const double f2 = r(std::fma(b24c, a28c, r(b16c * a16c)));
-  const double f12 = r(std::fma(b28c, a24c, r(b20c * a20c)));
-  const double f11 = r(std::fma(b16c, a24c, r(b24c * a20c)));
-  const double f10 = r(std::fma(b20c, a28c, r(b28c * a16c)));
-  const double f9 = r(std::fma(a32, c05, f6));
-  const double f8 = r(std::fma(a36, c05, f4));
-  out[0] = bits(f2 * k100); out[1] = bits(f12 * k100);
-  out[2] = bits(f11 * k20); out[3] = bits(f10 * k20);
-  out[4] = bits(f9 * k20); out[5] = bits(f8 * k20);
+  uint32_t aw[6], bw[6], kw[16];
+  cc_load_words(base, A + 16u, 6u, aw);
+  cc_load_words(base, B + 16u, 6u, bw);
+  cc_load_words(base, 0x82042540u, 16u, kw);
+  const uint32_t k100w = REX_LOAD_U32(0x8201473Cu);
+  if (!cc_plain_fma()) { cc_matmul_calc<false>(aw, bw, kw, k100w, out); return; }
+  cc_matmul_calc<true>(aw, bw, kw, k100w, out);
+  const uint32_t all = out[0] | out[1] | out[2] | out[3] | out[4] | out[5];
+  if (__builtin_expect((all & 0x7F800000u) == 0x7F800000u, 0)) {  // possibly non-finite: check each
+    bool fin = true;
+    for (int k = 0; k < 6; ++k) fin = fin && cc_finite_bits(out[k]);
+    if (!fin) cc_matmul_calc<false>(aw, bw, kw, k100w, out);
+  }
+}
+// A 40-byte matrix entry at guest o: words +0, +4, +8, bytes +12..+14
+// (byte +15 untouched) and the six floats +16..+36.
+static inline __attribute__((always_inline)) void cc_store_matrix(Machine& base, uint32_t o, const uint32_t head[3], const uint8_t by[3],
+                                                                  const uint32_t f[6]) {
+  if (uint8_t* p = cc_obj_host(o, 40u)) {
+    for (uint32_t k = 0; k < 3; ++k) cc_hput32(p + 4u * k, head[k]);
+    p[12] = by[0]; p[13] = by[1]; p[14] = by[2];
+    for (uint32_t k = 0; k < 6; ++k) cc_hput32(p + 16u + 4u * k, f[k]);
+    return;
+  }
+  REX_STORE_U32(o + 0u, head[0]); REX_STORE_U32(o + 4u, head[1]); REX_STORE_U32(o + 8u, head[2]);
+  REX_STORE_U8(o + 12u, by[0]); REX_STORE_U8(o + 13u, by[1]); REX_STORE_U8(o + 14u, by[2]);
+  for (uint32_t k = 0; k < 6; ++k) REX_STORE_U32(o + 16u + 4u * k, f[k]);
 }
 static CC_HOT_FN void sub_82085AD8(Context& ctx, Machine& base) {
 #ifdef CC_SPRITE_EXACT_BUILD
@@ -392,9 +526,9 @@ static CC_HOT_FN void sub_82085AD8(Context& ctx, Machine& base) {
   }
 #endif
   const uint32_t k100 = REX_LOAD_U32(0x8201473Cu);
-  REX_STORE_U32(o + 0u, k100); REX_STORE_U32(o + 4u, k100); REX_STORE_U32(o + 8u, 0u);
-  REX_STORE_U8(o + 12u, 0u); REX_STORE_U8(o + 13u, 0u); REX_STORE_U8(o + 14u, 0u);
-  for (int k = 0; k < 6; ++k) REX_STORE_U32(o + 16u + 4u * uint32_t(k), out[k]);
+  const uint32_t head[3] = {k100, k100, 0u};
+  const uint8_t by[3] = {0u, 0u, 0u};
+  cc_store_matrix(base, o, head, by, out);
 }
 #endif
 #ifdef CC_FAST
@@ -432,6 +566,10 @@ static CC_HOT_FN void sub_82086090(Context& ctx, Machine& base) {
     const uint32_t k100 = REX_LOAD_U32(0x8201473Cu);
     v[0] = k100; v[1] = k100; v[2] = 0u; by[0] = by[1] = by[2] = 0u;
     for (int k = 0; k < 6; ++k) v[4 + k] = prod[k];
+  } else if (const uint8_t* p = cc_obj_host(m, 40u)) {
+    v[0] = cc_hb32(p + 0u); v[1] = cc_hb32(p + 4u); v[2] = cc_hb32(p + 8u);
+    by[0] = p[12]; by[1] = p[13]; by[2] = p[14];
+    for (uint32_t k = 0; k < 6; ++k) v[4 + k] = cc_hb32(p + 16u + 4u * k);
   } else {
     v[0] = REX_LOAD_U32(m + 0u); v[1] = REX_LOAD_U32(m + 4u); v[2] = REX_LOAD_U32(m + 8u);
     by[0] = REX_LOAD_U8(m + 12u); by[1] = REX_LOAD_U8(m + 13u); by[2] = REX_LOAD_U8(m + 14u);
@@ -454,9 +592,7 @@ static CC_HOT_FN void sub_82086090(Context& ctx, Machine& base) {
   }
 #endif
   REX_STORE_U32(st + 9532u, depth);
-  REX_STORE_U32(e + 0u, v[0]); REX_STORE_U32(e + 4u, v[1]); REX_STORE_U32(e + 8u, v[2]);
-  REX_STORE_U8(e + 12u, by[0]); REX_STORE_U8(e + 13u, by[1]); REX_STORE_U8(e + 14u, by[2]);
-  for (int k = 0; k < 6; ++k) REX_STORE_U32(e + 16u + 4u * uint32_t(k), v[4 + k]);
+  cc_store_matrix(base, e, v, by, v + 4);
 }
 #endif
 #include "generated/sub_82086278.inc"
