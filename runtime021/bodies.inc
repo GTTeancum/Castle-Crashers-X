@@ -287,6 +287,36 @@ struct CcDlMutate {
   explicit CcDlMutate(uint32_t l) : list(l) { ++g_dl_busy; cc_dl_list_changed(l); }
   ~CcDlMutate() { cc_dl_list_changed(list); --g_dl_busy; }
 };
+
+// Display-list refresh from a candidate table (replaces the per-frame walk
+// of sub_8208AE78). The walk sorts the child list (+104, linked by +88) of
+// every node it reaches whose bit 5 of byte +140 is set, clearing the bit;
+// it reaches the root and, below a reached node, each child whose slot 44
+// answers nonzero. Bit 5 is set only by the depth setters sub_820878E0 /
+// sub_820879A0, on the node's parent (slot 156 = [node+96]); a new clip can
+// also carry it in from the heap, since its constructor (sub_820869B0)
+// keeps that bit of the byte. The candidates are therefore the parents the
+// depth setters name and the nodes inserted with the bit set. Each refresh
+// handles the candidates that still have the bit and are reached (walking
+// up through [n+96] finds n in each parent's list, and every node below
+// the root answers slot 44), drops those without the bit or whose class
+// never answers slot 44, and keeps the rest for later. Sorting one list
+// does not change any other list or bit, so the order of the sorts does
+// not matter. Should a class with a slot 44 that is not a constant leaf be
+// inserted, a depth setter run on a class whose slot 156 is not
+// "lwz r3,96(r3)", or the table fill up, the walk is used from then on.
+static uint32_t g_dl_dirty[1024];
+static uint32_t g_dl_ndirty = 0u;
+static bool g_dl_walk_always = false;
+#ifndef CC_XBOX_DRIVER
+static struct { uint64_t refreshes, checked, kept_max, sorts, sorts_changed, sort_nodes; } g_dl_rst;
+#endif
+static void cc_dl_mark(uint32_t node) {
+  for (uint32_t i = 0; i < g_dl_ndirty; ++i)
+    if (g_dl_dirty[i] == node) return;
+  if (g_dl_ndirty == 1024u) { g_dl_walk_always = true; return; }
+  g_dl_dirty[g_dl_ndirty++] = node;
+}
 #endif
 
 #ifdef CC_FAST
@@ -574,17 +604,9 @@ static CC_HOT_FN void sub_8208A228(Context& ctx, Machine& base) {
 // Display-list refresh (exact sub_8208AE78: node r3). If bit 5 of byte +140
 // is set it is cleared and sub_82084EE0(node + 104) runs; then every child
 // in the list at +104 (linked through +88) that answers slot 44 is refreshed
-// the same way, depth first.
-static CC_HOT_FN void sub_8208AE78(Context& ctx, Machine& base) {
-#ifndef CC_XBOX_DRIVER
-  static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
-  if (walk_exact) { sub_8208AE78_exact(ctx, base); return; }
-#else
-  #ifdef CC_WALK_EXACT_BUILD
-  sub_8208AE78_exact(ctx, base); return;  // Xbox bisect build
-#endif
-  static_cast<void>(&sub_8208AE78_exact);
-#endif
+// the same way, depth first. The play build visits only the candidates
+// (g_dl_dirty, see there); cc_dl_refresh_walk is the walk itself.
+static CC_HOT_FN void cc_dl_refresh_walk(Context& ctx, Machine& base) {
   const uint32_t node = ctx.r3.u32;
   CcFrame frame(ctx, base, 96u);
   const uint32_t flags = REX_LOAD_U8(node + 140u);
@@ -598,9 +620,119 @@ static CC_HOT_FN void sub_8208AE78(Context& ctx, Machine& base) {
     if ((cc_vcall(ctx, base, ch, 44u, 0x8208AED0u) & 0xFFu) != 0u) {
       ctx.r3.u64 = ch;
       ctx.lr = 0x8208AEE4u;
-      sub_8208AE78(ctx, base);
+      cc_dl_refresh_walk(ctx, base);
     }
   }
+}
+// Slot 44 ("active") of a display node's class as a constant: the clip
+// class answers 1, the second clip class and text fields 0, other classes
+// their "li" leaf; known = false for anything else.
+static CC_HOT_FN inline uint32_t cc_dl_active(Machine& base, uint32_t node, bool& known) {
+  const uint32_t vt = REX_LOAD_U32(node);
+  if (vt == 0x8203E878u) return 1u;
+  if (vt == 0x8203F510u || vt == 0x8203F680u) return 0u;
+  const CcLeaf& m = cc_leaf_info(base, REX_LOAD_U32(vt + 44u));
+  if (m.kind != 2) { known = false; return 0u; }
+  return uint32_t(m.imm) & 0xFFu;
+}
+// Whether the walk from root reaches n (see g_dl_dirty).
+static bool cc_dl_reached(Machine& base, uint32_t n, uint32_t root, bool& known) {
+  for (uint32_t depth = 0; n != root; ++depth) {
+    if (depth == 4096u || cc_dl_active(base, n, known) == 0u) return false;
+    const uint32_t p = REX_LOAD_U32(n + 96u);
+    if (p == 0u) return false;
+    uint32_t c = REX_LOAD_U32(p + 104u);
+    while (c != 0u && c != n) c = REX_LOAD_U32(c + 88u);
+    if (c == 0u) return false;
+    n = p;
+  }
+  return true;
+}
+#ifndef CC_XBOX_DRIVER
+// Host oracle: the nodes the walk from n would sort, in walk order.
+static void cc_dl_refresh_expect(Context& ctx, Machine& base, uint32_t n, std::vector<uint32_t>& out) {
+  if (REX_LOAD_U8(n + 140u) & 0x20u) out.push_back(n);
+  for (uint32_t ch = REX_LOAD_U32(n + 104u); ch; ch = REX_LOAD_U32(ch + 88u)) {
+    bool known = true;
+    const uint32_t a = cc_dl_active(base, ch, known);
+    if (!known) { cc_oracle_mismatch("sub_8208AE78 class", 0, ch, REX_LOAD_U32(ch)); continue; }
+    if (a) cc_dl_refresh_expect(ctx, base, ch, out);
+  }
+}
+#endif
+static CC_HOT_FN void sub_8208AE78(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
+  if (walk_exact) { sub_8208AE78_exact(ctx, base); return; }
+  static const bool walk = std::getenv("CC_REFRESH_WALK") != nullptr;  // host A/B switch
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr || std::getenv("CC_REFRESH_ORACLE") != nullptr;
+#else
+  #ifdef CC_WALK_EXACT_BUILD
+  sub_8208AE78_exact(ctx, base); return;  // Xbox bisect build
+#endif
+  static_cast<void>(&sub_8208AE78_exact);
+#ifdef CC_REFRESH_WALK_BUILD
+  constexpr bool walk = true;  // Xbox bisect build
+#else
+  constexpr bool walk = false;
+#endif
+#endif
+  if (walk || g_dl_walk_always) { cc_dl_refresh_walk(ctx, base); return; }
+  const uint32_t root = ctx.r3.u32;
+#ifndef CC_XBOX_DRIVER
+  ++g_dl_rst.refreshes;
+  std::vector<uint32_t> expect, done;
+  if (oracle) cc_dl_refresh_expect(ctx, base, root, expect);
+#endif
+  CcFrame frame(ctx, base, 96u);
+  auto sort_children = [&](uint32_t n, uint32_t flags) {
+#ifndef CC_XBOX_DRIVER
+    if (oracle) done.push_back(n);
+#endif
+    REX_STORE_U8(n + 140u, uint8_t(flags & ~0x20u));
+    ctx.r3.u64 = n + 104u;
+    ctx.lr = 0x8208AEB0u;
+    sub_82084EE0(ctx, base);
+  };
+  {
+    const uint32_t flags = REX_LOAD_U8(root + 140u);
+    if (flags & 0x20u) sort_children(root, flags);
+  }
+  uint32_t kept = 0u;
+  for (uint32_t i = 0; i < g_dl_ndirty; ++i) {
+    const uint32_t d = g_dl_dirty[i];
+    const uint32_t flags = REX_LOAD_U8(d + 140u);
+    if (d == root || (flags & 0x20u) == 0u) continue;
+#ifndef CC_XBOX_DRIVER
+    ++g_dl_rst.checked;
+#endif
+    bool known = true;
+    if (cc_dl_active(base, d, known) == 0u && known) continue;
+    if (cc_dl_reached(base, d, root, known)) { sort_children(d, flags); continue; }
+    if (!known) {  // a class the table cannot judge: walk instead
+      g_dl_walk_always = true;
+      for (uint32_t k = i; k < g_dl_ndirty; ++k) g_dl_dirty[kept++] = g_dl_dirty[k];
+      g_dl_ndirty = kept;
+      ctx.r3.u64 = root;
+      cc_dl_refresh_walk(ctx, base);
+      return;
+    }
+    g_dl_dirty[kept++] = d;
+  }
+  g_dl_ndirty = kept;
+#ifndef CC_XBOX_DRIVER
+  if (kept > g_dl_rst.kept_max) g_dl_rst.kept_max = kept;
+  if (oracle) {
+    std::vector<uint32_t> a = expect, b = done;
+    std::sort(a.begin(), a.end());
+    std::sort(b.begin(), b.end());
+    if (a != b) {
+      cc_oracle_mismatch("sub_8208AE78", int(a.size()), a.empty() ? 0u : a[0], b.empty() ? 0u : b[0]);
+      for (uint32_t x : a) if (!std::binary_search(b.begin(), b.end(), x)) cc_log("ORACLE sub_8208AE78 missed %08x parent=%08x\n", x, REX_LOAD_U32(x + 96u));
+      for (uint32_t x : b) if (!std::binary_search(a.begin(), a.end(), x)) cc_log("ORACLE sub_8208AE78 extra %08x\n", x);
+    }
+  }
+#endif
 }
 #endif
 #include "generated/sub_820915F0.inc"
@@ -2416,7 +2548,12 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
            (unsigned long long)g_dl_st.fills, (unsigned long long)g_dl_st.uncached, (unsigned long long)g_dl_st.busy,
            (unsigned long long)g_dl_st.nodes, (unsigned long long)g_dl_st.list_bumps, (unsigned long long)g_dl_st.name_bumps,
            (unsigned long long)g_dl_st.flushes);
+    cc_log("DLREFRESH frame=%u refreshes=%llu candidates_checked=%llu kept_max=%llu sorts=%llu reordered=%llu sorted_nodes=%llu walk=%d\n",
+           g_frame_delay_calls + 1u, (unsigned long long)g_dl_rst.refreshes, (unsigned long long)g_dl_rst.checked,
+           (unsigned long long)g_dl_rst.kept_max, (unsigned long long)g_dl_rst.sorts, (unsigned long long)g_dl_rst.sorts_changed,
+           (unsigned long long)g_dl_rst.sort_nodes, int(g_dl_walk_always));
     g_dl_st = {};
+    g_dl_rst = {};
   }
 #endif
   if (std::getenv("CC_WORKSET") && (g_frame_delay_calls + 1u) % 1000u == 0u)
@@ -5210,11 +5347,78 @@ static void sub_82094730(Context& ctx, Machine& base) {
 #include "generated/sub_82084EE0.inc"
 #ifdef CC_FAST
 #undef sub_82084EE0
-// Display-list sort by depth (exact sub_82084EE0: list r3), seen by the
-// name cache. It calls nothing, so one version change after it suffices.
-static void sub_82084EE0(Context& ctx, Machine& base) {
+// Display-list sort by depth (exact sub_82084EE0: list r3, linked through
+// +88): a bottom-up merge sort on the signed depth +28 that takes the left
+// node on ties, i.e. a stable sort, rewriting the head word and every
+// link. Here the nodes are read once; an already sorted list is left as it
+// is (the original writes the same links back), otherwise a stable
+// insertion sort runs and only the links that change are written. The
+// name cache sees a change of order only. Lists longer than the buffer
+// take the exact body.
+struct CcDlSortEnt { uint32_t node; int32_t depth; uint32_t next; };
+static CcDlSortEnt g_dl_sort_buf[2048];
+static CC_HOT_FN void sub_82084EE0(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  static const bool exact = std::getenv("CC_SORT_EXACT") != nullptr;  // host A/B switch
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr || std::getenv("CC_REFRESH_ORACLE") != nullptr;
+#elif defined(CC_SORT_EXACT_BUILD)
+  constexpr bool exact = true;  // Xbox bisect build
+#else
+  constexpr bool exact = false;
+#endif
   const uint32_t list = ctx.r3.u32;
-  sub_82084EE0_exact(ctx, base);
+  if (exact) { sub_82084EE0_exact(ctx, base); cc_dl_list_changed(list); return; }
+  CcDlSortEnt* const a = g_dl_sort_buf;
+  uint32_t cnt = 0u;
+  bool sorted = true;
+  int32_t prev = INT32_MIN;
+  for (uint32_t n = REX_LOAD_U32(list); n;) {
+    if (cnt == 2048u) { sub_82084EE0_exact(ctx, base); cc_dl_list_changed(list); return; }
+    const uint32_t next = REX_LOAD_U32(n + 88u);
+    if (next) { cc_prefetch(next + 28u); cc_prefetch(next + 88u); }
+    const int32_t d = int32_t(REX_LOAD_U32(n + 28u));
+    if (d < prev) sorted = false;
+    prev = d;
+    a[cnt++] = {n, d, next};
+    n = next;
+  }
+#ifndef CC_XBOX_DRIVER
+  ++g_dl_rst.sorts;
+  g_dl_rst.sort_nodes += cnt;
+#endif
+  if (sorted) {
+#ifndef CC_XBOX_DRIVER
+    if (oracle) {  // the exact body must leave the same order
+      sub_82084EE0_exact(ctx, base);
+      uint32_t k = 0;
+      for (uint32_t n = REX_LOAD_U32(list); n; n = REX_LOAD_U32(n + 88u), ++k)
+        if (k >= cnt || a[k].node != n) { cc_oracle_mismatch("sub_82084EE0 sorted", int(k), n, k < cnt ? a[k].node : 0u); break; }
+    }
+#endif
+    return;
+  }
+  for (uint32_t i = 1; i < cnt; ++i) {
+    const CcDlSortEnt x = a[i];
+    uint32_t j = i;
+    for (; j > 0u && a[j - 1u].depth > x.depth; --j) a[j] = a[j - 1u];
+    a[j] = x;
+  }
+#ifndef CC_XBOX_DRIVER
+  ++g_dl_rst.sorts_changed;
+  if (oracle) {
+    sub_82084EE0_exact(ctx, base);
+    uint32_t k = 0;
+    for (uint32_t n = REX_LOAD_U32(list); n; n = REX_LOAD_U32(n + 88u), ++k)
+      if (k >= cnt || a[k].node != n) { cc_oracle_mismatch("sub_82084EE0", int(k), n, k < cnt ? a[k].node : 0u); break; }
+    cc_dl_list_changed(list);
+    return;
+  }
+#endif
+  if (REX_LOAD_U32(list) != a[0].node) REX_STORE_U32(list, a[0].node);
+  for (uint32_t i = 0; i < cnt; ++i) {
+    const uint32_t next = i + 1u < cnt ? a[i + 1u].node : 0u;
+    if (a[i].next != next) REX_STORE_U32(a[i].node + 88u, next);
+  }
   cc_dl_list_changed(list);
 }
 #endif
@@ -6605,7 +6809,29 @@ static CC_HOT_FN void sub_82079BE0(Context& ctx, Machine& base) {
 #include "generated/sub_820875B0.inc"
 #include "generated/sub_820975D8.inc"
 #include "generated/sub_82096FC8.inc"
+#ifdef CC_FAST
+#define sub_820878E0 sub_820878E0_exact
+#endif
 #include "generated/sub_820878E0.inc"
+#ifdef CC_FAST
+#undef sub_820878E0
+// Depth setters (exact sub_820878E0: node r3, depth r4; exact sub_820879A0:
+// node r3, target r5): both set bit 5 of the parent's byte +140 (parent =
+// slot 156), which makes the next refresh sort the parent's list. The
+// parent becomes a refresh candidate (see g_dl_dirty); a class whose slot
+// 156 is not the parent field [node+96] sends the refresh back to the walk.
+static void cc_dl_mark_parent(Machine& base, uint32_t node) {
+  const CcLeaf& m = cc_leaf_info(base, REX_LOAD_U32(REX_LOAD_U32(node) + 156u));
+  if (m.kind != 3 || m.imm != 96) { g_dl_walk_always = true; return; }
+  const uint32_t p = REX_LOAD_U32(node + 96u);
+  if (p != 0u && (REX_LOAD_U8(p + 140u) & 0x20u) != 0u) cc_dl_mark(p);
+}
+static void sub_820878E0(Context& ctx, Machine& base) {
+  const uint32_t node = ctx.r3.u32;
+  sub_820878E0_exact(ctx, base);
+  cc_dl_mark_parent(base, node);
+}
+#endif
 #ifdef CC_FAST
 #define sub_82082700 sub_82082700_exact
 #endif
@@ -6669,7 +6895,18 @@ static CC_HOT_FN void sub_8206F918(Context& ctx, Machine& base) {
 #endif
 #include "generated/sub_8208AFC8.inc"
 #include "generated/sub_820868D8.inc"
+#ifdef CC_FAST
+#define sub_820879A0 sub_820879A0_exact
+#endif
 #include "generated/sub_820879A0.inc"
+#ifdef CC_FAST
+#undef sub_820879A0
+static void sub_820879A0(Context& ctx, Machine& base) {
+  const uint32_t node = ctx.r3.u32;
+  sub_820879A0_exact(ctx, base);
+  cc_dl_mark_parent(base, node);
+}
+#endif
 #include "generated/sub_820970D0.inc"
 #include "generated/sub_82087160.inc"
 #include "generated/sub_8208B7F8.inc"
@@ -6920,8 +7157,17 @@ static void sub_820867E8(Context& ctx, Machine& base) {
   cc_dl_name_changed(id);
 }
 static void sub_82084DB8(Context& ctx, Machine& base) {
-  const CcDlMutate m(ctx.r3.u32);
-  sub_82084DB8_exact(ctx, base);
+  const uint32_t node = ctx.r4.u32;
+  {
+    const CcDlMutate m(ctx.r3.u32);
+    sub_82084DB8_exact(ctx, base);
+  }
+  // Refresh candidates (see g_dl_dirty): a node arriving with bit 5 set,
+  // and a class whose slot 44 the table cannot judge.
+  bool known = true;
+  cc_dl_active(base, node, known);
+  if (!known) g_dl_walk_always = true;
+  if (REX_LOAD_U8(node + 140u) & 0x20u) cc_dl_mark(node);
 }
 #endif
 #include "generated/sub_82083550.inc"
