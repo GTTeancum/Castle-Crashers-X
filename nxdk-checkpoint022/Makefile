@@ -67,6 +67,14 @@ endif
 ifneq ($(WALKEXACT),)
 CXXFLAGS += -DCC_WALK_EXACT_BUILD
 endif
+# Sprite leaf bisect: SPRITEUNFUSED=1 (general leaf path), SPRITERING=1
+# (fused leaf, quads through the guest vertex ring and sub_820C1980)
+ifneq ($(SPRITEUNFUSED),)
+CXXFLAGS += -DCC_SPRITE_UNFUSED_BUILD
+endif
+ifneq ($(SPRITERING),)
+CXXFLAGS += -DCC_SPRITE_RING_BUILD
+endif
 ifneq ($(NOFMAFAST),)
 CXXFLAGS += -DCC_NO_FMA_FAST
 endif

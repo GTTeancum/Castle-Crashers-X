@@ -146,6 +146,191 @@ static CC_HOT_FN inline int64_t cc_render_fctidz(double f) {
   return std::isnan(f) ? int64_t(0x8000000000000000ULL) : (f > double(LLONG_MAX)) ? LLONG_MAX : simde_mm_cvttsd_si64(simde_mm_load_sd(&f));
 }
 
+// Fused sprite leaf (play build). For a textured sprite drawn by the game's
+// 2D renderer (vtable 0x82042048 whose slots 40, 92, 108 and 116 hold its own
+// methods 0x820A74E0, 0x820A89F8, 0x820A8DD8 and 0x820A9308), the leaf's work
+// is done from host values (its stack frame is still filled, see below):
+//  - slot 40 (the current material getter) has no effects and is skipped;
+//  - the corners are sub_82085110's arithmetic (cc_corners_words) and the
+//    cull is sub_820A8DD8's mode-4 test, on the corner values directly;
+//  - the colour and uv extents are computed as in sub_820855D8 below, the
+//    bind wrapper sub_820A89F8 runs as before (r3 renderer, r4 texture);
+//  - the quad is cc_quad_native's count-4 path: the same draw-flag, ring and
+//    material-mode tests, the ring count bumped by 4. Its vertices are
+//    written to the guest vertex ring and drawn through sub_820C1980 (host:
+//    always, so the 360 draw, the state hash and the frame capture see what
+//    they saw before; Xbox: with make SPRITERING=1) or handed straight to the
+//    Xbox renderer's quad batch (cc_xr_quad; the ring's only reader on the
+//    Xbox is sub_820C1980's hand-off, which then has nothing to read).
+//    Modes with other vertex layouts (2, 6, 10, 11, 14, 15) call
+//    sub_820A9308 on the leaf's frame as the general path does.
+// Guest-visible effects, including the leaf's stack frame below r1, are
+// those of the general path in its order: later guest code copies stale
+// stack words into heap objects, so the state hash differs when the frame
+// is not filled or the bind and quad run at another depth.
+// Switches: host CC_SPRITE_UNFUSED=1 (also off with CC_QUAD_EXACT or
+// CC_QUADLOG, whose probes sit on the general path); Xbox make
+// SPRITEUNFUSED=1. With CC_ORACLE=1 the host also runs the exact corners and
+// cull on scratch stack points and logs any difference.
+#if defined(CC_SPRITE_EXACT_BUILD) || defined(CC_CULL_EXACT_BUILD) || defined(CC_SPRITE_UNFUSED_BUILD)
+static constexpr bool kCcSpriteFused = false;
+#else
+static constexpr bool kCcSpriteFused = true;
+#endif
+static inline bool cc_sprite_fused_on() {
+#ifdef CC_XBOX_DRIVER
+  return kCcSpriteFused;
+#else
+  static const bool on = kCcSpriteFused && !std::getenv("CC_SPRITE_UNFUSED") && !std::getenv("CC_QUAD_EXACT") &&
+                         !std::getenv("CC_QUADLOG");
+  return on;
+#endif
+}
+// Words of the leaf's frame (open at r1) as the general path stores them:
+// the four points {x, y, z} at +216 / +200 / +184 / +168; the uv pairs at
+// +136, +128, +120 and +112, the colour at +92, the count (4) at +100 and
+// the pointer r1 + 112 at +84. Later guest code reads stale stack words
+// (some are copied into heap objects), so the frame holds what it held.
+static inline __attribute__((always_inline)) void cc_frame_put(Machine& base, uint8_t* fp, uint32_t r1, uint32_t off, uint32_t v) {
+  if (fp) cc_hput32(fp + (off - 84u), v);
+  else REX_STORE_U32(r1 + off, v);
+}
+static inline __attribute__((always_inline)) void cc_sprite_frame_points(Machine& base, uint32_t r1, const uint32_t c[4][3]) {
+  uint8_t* fp = cc_obj_host(r1 + 84u, 144u);
+  static const uint32_t at[4] = {216u, 200u, 184u, 168u};
+  for (int i = 0; i < 4; ++i)
+    for (uint32_t k = 0; k < 3; ++k) cc_frame_put(base, fp, r1, at[i] + 4u * k, c[i][k]);
+}
+static inline __attribute__((always_inline)) void cc_sprite_frame_quad(Machine& base, uint32_t r1, uint32_t zero, uint32_t u, uint32_t v,
+                                                                       uint32_t packed) {
+  uint8_t* fp = cc_obj_host(r1 + 84u, 144u);
+  cc_frame_put(base, fp, r1, 136u, zero); cc_frame_put(base, fp, r1, 140u, zero);
+  cc_frame_put(base, fp, r1, 132u, zero); cc_frame_put(base, fp, r1, 112u, zero);
+  cc_frame_put(base, fp, r1, 128u, u); cc_frame_put(base, fp, r1, 120u, u);
+  cc_frame_put(base, fp, r1, 124u, v); cc_frame_put(base, fp, r1, 116u, v);
+  cc_frame_put(base, fp, r1, 92u, packed);
+  cc_frame_put(base, fp, r1, 100u, 4u);
+  cc_frame_put(base, fp, r1, 84u, r1 + 112u);
+}
+// Slot 116 on the filled frame (modes with other vertex layouts).
+static __attribute__((noinline)) void cc_sprite_quad_guest(Context& ctx, Machine& base, uint32_t rnd) {
+  const uint32_t r1 = ctx.r1.u32;
+  ctx.r3.u64 = rnd; ctx.r4.u64 = r1 + 216u; ctx.r5.u64 = r1 + 200u; ctx.r6.u64 = r1 + 184u; ctx.r7.u64 = r1 + 168u;
+  ctx.r8.u64 = r1 + 136u; ctx.r9.u64 = r1 + 128u; ctx.r10.u64 = r1 + 120u; ctx.lr = 0x82085838u;
+  sub_820A9308(ctx, base);
+}
+#ifndef CC_XBOX_DRIVER
+// Oracle (CC_ORACLE=1): the exact corners (sub_82085110_exact) and mode-4
+// cull (sub_820A8DD8_exact) on scratch points in a frame below r1, compared
+// with the fused values. Only the stack is written.
+static __attribute__((noinline)) void cc_sprite_fused_oracle(Context& ctx, Machine& base, uint32_t spr, uint32_t m, uint32_t rnd,
+                                                             const uint32_t c[4][3], bool culled) {
+  CcFrame frame(ctx, base, 288u);
+  const uint32_t r1 = ctx.r1.u32;
+  const uint32_t pts[4] = {r1 + 216u, r1 + 200u, r1 + 184u, r1 + 168u};
+  for (uint32_t p : pts)
+    for (uint32_t k = 0; k < 3; ++k) REX_STORE_U32(p + 4u * k, 0u);
+  ctx.r3.u64 = spr; ctx.r4.u64 = m; ctx.r5.u64 = pts[0]; ctx.r6.u64 = pts[1]; ctx.r7.u64 = pts[2]; ctx.r8.u64 = pts[3];
+  ctx.lr = 0x820856BCu;
+  sub_82085110_exact(ctx, base);
+  for (int i = 0; i < 4; ++i)
+    for (uint32_t k = 0; k < 3; ++k) {
+      const uint32_t e = REX_LOAD_U32(pts[i] + 4u * k);
+      if (e != c[i][k]) cc_oracle_mismatch("sub_820855D8 fused corners", i * 3 + int(k), e, c[i][k]);
+    }
+  ctx.r3.u64 = rnd; ctx.r4.u64 = pts[0]; ctx.r5.u64 = pts[1]; ctx.r6.u64 = pts[2]; ctx.r7.u64 = pts[3]; ctx.r8.u64 = 4u;
+  ctx.lr = 0x820856E4u;
+  sub_820A8DD8_exact(ctx, base);
+  const bool e = (ctx.r3.u32 & 0xFFu) != 0u;
+  if (e != culled) cc_oracle_mismatch("sub_820855D8 fused cull", 0, e, culled);
+}
+#endif
+// Returns false, having done nothing, when the renderer is not the game's
+// own; else the leaf's result (1 culled, else 0) in `result`.
+static CC_HOT_FN bool cc_sprite_fused(Context& ctx, Machine& base, uint32_t spr, uint32_t st, uint32_t rnd, uint32_t tex,
+                                      uint32_t& result) {
+  const uint32_t vt = REX_LOAD_U32(rnd);
+  if (vt != 0x82042048u) return false;
+  {
+    uint32_t s[20];
+    cc_load_words(base, vt + 40u, 20u, s);  // slots 40 .. 116
+    if (s[0] != 0x820A74E0u || s[13] != 0x820A89F8u || s[17] != 0x820A8DD8u || s[19] != 0x820A9308u) return false;
+  }
+  REX_STORE_U8(spr + 86u, uint8_t(REX_LOAD_U8(spr + 86u) | 64u));
+  CcFrame frame(ctx, base, 288u);
+  const uint32_t r1 = ctx.r1.u32;
+  // Corners with the state's current matrix (+8252 + 40 * [+9532]).
+  uint32_t sv[4], mv[6], kw[29];
+  const uint32_t m = st + REX_LOAD_U32(st + 9532u) * 40u + 8252u;
+  cc_load_words(base, spr + 96u, 4u, sv);
+  cc_load_words(base, m + 16u, 6u, mv);
+  cc_load_words(base, 0x82042540u, 29u, kw);  // through the viewport words at 0x820425A8..B0
+  ctx.fpscr.disableFlushMode();
+  uint32_t c[4][3];
+  cc_corners_words(sv, mv, kw, c);
+  cc_sprite_frame_points(base, r1, c);
+  // Mode-4 cull: all four x beyond the right (9648) or left (9644) edge, or
+  // all four y below the bottom (9640) or above the top (9644 again).
+  bool culled;
+  {
+    double x[4], y[4];
+    for (int i = 0; i < 4; ++i) { x[i] = cc_f32d(c[i][0]); y[i] = cc_f32d(c[i][1]); }
+    const double right = cc_f32d(kw[28]), left = cc_f32d(kw[27]), bottom = cc_f32d(kw[26]);
+    auto all_gt = [](const double* v, double k) { return v[0] > k && v[1] > k && v[2] > k && v[3] > k; };
+    auto all_lt = [](const double* v, double k) { return v[0] < k && v[1] < k && v[2] < k && v[3] < k; };
+    culled = all_gt(x, right) || all_lt(x, left) || all_gt(y, bottom) || all_lt(y, left);
+  }
+#ifndef CC_XBOX_DRIVER
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr;
+  if (oracle) cc_sprite_fused_oracle(ctx, base, spr, m, rnd, c, culled);
+#endif
+  if (culled) { result = 1u; return true; }
+  // Colour from the state's current colour (+(+10048 + 596) * 16), uv
+  // extents from the texture (+60 / +68, +64 / +72).
+  uint32_t cw[4], tw[4];
+  cc_load_words(base, st + (REX_LOAD_U32(st + 10048u) + 596u) * 16u, 4u, cw);
+  cc_load_words(base, tex + 60u, 4u, tw);
+  auto chan = [](uint32_t w) { return uint32_t(cc_render_fctidz(cc_f32d(w))); };
+  const uint32_t c1 = chan(cw[1]), c2 = chan(cw[2]), c3 = chan(cw[3]), c0 = chan(cw[0]);
+  const uint32_t p1 = ((c0 << 8) & 0xFFFFFF00u) | c1;
+  const uint32_t p2 = ((p1 << 8) & 0xFFFFFF00u) | c2;
+  const uint32_t packed = ((p2 << 8) & 0xFFFFFF00u) | c3;
+  const double fu = double(float(double(int64_t(tw[0])))) / double(float(double(int64_t(tw[2]))));
+  const double fv = double(float(double(int64_t(tw[1])))) / double(float(double(int64_t(tw[3]))));
+  const uint32_t u = cc_dbits(fu), v = cc_dbits(fv), zero = kw[0];
+  cc_sprite_frame_quad(base, r1, zero, u, v, packed);
+  // The bind and the quad run in the leaf's frame, as in the general path,
+  // so their callees (the rasterizer of a texture's first bind, the 360 draw
+  // on the host) build their frames at the same depth.
+  ctx.r3.u64 = rnd; ctx.r4.u64 = tex; ctx.lr = 0x820857F4u;
+  sub_820A89F8(ctx, base);
+  result = 0u;
+  // The quad (cc_quad_native with count 4: points already in screen space).
+  if (REX_LOAD_U8(rnd + 28715u) == 0u) return true;
+  const uint32_t ring = REX_LOAD_U32(0x82290000u - 22588u);  // vertex ring count (0x8228A7C4)
+  if (int32_t(ring) >= 6000) return true;
+  switch (REX_LOAD_U32(REX_LOAD_U32(rnd + (REX_LOAD_U32(rnd + 30208u) + 7544u) * 4u))) {
+    case 0: case 1: case 3: case 5: case 7: case 8: case 9: case 12: case 16: break;
+    case 2: case 6: case 10: case 11: case 14: case 15: cc_sprite_quad_guest(ctx, base, rnd); return true;
+    default: return true;
+  }
+  const uint32_t z = REX_LOAD_U32(0x8201473Cu), colour = cc_quad_colour(packed);
+  const uint32_t q[24] = {c[0][0], c[0][1], z, zero, zero, colour, c[1][0], c[1][1], z, u, zero, colour,
+                          c[2][0], c[2][1], z, u, v, colour, c[3][0], c[3][1], z, zero, v, colour};
+  REX_STORE_U32(0x82290000u - 22588u, ring + 4u);
+#if defined(CC_XBOX_DRIVER) && !defined(CC_SPRITE_RING_BUILD)
+  ::cc_xr_quad(q, REX_LOAD_U32(REX_LOAD_U32(rnd + 4u) + 10552u));  // device blend word
+#else
+  const uint32_t verts = 0x822673D8u + ring * 24u;
+  cc_store_words(base, verts, 24u, q);
+  ctx.r3.u64 = REX_LOAD_U32(rnd + 4u);
+  ctx.r4.u64 = 13; ctx.r5.u64 = 4; ctx.r6.u64 = verts; ctx.r7.u64 = 24;
+  ctx.lr = 0x820A9AD0u;
+  sub_820C1980(ctx, base);
+#endif
+  return true;
+}
+
 // Sprite draw (exact sub_820855D8: sprite r3, draw state r4, renderer r5,
 // stop-at node r6; returns 1 when culled, 2 when the sprite is the stop-at
 // node, else 0). A stop-at node other than this sprite returns 0 at once.
@@ -163,7 +348,11 @@ static CC_HOT_FN void sub_820855D8(Context& ctx, Machine& base) {
   CC_FPROF_SCOPE(sub_820855D8_native);
   const uint32_t spr = ctx.r3.u32, st = ctx.r4.u32, rnd = ctx.r5.u32, stop = ctx.r6.u32;
   if (stop != 0u && stop != spr) { ctx.r3.u64 = 0u; return; }
-  if (REX_LOAD_U32(spr + 92u) != 0u) {
+  const uint32_t tex0 = REX_LOAD_U32(spr + 92u);
+  uint32_t fused = 0u;
+  if (tex0 != 0u && cc_sprite_fused_on() && cc_sprite_fused(ctx, base, spr, st, rnd, tex0, fused)) {
+    if (fused == 1u) { ctx.r3.u64 = 1u; return; }
+  } else if (tex0 != 0u) {
     CcFrame frame(ctx, base, 288u);
     const uint32_t r1 = ctx.r1.u32;
     REX_STORE_U8(spr + 86u, uint8_t(REX_LOAD_U8(spr + 86u) | 64u));
