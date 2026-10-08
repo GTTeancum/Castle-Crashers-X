@@ -8,6 +8,7 @@
 #include <hal/video.h>
 void* cc_xr_alloc_gpu(uint32_t bytes);
 #include <windows.h>
+#include <excpt.h>
 #endif
 #include <array>
 #include <cstdio>
@@ -470,6 +471,27 @@ static void store(AddressSpace& m,uint32_t a,unsigned n,uint64_t v) {
 }
 
 
+#if defined(CC_FLAT_WINDOW) && defined(CC_XBOX_DRIVER)
+// A guest access outside the committed flat window faults (ring 0, no
+// handler: a kernel stop). Report it like the page-table build's memory
+// stop instead: failure bar with code 3 and the guest address.
+static int cc_window_fault(EXCEPTION_POINTERS* ep) {
+  const EXCEPTION_RECORD* r = ep->ExceptionRecord;
+  if (r->ExceptionCode != 0xC0000005u || r->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
+  const uintptr_t off = r->ExceptionInformation[1] - cc_win::kBase;
+  if (off >= cc_win::kSpan) return EXCEPTION_CONTINUE_SEARCH;
+  cc_elog("FAIL flat window: guest %08x not mapped\n", unsigned(cc_win::guest_of(off)));
+  cc_xr_show_fail(3u, cc_win::guest_of(off));
+  cc_fail_exit();
+}
+static Result cc_invoke_guarded(uint32_t entry, Context& c, AddressSpace& m, uint32_t budget) {
+  __try {
+    return invoke(entry, c, m, sink(), budget);
+  } __except (cc_window_fault(GetExceptionInformation())) {
+    return Result{};
+  }
+}
+#endif
 static void renderer_caller_prefix_controls(const char* image_path) {
   std::FILE* stream=std::fopen(image_path,"rb");
   CHECK(stream!=nullptr);
@@ -502,7 +524,35 @@ static void renderer_caller_prefix_controls(const char* image_path) {
       {0x1E000000u, 0x1E000000u + kPhysSmallBytes},
       {cc_win::kImageGuest, cc_win::kImageGuest + kImageBytes},
     };
-    if (!cc_win::open(ranges, uint32_t(std::size(ranges)))) {
+    // The command ring's whole pages share one 256 KiB block (nothing reads
+    // the ring); host CC_RING_ALIAS=0 / Xbox NORINGALIAS=1 commit it in full.
+    // 4 MiB pages (mask 1: stack, TLS and game heap; 2: game data image):
+    // Xbox make LARGEPAGES=..., host CC_LARGE_PAGES=<mask> (same layout).
+#ifdef CC_XBOX_DRIVER
+#ifdef CC_NO_RING_ALIAS
+    const bool ring_alias = false;
+#else
+    const bool ring_alias = true;
+#endif
+#ifdef CC_LARGE_PAGES
+    const unsigned large_mask = CC_LARGE_PAGES;
+#else
+    const unsigned large_mask = 0u;
+#endif
+#else
+    const char* ring_env = std::getenv("CC_RING_ALIAS");
+    const bool ring_alias = !(ring_env && ring_env[0] == '0');
+    const char* large_env = std::getenv("CC_LARGE_PAGES");
+    const unsigned large_mask = large_env ? unsigned(std::strtoul(large_env, nullptr, 0)) : 0u;
+#endif
+    cc_win::Range large[2];
+    unsigned large_count = 0;
+    if (large_mask & 1u) large[large_count++] = {0x30000u, 0x71000u + kHeapBytes};
+    if (large_mask & 2u) large[large_count++] = {cc_win::kImageGuest, cc_win::kImageGuest + kImageBytes};
+    const cc_win::Layout layout{ranges, unsigned(std::size(ranges)),
+                                {cc_win::kRingLo, cc_win::kRingLo + cc_win::kRingBytes},
+                                ring_alias ? cc_win::kRingBlock : 0u, large, large_count};
+    if (!cc_win::open(layout)) {
       cc_elog("FAIL flat guest window unavailable\n");
 #ifdef CC_XBOX_DRIVER
       cc_xr_show_fail(3u, uint32_t(cc_win::kBase));
@@ -567,9 +617,10 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // block repeated over its 2 MiB.
   // Default on (identical instruction and memory-op counts with and without
   // aliasing: the game never reads these back). CC_GFX_ALIAS=none disables.
-  // Flat window (play build): no aliasing (the MMU cannot alias at these
-  // byte offsets); every piece sits at its own window address, the ring is
-  // committed in full and the surfaces' interior pages are not committed.
+  // Flat window (play build): every piece sits at its own window address;
+  // the surfaces' interior pages are not committed and the ring's whole
+  // pages share one 256 KiB block at page granularity (cc_win::open; the
+  // byte-offset aliasing below needs the page table).
 #ifdef CC_FLAT_WINDOW
   const bool alias_surfaces = false, alias_ring = false;
 #else
@@ -583,7 +634,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
     // Pieces are packed into one compact backing block; aliased ranges share
     // storage, so only the distinct bytes are allocated (5 MiB -> ~2.1 MiB).
     struct Piece { uint32_t lo, len; int share; };  // share: -1 own storage, else index
-    constexpr uint32_t ring_lo = 0x0200F140u, ring_len = 0x200000u;
+    constexpr uint32_t ring_lo = cc_win::kRingLo, ring_len = cc_win::kRingBytes;
     constexpr uint32_t surf_a = cc_win::kSurfaceA, surf_b = cc_win::kSurfaceB, surf_len = cc_win::kSurfaceBytes;
     std::vector<Piece> pieces = {
       {0x02000000u, ring_lo - 0x02000000u, -1},
@@ -1323,7 +1374,11 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   cc::tree::set_exact_texture_bind(true);
   // Unlimited op budget (0xFFFFFFFF): the 10,000-frame limit ends the run;
   // op/function counters wrap deterministically at 32 bits.
+#if defined(CC_FLAT_WINDOW) && defined(CC_XBOX_DRIVER)
+  auto pi=cc_invoke_guarded(0x82070ba4,c,m,0xFFFFFFFFu);
+#else
   auto pi=invoke(0x82070ba4,c,m,sink(),0xFFFFFFFFu);
+#endif
   cc_log("caller_post_init result=%s@%08x funcs=%u memops=%u r1=%08x lr=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r11=%08x\n",
               name(pi.error),pi.address,pi.functions,pi.memory_ops,c.r1.u32,uint32_t(c.lr),
               c.r3.u32,c.r4.u32,c.r5.u32,c.r6.u32,c.r7.u32,c.r11.u32);
