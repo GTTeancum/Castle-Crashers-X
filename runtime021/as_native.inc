@@ -394,6 +394,190 @@ void cc_op_dbg() {
 #endif
 static uint32_t cc_as_step_body(Context& ctx, Machine& base, CcAsLoop& L, uint32_t op, uint32_t lr);
 #ifndef CC_XBOX_DRIVER
+// Host census of script work per ActionScript function (CC_AS_FNCENSUS=1,
+// frames CC_SAMPLE_FROM..CC_SAMPLE_TO), printed at exit as ASFN lines: per
+// code address (custom functions by their name id, frame scripts by kind
+// and the instance name, else the character id, of the first clip that
+// ran them) the instructions run directly in it, its activations, its
+// exclusive host cycles (nested script calls counted for themselves;
+// native helpers and game code an instruction calls count for the
+// instruction) and its most frequent opcodes, plus how many functions
+// cover 50/80/90/95% of all instructions and their code bytes, the share
+// of host time spent in script, and per opcode the count and exclusive
+// cycles (the loop's fetch and dispatch included; a call's nested script
+// functions excluded). For judging ahead-of-time compilation of the
+// hottest functions. The TSC reads per instruction inflate small opcodes.
+static const bool g_as_census = std::getenv("CC_AS_FNCENSUS") != nullptr;
+struct CcAsFnStat {
+  uint64_t ops = 0, cyc = 0, calls = 0;
+  uint32_t len = 0;
+  std::string name;
+  uint32_t opn[256] = {};
+};
+// t0: entry, child: nested script time so far, mark: end of the previous
+// instruction, opchild: nested script time inside the current instruction.
+struct CcAsCensusFrame { CcAsFnStat* st; uint64_t t0, child, mark, opchild; };
+static std::unordered_map<uint32_t, CcAsFnStat>* g_as_fnstat = nullptr;
+static CcAsCensusFrame g_as_cstack[1024];
+static int g_as_csp = 0;
+static uint32_t g_as_census_frames[2] = {0xFFFFFFFFu, 0u};  // first / last frame counted
+static uint64_t g_as_census_tsc[2] = {0u, 0u};               // TSC at the first entry / last exit
+static uint64_t g_as_opcnt[256], g_as_opcyc[256];
+// Guest C string (a name from the VM's string table), printable bytes only.
+static std::string cc_as_census_str(Machine& base, uint32_t a) {
+  std::string s;
+  for (uint32_t k = 0; k < 48u; ++k) {
+    const uint32_t c = REX_LOAD_U8(a + k);
+    if (c == 0u) break;
+    s.push_back(c >= 32u && c < 127u ? char(c) : '?');
+  }
+  return s;
+}
+static void cc_as_census_report() {
+  if (!g_as_fnstat) return;
+  std::vector<std::pair<uint32_t, CcAsFnStat*>> v;
+  uint64_t ops = 0, cyc = 0;
+  for (auto& [k, st] : *g_as_fnstat) { v.push_back({k, &st}); ops += st.ops; cyc += st.cyc; }
+  std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.second->ops > b.second->ops; });
+  const double frames = double(g_as_census_frames[1] - g_as_census_frames[0] + 1u);
+  const double wall = double(g_as_census_tsc[1] - g_as_census_tsc[0]);
+  std::fprintf(stderr, "ASFN frames=%.0f functions=%zu ops=%llu ops/frame=%.0f script_cyc/frame=%.0f wall_cyc/frame=%.0f script_share=%.1f%%\n",
+               frames, v.size(), (unsigned long long)ops, double(ops) / frames, double(cyc) / frames, wall / frames,
+               100.0 * double(cyc) / (wall > 0.0 ? wall : 1.0));
+  const double cover[4] = {0.5, 0.8, 0.9, 0.95};
+  uint64_t run = 0, bytes = 0;
+  size_t c = 0;
+  for (size_t i = 0; i < v.size() && c < 4; ++i) {
+    run += v[i].second->ops;
+    bytes += v[i].second->len;
+    while (c < 4 && double(run) >= cover[c] * double(ops)) {
+      std::fprintf(stderr, "ASFN cover%.0f%% functions=%zu code_bytes=%llu\n", cover[c] * 100.0, i + 1, (unsigned long long)bytes);
+      ++c;
+    }
+  }
+  run = 0;
+  std::fprintf(stderr, "ASFN rank ops%% cum%% cyc%% ops/frame calls/frame ops/call len code name\n");
+  for (size_t i = 0; i < v.size() && i < 40u; ++i) {
+    const CcAsFnStat& st = *v[i].second;
+    run += st.ops;
+    std::fprintf(stderr, "ASFN %2zu %5.2f %5.1f %5.2f %8.1f %7.2f %7.1f %5u %08X %s\n", i + 1, 100.0 * double(st.ops) / double(ops),
+                 100.0 * double(run) / double(ops), 100.0 * double(st.cyc) / double(cyc ? cyc : 1), double(st.ops) / frames,
+                 double(st.calls) / frames, double(st.ops) / double(st.calls ? st.calls : 1), st.len, v[i].first, st.name.c_str());
+  }
+  // Opcode mix of the top functions: the six most frequent, % of the function's instructions.
+  for (size_t i = 0; i < v.size() && i < 40u; ++i) {
+    const CcAsFnStat& st = *v[i].second;
+    uint32_t n[256];
+    __builtin_memcpy(n, st.opn, sizeof(n));
+    char line[160];
+    int k = std::snprintf(line, sizeof(line), "ASFNOP %2zu", i + 1);
+    for (int j = 0; j < 6; ++j) {
+      unsigned best = 0;
+      for (unsigned o = 1; o < 256u; ++o) if (n[o] > n[best]) best = o;
+      if (n[best] == 0u) break;
+      k += std::snprintf(line + k, sizeof(line) - size_t(k), " %02X:%.0f", best, 100.0 * double(n[best]) / double(st.ops ? st.ops : 1));
+      n[best] = 0;
+    }
+    std::fprintf(stderr, "%s\n", line);
+  }
+  // Per opcode over all functions, by exclusive cycles.
+  uint64_t ocyc = 0;
+  for (unsigned o = 0; o < 256u; ++o) ocyc += g_as_opcyc[o];
+  std::vector<unsigned> ov;
+  for (unsigned o = 0; o < 256u; ++o) if (g_as_opcnt[o] != 0u) ov.push_back(o);
+  std::sort(ov.begin(), ov.end(), [](unsigned a, unsigned b) { return g_as_opcyc[a] > g_as_opcyc[b]; });
+  std::fprintf(stderr, "ASOP op cyc%% ops%% count/frame cyc/op (op_cyc/frame=%.0f)\n", double(ocyc) / frames);
+  for (unsigned o : ov)
+    std::fprintf(stderr, "ASOP %02X %5.2f %5.2f %8.1f %7.0f\n", o, 100.0 * double(g_as_opcyc[o]) / double(ocyc ? ocyc : 1),
+                 100.0 * double(g_as_opcnt[o]) / double(ops ? ops : 1), double(g_as_opcnt[o]) / frames,
+                 double(g_as_opcyc[o]) / double(g_as_opcnt[o]));
+}
+// u16 a clip's method in vtable slot `slot` returns, when that method is
+// the leaf lhz r3,D(r3) (read without calling it); else 0xFFFFFFFF.
+static uint32_t cc_as_census_clip_u16(Machine& base, uint32_t clip, uint32_t slot) {
+  if (clip == 0u) return 0xFFFFFFFFu;
+  const CcLeaf& e = cc_leaf_info(base, REX_LOAD_U32(REX_LOAD_U32(clip) + slot));
+  return e.kind == 4u ? REX_LOAD_U16(clip + uint32_t(e.imm)) : 0xFFFFFFFFu;
+}
+// kind 0: custom function, id its name id; kind 1-3: frame script of clip id.
+static __attribute__((noinline)) void cc_as_census_enter(Machine& base, uint32_t vm, uint32_t code, uint32_t kind, uint32_t id, uint32_t len) {
+  CcAsCensusFrame& f = g_as_cstack[g_as_csp < 1023 ? g_as_csp : 1023];
+  ++g_as_csp;
+  f.st = nullptr;
+  static bool reported = false;
+  if (!g_sample_on.load(std::memory_order_relaxed)) {
+    // the frame window has closed: report now (the harness may not exit cleanly)
+    if (g_as_fnstat && !reported) { reported = true; cc_as_census_report(); }
+    return;
+  }
+  if (!g_as_fnstat) {
+    g_as_fnstat = new std::unordered_map<uint32_t, CcAsFnStat>();
+    static struct Report { ~Report() { if (!reported) cc_as_census_report(); } } report;
+  }
+  const uint32_t fr = g_frame_delay_calls;
+  if (fr < g_as_census_frames[0]) g_as_census_frames[0] = fr;
+  if (fr > g_as_census_frames[1]) g_as_census_frames[1] = fr;
+  CcAsFnStat& st = (*g_as_fnstat)[code];
+  if (st.calls == 0u) {
+    static const char* const kinds[4] = {"fn ", "enterframe ", "load ", "endframe "};
+    const uint32_t names = REX_LOAD_U32(vm + 10316u);
+    st.name = kinds[kind & 3u];
+    const uint32_t name = kind == 0u ? id : cc_as_census_clip_u16(base, id, 72u);
+    if (name != 0u && name != 0xFFFFFFFFu) {
+      st.name += cc_as_census_str(base, REX_LOAD_U32(REX_LOAD_U32(names + 28u) + name * 4u));
+    } else if (kind != 0u) {
+      const uint32_t ch = cc_as_census_clip_u16(base, id, 24u);
+      st.name += ch != 0xFFFFFFFFu ? "(unnamed clip, character " + std::to_string(ch) + ")" : std::string("(unnamed clip)");
+    }
+    st.len = len;
+  }
+  ++st.calls;
+  f.st = &st;
+  f.child = 0;
+  f.opchild = 0;
+  f.t0 = f.mark = __builtin_ia32_rdtsc();
+  if (g_as_census_tsc[0] == 0u) g_as_census_tsc[0] = f.t0;
+}
+static __attribute__((noinline)) void cc_as_census_leave() {
+  if (g_as_csp <= 0) return;
+  --g_as_csp;
+  if (g_as_csp >= 1023) return;
+  const CcAsCensusFrame& f = g_as_cstack[g_as_csp];
+  if (f.st == nullptr) return;
+  const uint64_t now = __builtin_ia32_rdtsc(), dt = now - f.t0;
+  f.st->cyc += dt - (f.child < dt ? f.child : dt);
+  g_as_census_tsc[1] = now;
+  if (g_as_csp > 0) {
+    g_as_cstack[g_as_csp - 1].child += dt;
+    g_as_cstack[g_as_csp - 1].opchild += dt;
+  }
+}
+static __attribute__((noinline)) void cc_as_census_op(uint32_t op) {
+  if (g_as_csp > 0 && g_as_csp <= 1024) {
+    CcAsCensusFrame& f = g_as_cstack[g_as_csp - 1];
+    if (f.st == nullptr) return;
+    const uint64_t now = __builtin_ia32_rdtsc(), dt = now - f.mark;
+    ++f.st->ops;
+    ++f.st->opn[op & 0xFFu];
+    ++g_as_opcnt[op & 0xFFu];
+    g_as_opcyc[op & 0xFFu] += dt - (f.opchild < dt ? f.opchild : dt);
+    f.mark = now;
+    f.opchild = 0;
+  }
+}
+// Census scope of one loop run (custom function or frame script).
+struct CcAsCensusScope {
+  bool on;
+  CcAsCensusScope(Machine& base, uint32_t vm, uint32_t code, uint32_t kind, uint32_t id, uint32_t len) : on(g_as_census) {
+    if (on) cc_as_census_enter(base, vm, code, kind, id, len);
+  }
+  ~CcAsCensusScope() { if (on) cc_as_census_leave(); }
+};
+#define CC_AS_CENSUS_SCOPE(...) CcAsCensusScope cc_as_census_scope(__VA_ARGS__)
+#else
+#define CC_AS_CENSUS_SCOPE(...) do { } while (0)
+#endif
+#ifndef CC_XBOX_DRIVER
 // Host behaviour trace (CC_AS_VALHASH=<n>): a running hash over every
 // instruction the native loops run (the opcode, the value-stack depth and
 // the value on top: its type, and its payload for undefined, bool, int,
@@ -469,6 +653,7 @@ static CC_HOT_FN inline __attribute__((always_inline)) uint32_t cc_as_step_body(
   }
 #ifndef CC_XBOX_DRIVER
   if (g_as_valhash_every) cc_as_valhash_step(base, L, op);
+  if (g_as_census) cc_as_census_op(op);
 #endif
   return r;
 }
@@ -554,6 +739,7 @@ static __attribute__((noinline)) void cc_as_stop_reset(Context& ctx, Machine& ba
 enum CcAsFrameKind { kAsEnterFrame, kAsLoad, kAsEndOfFrame };
 static CC_HOT_FN bool cc_as_frame_loop(Context& ctx, Machine& base, CcAsLoop& L, uint32_t code, uint32_t clip, uint32_t fmt,
                                        CcAsFrameKind kind, uint32_t index, uint32_t lr) {
+  CC_AS_CENSUS_SCOPE(base, L.vm, code, uint32_t(kind) + 1u, clip, 0u);
   uint32_t hn;
   const uint8_t* const hc = cc_as_code_view(code, hn);
   const uint8_t* const hd = cc_as_host(L.done, 1u);
@@ -827,6 +1013,9 @@ static CC_HOT_FN void sub_8207B150(Context& ctx, Machine& base) {
   const uint8_t* const hc = cc_as_code_view(code, hn);
   const uint8_t* const hd = cc_as_host(done, 1u);
   const uint8_t* const hl = cc_as_host(fn + 30u, 2u);
+#ifndef CC_XBOX_DRIVER
+  CcAsCensusScope census(base, L.vm, code, 0u, id & 0xFFFFu, uint32_t(int32_t(int16_t(REX_LOAD_U16(fn + 30u)))));
+#endif
   for (;;) {
     const uint32_t len = hl != nullptr ? cc_as_hld16(hl) : uint32_t(REX_LOAD_U16(fn + 30u));
     if (int32_t(pc) >= int32_t(int16_t(uint16_t(len)))) break;
