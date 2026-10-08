@@ -2,7 +2,9 @@
 
 // Game heap as the AS code fetches it: unless the flag at 0x8228A7B7 is set,
 // sub_820A71E8(0x8222F918, 0x02000000, 0, 32) sets the heaps up first; the
-// heap is the table at 0x822673C0 indexed by sub_820B5EB8.
+// heap is the table at 0x822673C0 indexed by sub_820B5EB8, which is the
+// single instruction lbz r3,268(r13) (done inline, r3 and lr as it leaves
+// them).
 static CC_HOT_FN inline uint32_t cc_as_game_heap(Context& ctx, Machine& base, uint32_t lr_init, uint32_t lr_idx) {
   if (REX_LOAD_U8(0x8228A7B7u) == 0u) {
     ctx.r3.u64 = 0x8222F918u; ctx.r4.u64 = 0x02000000u; ctx.r5.u64 = 0u; ctx.r6.u64 = 32u;
@@ -10,7 +12,7 @@ static CC_HOT_FN inline uint32_t cc_as_game_heap(Context& ctx, Machine& base, ui
     sub_820A71E8(ctx, base);
   }
   ctx.lr = lr_idx;
-  sub_820B5EB8(ctx, base);
+  ctx.r3.u64 = REX_LOAD_U8(ctx.r13.u32 + 268u);
   return REX_LOAD_U32(0x822673C0u + ctx.r3.u32 * 4u);
 }
 
@@ -104,19 +106,90 @@ static CC_HOT_FN void sub_8208C2A0(Context& ctx, Machine& base) {
   cc_as_set_member(ctx, base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
 }
 
+// SetVariable into the innermost active function act with the slab on: as
+// cc_as_set_member, the new Var and an empty map's entry array (capacity
+// 16) from the slab.
+static __attribute__((noinline)) void cc_as_set_local_slab(Context& ctx, Machine& base, uint32_t act, uint32_t id, uint32_t v) {
+  const uint32_t var = cc_asmap_find(base, act + 4u, id & 0xFFFFu);
+  if (var != 0u) {
+    ctx.r3.u64 = cc_as_var_assign(ctx, base, var, v);
+    return;
+  }
+  const uint32_t nv = cc_as_slab_alloc(12u);
+  if (nv == 0u) {
+    cc_as_set_member(ctx, base, act, id, v);
+    return;
+  }
+  REX_STORE_U32(nv + 0u, 0u);
+  REX_STORE_U32(nv + 4u, kAsUndef);
+  REX_STORE_U32(nv + 8u, 0u);
+  cc_as_var_assign(ctx, base, nv, v);
+  if (REX_LOAD_U32(act + 4u) == 0u && REX_LOAD_U32(act + 8u) == 0u && REX_LOAD_U32(act + 12u) == 0u) {
+    const uint32_t arr = cc_as_slab_alloc(16u * 8u);
+    if (arr != 0u) {
+      REX_STORE_U32(act + 8u, arr);
+      REX_STORE_U32(act + 12u, 16u);
+    }
+  }
+  ctx.r3.u64 = act + 4u; ctx.r4.u64 = id; ctx.r5.u64 = nv; ctx.lr = 0x8208C36Cu;
+  sub_820936B0(ctx, base);
+}
+// SetVariable into the innermost active function (DefineLocal, inline
+// SetVariable).
+static CC_AS_INL void cc_as_set_local(Context& ctx, Machine& base, uint32_t act, uint32_t id, uint32_t v) {
+  if (g_as_slab_on) cc_as_set_local_slab(ctx, base, act, id, v);
+  else cc_as_set_member(ctx, base, act, id, v);
+}
+
 // Clip GetMember (as_ops_clip.inc).
 static uint32_t cc_clip_get_member(Context& ctx, Machine& base, uint32_t clip, uint64_t id, uint64_t out);
 // An object's slot-12 member read with r4 (id) and r5 (out) already set, as
 // the callers' virtual call: objects whose slot 12 is the clip GetMember
 // sub_8208B438 run it directly. Returns r3.
+static __attribute__((noinline)) uint32_t cc_as_slot12_call(Context& ctx, Machine& base, uint32_t obj, uint32_t lr, CcVSite& vs) {
+  return cc_vcall_site(ctx, base, obj, 12u, lr, vs);
+}
 static CC_AS_INL uint32_t cc_as_slot12(Context& ctx, Machine& base, uint32_t obj, uint32_t lr, CcVSite& vs) {
   if (g_as_gm_direct && REX_LOAD_U32(REX_LOAD_U32(obj) + 12u) == 0x8208B438u) {
     ctx.r3.u64 = cc_clip_get_member(ctx, base, obj, ctx.r4.u64, ctx.r5.u64);
     return ctx.r3.u32;
   }
-  return cc_vcall_site(ctx, base, obj, 12u, lr, vs);
+  return cc_as_slot12_call(ctx, base, obj, lr, vs);
 }
 
+// GetVariable's built-in ids 102..108 (out of line: rare); false for 104
+// and 105, which take the general path.
+static __attribute__((noinline)) bool cc_as_get_special(Context& ctx, Machine& base, const CcAsLoop& L, uint32_t id, uint32_t out) {
+  const uint32_t s = L.s;
+  switch ((id & 0xFFFFu) - 102u) {
+    case 0u: {
+      const uint32_t r = cc_vcall(ctx, base, cc_as_top_clip(base, L), 156u, 0x8207B064u);
+      ctx.r3.u64 = out; ctx.r4.u64 = r; ctx.lr = 0x8207B070u;
+      sub_8206F918(ctx, base);
+      return true;
+    }
+    case 1u:
+      ctx.r3.u64 = out; ctx.r4.u64 = REX_LOAD_U32(REX_LOAD_U32(s + 0u) + 76u); ctx.lr = 0x8207B02Cu;
+      sub_8206F918(ctx, base);
+      return true;
+    case 4u:
+      REX_STORE_U32(out + 0u, 2u);
+      REX_STORE_U8(out + 4u, 1u);
+      return true;
+    case 5u:
+      ctx.r3.u64 = out; ctx.r4.u64 = REX_LOAD_U32(REX_LOAD_U32(REX_LOAD_U32(s + 0u) + 76u) + 280u);
+      ctx.lr = 0x8207B010u;
+      sub_8206F918(ctx, base);
+      return true;
+    case 6u:
+      ctx.r3.u64 = out; ctx.r4.u64 = REX_LOAD_U32(REX_LOAD_U32(REX_LOAD_U32(s + 0u) + 76u) + 284u);
+      ctx.lr = 0x8207AFF0u;
+      sub_8206F918(ctx, base);
+      return true;
+    default:
+      return false;
+  }
+}
 // GetVariable (exact sub_8207AF80: S r3, name id r4, out value r5; returns 1
 // when found). Ids 102..108 (jump table on id - 102): 102 the current clip's
 // slot-156 object, 103 the player ([S+0]+76), 107 / 108 the player's +280 /
@@ -127,35 +200,7 @@ static CC_AS_INL uint32_t cc_as_slot12(Context& ctx, Machine& base, uint32_t obj
 // which answers 'this' (98) and the other property ids without its virtual
 // calls); not found: out = {undefined, 0}, returns 0.
 static CC_HOT_FN uint32_t cc_as_get_variable(Context& ctx, Machine& base, const CcAsLoop& L, uint32_t id, uint32_t out) {
-  const uint32_t s = L.s;
-  switch ((id & 0xFFFFu) - 102u) {
-    case 0u: {
-      const uint32_t r = cc_vcall(ctx, base, cc_as_top_clip(base, L), 156u, 0x8207B064u);
-      ctx.r3.u64 = out; ctx.r4.u64 = r; ctx.lr = 0x8207B070u;
-      sub_8206F918(ctx, base);
-      return 1u;
-    }
-    case 1u:
-      ctx.r3.u64 = out; ctx.r4.u64 = REX_LOAD_U32(REX_LOAD_U32(s + 0u) + 76u); ctx.lr = 0x8207B02Cu;
-      sub_8206F918(ctx, base);
-      return 1u;
-    case 4u:
-      REX_STORE_U32(out + 0u, 2u);
-      REX_STORE_U8(out + 4u, 1u);
-      return 1u;
-    case 5u:
-      ctx.r3.u64 = out; ctx.r4.u64 = REX_LOAD_U32(REX_LOAD_U32(REX_LOAD_U32(s + 0u) + 76u) + 280u);
-      ctx.lr = 0x8207B010u;
-      sub_8206F918(ctx, base);
-      return 1u;
-    case 6u:
-      ctx.r3.u64 = out; ctx.r4.u64 = REX_LOAD_U32(REX_LOAD_U32(REX_LOAD_U32(s + 0u) + 76u) + 284u);
-      ctx.lr = 0x8207AFF0u;
-      sub_8206F918(ctx, base);
-      return 1u;
-    default:
-      break;
-  }
+  if ((id & 0xFFFFu) - 102u <= 6u && cc_as_get_special(ctx, base, L, id, out)) return 1u;
   {
     const uint32_t act = cc_as_act(base, L);
     if (act != 0u) {
@@ -305,7 +350,7 @@ static CC_HOT_FN uint32_t cc_as_op_3C(Context& ctx, Machine& base, const CcAsOp&
   const uint32_t id = ctx.r3.u32;
   const uint32_t act = cc_as_act(base, o);
   if (act != 0u) {
-    cc_as_set_member(ctx, base, act, id, val);
+    cc_as_set_local(ctx, base, act, id, val);
   } else {
     ctx.r4.u64 = id; ctx.r5.u64 = val;
     cc_vcall(ctx, base, cc_as_top_clip(base, o), 16u, 0x8207E028u);
@@ -334,7 +379,7 @@ static CC_HOT_FN uint32_t cc_as_op_41(Context& ctx, Machine& base, const CcAsOp&
   REX_STORE_U32(tmp + 4u, 0u);
   const uint32_t act = cc_as_act(base, o);
   if (act != 0u) {
-    if (cc_asmap_find(base, act + 4u, id & 0xFFFFu) == 0u) cc_as_set_member(ctx, base, act, id, tmp);
+    if (cc_asmap_find(base, act + 4u, id & 0xFFFFu) == 0u) cc_as_set_local(ctx, base, act, id, tmp);
   } else {
     ctx.r4.u64 = id; ctx.r5.u64 = tmp;
     cc_vcall(ctx, base, cc_as_top_clip(base, o), 16u, 0x8207ECA8u);
