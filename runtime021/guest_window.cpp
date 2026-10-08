@@ -91,12 +91,15 @@ struct Group {
 };
 
 uint32_t g_committed = 0;  // bytes committed as 4 KiB pages
+bool g_ring_shared = false;
 
 #ifdef CC_XBOX_DRIVER
 // Retail consoles have 64 MiB: keep the contiguous blocks below it so a
 // development console (128 MiB) measures the retail layout.
 constexpr ULONG_PTR kRetailTop = 0x03FFFFFFu;
 
+// Committed pages come back zero-filled (NtAllocateVirtualMemory's contract,
+// as for VirtualAlloc), so they are not cleared again.
 bool commit(uint32_t lo, uint32_t hi) {
   PVOID b = reinterpret_cast<PVOID>(kBase + lo);
   SIZE_T s = hi - lo;
@@ -106,7 +109,6 @@ bool commit(uint32_t lo, uint32_t hi) {
              unsigned(st));
     return false;
   }
-  __builtin_memset(b, 0, hi - lo);
   g_committed += hi - lo;
   return true;
 }
@@ -162,7 +164,12 @@ uint32_t pte_template(uintptr_t va, const char** why) {
 //   owns; both mappings are write-back, so the caches stay consistent;
 // - nothing in the window is ever decommitted or freed, so the kernel never
 //   walks these entries (a quick reboot re-initialises memory management;
-//   only memory marked persistent survives it).
+//   only memory marked persistent survives it);
+// - nothing hands these addresses to kernel I/O: never read a file
+//   (NtReadFile) or DMA straight into a 4 MiB-page region. The kernel would
+//   look up the buffer's 4 KiB page-table entries at 0xC0000000 + (va >>
+//   12) * 4, which under a 4 MiB page is the page's own memory (game data).
+//   File data reaches the window through copies (fread's buffer).
 // 4 MiB pages must be enabled (CR4.PSE, checked). CR3 is reloaded after the
 // writes.
 bool map_large(Group& g, uint32_t tmpl) {
@@ -478,6 +485,7 @@ bool open(const Layout& L) {
   excl.merge();
   if (!commit_pages(pages, 0, kNone, excl)) return false;
 #endif
+  g_ring_shared = ring_on;
   const unsigned total_k = unsigned((g_committed + large_bytes + ring_bytes) >> 10);
 #ifdef CC_XBOX_DRIVER
 #define CC_WIN_LOG DbgPrint
@@ -503,5 +511,6 @@ bool open(const Layout& L) {
 #endif
   return true;
 }
+bool ring_shared() { return g_ring_shared; }
 }  // namespace cc_win
 #endif

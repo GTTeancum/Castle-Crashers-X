@@ -2299,13 +2299,15 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
         if (!(rg[i].access & 2u) || !rg[i].host) continue;
         if (ctx.r1.u32 >= rg[i].guest && ctx.r1.u32 - rg[i].guest < rg[i].bytes) continue;
 #ifdef CC_FLAT_WINDOW
-        // Flat guest window: the 360 command ring (0x0200F140, 2 MiB) is no
-        // longer one 256 KiB block repeated over its 2 MiB, so its bytes
-        // differ from the aliased layout; nothing reads them (a run with
-        // CC_GFX_ALIAS=none on the page-table build changes only these
-        // hashes). The surfaces' uncommitted interiors read as zero (they
-        // were zero throughout in the aliased layout too).
-        if (rg[i].guest - 0x0200F140u < 0x200000u) continue;
+        // Flat guest window: while its whole pages share one 256 KiB block
+        // (cc_win::ring_shared), the 360 command ring (0x0200F140, 2 MiB) is
+        // not the page-table build's 256 KiB block repeated byte for byte,
+        // so its bytes differ from the aliased layout and are skipped;
+        // nothing reads them. With the sharing off (CC_RING_ALIAS=0) the
+        // ring is hashed and matches the page-table build run with
+        // CC_GFX_ALIAS=none. The surfaces' uncommitted interiors read as
+        // zero (they were zero throughout in the aliased layout too).
+        if (cc_win::ring_shared() && rg[i].guest - 0x0200F140u < 0x200000u) continue;
         const uint32_t g0 = rg[i].guest;
         bool holes = false;
         for (const cc_win::Range& hr : cc_win::kHoles) holes |= hr.lo < g0 + rg[i].bytes && g0 < hr.hi;
@@ -7217,6 +7219,16 @@ static uint32_t cc_bake_fields(const uint8_t* job) {
 static uint32_t cc_bake_stream_ptr(const uint8_t* job) {
   return uint32_t(job[20]) << 24 | uint32_t(job[21]) << 16 | uint32_t(job[22]) << 8 | job[23];
 }
+// The pack's open result goes to the debug channel on the Xbox (cc_log is
+// silent in the play build): without the pack every texture is rasterized
+// on first use, which shows as a slowdown, not as an error.
+#ifdef CC_XBOX_DRIVER
+#define CC_BAKE_NOTE DbgPrint
+#define CC_BAKE_FAIL DbgPrint
+#else
+#define CC_BAKE_NOTE cc_log
+#define CC_BAKE_FAIL cc_elog
+#endif
 static void cc_bake_load() {
   if (g_bake_loaded) return;
   g_bake_loaded = true;
@@ -7229,24 +7241,38 @@ static void cc_bake_load() {
   std::snprintf(path, sizeof(path), "%s", e);
 #endif
   std::FILE* f = std::fopen(path, "rb");
-  if (!f) return;
+  if (!f) {
+    CC_BAKE_FAIL("TEXBAKE pack %s: cannot open; textures are rasterized on first use%c", path, 10);
+    return;
+  }
   uint8_t head[8];
-  if (std::fread(head, 1, 8, f) != 8 || std::memcmp(head, "TXB1", 4)) { std::fclose(f); return; }
+  if (std::fread(head, 1, 8, f) != 8 || std::memcmp(head, "TXB1", 4)) {
+    CC_BAKE_FAIL("TEXBAKE pack %s: not a texture pack; textures are rasterized on first use%c", path, 10);
+    std::fclose(f);
+    return;
+  }
   const uint32_t count = uint32_t(head[4]) | uint32_t(head[5]) << 8 | uint32_t(head[6]) << 16 | uint32_t(head[7]) << 24;
   g_bake_index.resize(count);
   if (std::fread(g_bake_index.data(), sizeof(CcBakeEntry), count, f) != count) {
+    CC_BAKE_FAIL("TEXBAKE pack %s: index of %u entries cut short; textures are rasterized on first use%c", path,
+                 count, 10);
     g_bake_index.clear(); std::fclose(f); return;
   }
 #ifdef CC_XBOX_DRIVER
   std::fclose(f);
   g_bake_handle = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS, nullptr);
-  if (g_bake_handle == INVALID_HANDLE_VALUE) { g_bake_index.clear(); return; }
+  if (g_bake_handle == INVALID_HANDLE_VALUE) {
+    CC_BAKE_FAIL("TEXBAKE pack %s: CreateFileA failed (error %u); textures are rasterized on first use%c", path,
+                 unsigned(GetLastError()), 10);
+    g_bake_index.clear();
+    return;
+  }
 #else
   g_bake_file = f;
 #endif
   g_bake_ready = true;
-  cc_log("TEXBAKE pack %s: %u textures%c", path, count, 10);
+  CC_BAKE_NOTE("TEXBAKE pack %s: %u textures%c", path, count, 10);
 }
 // Look the job up in the pack (the shape stream must be resident, so this
 // is done when the texture is registered): the entry index, or -1.

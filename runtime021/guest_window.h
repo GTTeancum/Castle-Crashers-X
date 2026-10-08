@@ -39,6 +39,16 @@
 // for one of them. Host CC_LARGE_PAGES=<mask> lays the window out the same
 // way (whole 4 MiB chunks committed) to test that path. Mask: 1 stack/TLS/
 // heap, 2 image.
+// - The gaps the 4 KiB layout leaves unmapped inside those chunks (guest
+//   0..0x30000, 0x40000..0x60000, 0xE71000..0x1000000, the image chunk's
+//   tail) are ordinary zeroed memory there: a stray access reads zeros
+//   instead of stopping, and a game heap outgrowing its 14 MiB runs on to
+//   16 MiB. Builds can therefore differ only on paths that are broken anyway.
+// - No direct kernel I/O (NtReadFile into a window buffer, DMA, anything
+//   that locks or translates its pages) may target a region on 4 MiB pages:
+//   the kernel finds a buffer's 4 KiB page-table entries through its
+//   self-map, which for a 4 MiB page is the page's own memory (game data).
+//   Data reaches the window through copies today (fread's buffer).
 //
 // Build switch: CC_PAGE_TABLE keeps the 64 KiB page-table path of earlier
 // play builds (verification build; make PAGETABLE=1 on the Xbox).
@@ -151,6 +161,9 @@ inline bool in_window(const void* p) {
 // debug channel which memory paths are active and how much is committed. The
 // host also reports a fault inside the window with its guest address.
 bool open(const Layout& layout);
+// Whether open() shares one block between the command ring's pages (then
+// the ring's bytes differ from a layout that keeps them all).
+bool ring_shared();
 // Guest address of a window offset: the inverse of offset() for guest
 // addresses below 0x20000000 or from 0x80000000 to 0x9FFFFFFF (for a stray
 // elsewhere, the one of those it folded onto); an offset in the guard below

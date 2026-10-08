@@ -79,7 +79,9 @@ endif
 # a step fails; MEM lines on the debug channel say which path is active):
 # make LARGEPAGES=1 (stack/TLS/game heap and the game data image),
 # LARGEPAGES=heap or LARGEPAGES=image for one of them (only
-# runtime021/update_boundary_tests.cpp reads it; touch it)
+# runtime021/update_boundary_tests.cpp reads it; touch it). Unmapped gaps
+# inside those 4 MiB pages read as zeros instead of stopping a stray access
+# (runtime021/guest_window.h).
 ifeq ($(LARGEPAGES),1)
 CXXFLAGS += -DCC_LARGE_PAGES=3
 else ifeq ($(LARGEPAGES),heap)
