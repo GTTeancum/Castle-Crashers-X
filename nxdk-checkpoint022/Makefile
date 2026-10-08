@@ -94,6 +94,34 @@ endif
 ifneq ($(WALKEXACT),)
 CXXFLAGS += -DCC_WALK_EXACT_BUILD
 endif
+# Sprite leaf bisect: SPRITEUNFUSED=1 (general leaf path), SPRITERING=1
+# (native quads through the guest vertex ring and sub_820C1980, unbatched)
+ifneq ($(SPRITEUNFUSED),)
+CXXFLAGS += -DCC_SPRITE_UNFUSED_BUILD
+endif
+ifneq ($(SPRITERING),)
+CXXFLAGS += -DCC_SPRITE_RING_BUILD
+endif
+# Draw walk bisect: WALKVCALL=1 (every method through cc_vcall, no visibility
+# chains), WALKNOINHERIT=1 (the visibility query for every child),
+# WALKNOPREFETCH=1 (no next-sibling prefetch)
+ifneq ($(WALKVCALL),)
+CXXFLAGS += -DCC_WALK_VCALL_BUILD
+endif
+ifneq ($(WALKNOINHERIT),)
+CXXFLAGS += -DCC_WALK_NOINHERIT_BUILD
+endif
+ifneq ($(WALKNOPREFETCH),)
+CXXFLAGS += -DCC_WALK_NOPREFETCH_BUILD
+endif
+# Effect-quad colour as before its fix (read at +20 of 32-byte vertices): COLOUR20=1
+ifneq ($(COLOUR20),)
+CXXFLAGS += -DCC_COLOUR20_BUILD
+endif
+# Text bisect: GLYPHEXACT=1 (recompiled glyph rectangle, renderer slot 112)
+ifneq ($(GLYPHEXACT),)
+CXXFLAGS += -DCC_GLYPH_EXACT_BUILD
+endif
 ifneq ($(NOFMAFAST),)
 CXXFLAGS += -DCC_NO_FMA_FAST
 endif

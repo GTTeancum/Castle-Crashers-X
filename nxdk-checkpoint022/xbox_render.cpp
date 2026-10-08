@@ -286,6 +286,66 @@ const Texture* converted(uint32_t key, const uint8_t* src, uint32_t w, uint32_t 
   return &g_converted.back();
 }
 
+// Texture and blend state (only what changed since the last draw), then one
+// draw of `count` vertices from g_vb[first] with primitive `op`.
+void emit_draw(uint32_t op, uint32_t first, uint32_t count, uint32_t blend) {
+  auto* p = xr_begin();
+  const void* tex = g_have_tex ? g_cur.gpu : static_cast<const void*>(g_white);
+  const uint32_t fmt = g_have_tex ? g_cur.format : 0u;
+  const uint32_t rect = g_have_tex ? ((g_cur.w << 16) | g_cur.h) ^ (g_cur.pitch << 3) : 0u;
+  if (!g_ps.valid || g_ps.tex != tex || g_ps.format != fmt || g_ps.rect != rect) {
+    if (g_have_tex) {
+      p = pb_push1(p, NV097_SET_TEXTURE_OFFSET, physical(g_cur.gpu));
+      p = pb_push1(p, NV097_SET_TEXTURE_FORMAT, g_cur.format);
+      if (!g_cur.normalized) {
+        p = pb_push1(p, NV097_SET_TEXTURE_CONTROL1, g_cur.pitch << 16);
+        p = pb_push1(p, NV097_SET_TEXTURE_IMAGE_RECT, (g_cur.w << 16) | g_cur.h);
+      }
+      p = pb_push1(p, NV097_SET_TEXTURE_ADDRESS, 0x00050505);  // clamp U/V/P
+      p = pb_push1(p, NV097_SET_TEXTURE_CONTROL0, 0x40000000);  // enabled, LOD 0
+      p = pb_push1(p, NV097_SET_TEXTURE_FILTER, 0x02022000);    // linear min/mag
+    } else {
+      p = push_white(p);
+    }
+    g_ps.tex = tex; g_ps.format = fmt; g_ps.rect = rect;
+  }
+  const uint32_t sf = blend_factor(blend & 0x1F), df = blend_factor((blend >> 8) & 0x1F);
+  if (!g_ps.valid || g_ps.sf != sf || g_ps.df != df) {
+    p = pb_push1(p, NV097_SET_BLEND_FUNC_SFACTOR, sf);
+    p = pb_push1(p, NV097_SET_BLEND_FUNC_DFACTOR, df);
+    g_ps.sf = sf; g_ps.df = df;
+  }
+  g_ps.valid = true;
+  p = pb_push1(p, NV097_SET_BEGIN_END, op);
+  for (uint32_t k = 0; k < count; k += 256) {
+    const uint32_t n = count - k < 256 ? count - k : 256;
+    p = pb_push1(p, 0x40000000 | NV097_DRAW_ARRAYS, ((n - 1) << 24) | (first + k));
+  }
+  p = pb_push1(p, NV097_SET_BEGIN_END, NV097_SET_BEGIN_END_OP_END);
+  xr_end(p);
+  ++g_draws;
+}
+// GPU vertex from a game vertex {x, y, z, u, v, argb} (z unused), uv scaled
+// by the texture size for unnormalized textures.
+inline void put_vertex(GpuVertex& o, float x, float y, float u, float v, uint32_t argb, float su, float sv) {
+  constexpr float k = 1.0f / 255.0f;
+  o.pos[0] = x; o.pos[1] = y; o.pos[2] = 0.0f; o.pos[3] = 1.0f;
+  o.col[0] = float((argb >> 16) & 255) * k; o.col[1] = float((argb >> 8) & 255) * k;
+  o.col[2] = float(argb & 255) * k; o.col[3] = float(argb >> 24) * k;
+  o.uv[0] = u * su; o.uv[1] = v * sv;
+}
+// Quads from the native sprite path (cc_xr_quad) collect in one open batch
+// of consecutive vertices while texture and blend factors stay the same.
+// The batch is drawn as one quad-list draw before any other draw, texture
+// change, overlay or GPU wait and at the frame end: the same vertices and
+// states, in the same order, as one draw per quad.
+uint32_t g_batch_first = 0, g_batch_n = 0, g_batch_blend = 0;
+void flush_batch() {
+  if (!g_batch_n) return;
+  const uint32_t n = g_batch_n;
+  g_batch_n = 0;
+  emit_draw(NV097_SET_BEGIN_END_OP_QUADS, g_batch_first, n, g_batch_blend);
+}
 // Overlay rectangles are queued as untextured quads and drawn in one batch
 // (pbkit clears are very slow under XEMU).
 struct OverlayRect { float x, y, w, h; DWORD color; };
@@ -295,6 +355,7 @@ void pb_fill_quad(int x, int y, int w, int h, DWORD color) {
   if (g_rect_count < 2048) g_rects[g_rect_count++] = OverlayRect{float(x), float(y), float(w), float(h), color};
 }
 void flush_overlay() {
+  flush_batch();
   if (!g_rect_count || g_vb_used + g_rect_count * 4 > kMaxVertices) { g_rect_count = 0; return; }
   GpuVertex* out = g_vb + g_vb_used;
   for (unsigned i = 0; i < g_rect_count; ++i) {
@@ -407,6 +468,7 @@ void cc_xr_bind(uint32_t key, const void* data, uint32_t w, uint32_t h, int kind
   if (g_have_tex && key == last.key && data == last.data && w == last.w && h == last.h && kind == last.kind &&
       last.frame == g_frames)
     return;
+  flush_batch();  // the open batch draws with the texture it was built for
   g_have_tex = false;
   if (!data || !w || !h || w > 4096 || h > 4096) return;
   if (kind == 100) {
@@ -425,7 +487,10 @@ void cc_xr_bind(uint32_t key, const void* data, uint32_t w, uint32_t h, int kind
 }
 
 // One draw of the game's: prim 13 quad list, 4 triangle list, 5 strip;
-// vertices are big-endian {x, y, z, u, v, argb} with the given stride.
+// vertices are big-endian {x, y, z, u, v, argb} (stride 24) or, for the
+// quad emitter's effect modes (stride 32), {x, y, z, u, v, u2, v2, argb}
+// whose second coordinate pair feeds the 360 effect shaders (not drawn
+// here).
 void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t stride, uint32_t blend) {
   if (!init() || !vertices || stride < 24 || !count) return;
   struct Tally { uint64_t t0; ~Tally() { g_draw_cycles += cycles() - t0; } } tally{cycles()};
@@ -434,57 +499,42 @@ void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t st
   else if (prim == 4) op = NV097_SET_BEGIN_END_OP_TRIANGLES;
   else if (prim == 5) op = NV097_SET_BEGIN_END_OP_TRIANGLE_STRIP;
   else return;
+  flush_batch();
   if (!g_in_frame) begin_frame();
   if (g_vb_used + count > kMaxVertices) return;
   const uint8_t* v = static_cast<const uint8_t*>(vertices);
   const float su = g_have_tex && !g_cur.normalized ? float(g_cur.w) : 1.0f;
   const float sv = g_have_tex && !g_cur.normalized ? float(g_cur.h) : 1.0f;
   GpuVertex* out = g_vb + g_vb_used;
-  for (uint32_t i = 0; i < count; ++i, v += stride) {
-    GpuVertex& o = out[i];
-    o.pos[0] = bef(v); o.pos[1] = bef(v + 4); o.pos[2] = 0.0f; o.pos[3] = 1.0f;
-    const uint32_t argb = be32(v + 20);
-    constexpr float k = 1.0f / 255.0f;
-    o.col[0] = float((argb >> 16) & 255) * k; o.col[1] = float((argb >> 8) & 255) * k;
-    o.col[2] = float(argb & 255) * k; o.col[3] = float(argb >> 24) * k;
-    o.uv[0] = bef(v + 12) * su; o.uv[1] = bef(v + 16) * sv;
-  }
-  auto* p = xr_begin();
-  const void* tex = g_have_tex ? g_cur.gpu : static_cast<const void*>(g_white);
-  const uint32_t fmt = g_have_tex ? g_cur.format : 0u;
-  const uint32_t rect = g_have_tex ? ((g_cur.w << 16) | g_cur.h) ^ (g_cur.pitch << 3) : 0u;
-  if (!g_ps.valid || g_ps.tex != tex || g_ps.format != fmt || g_ps.rect != rect) {
-    if (g_have_tex) {
-      p = pb_push1(p, NV097_SET_TEXTURE_OFFSET, physical(g_cur.gpu));
-      p = pb_push1(p, NV097_SET_TEXTURE_FORMAT, g_cur.format);
-      if (!g_cur.normalized) {
-        p = pb_push1(p, NV097_SET_TEXTURE_CONTROL1, g_cur.pitch << 16);
-        p = pb_push1(p, NV097_SET_TEXTURE_IMAGE_RECT, (g_cur.w << 16) | g_cur.h);
-      }
-      p = pb_push1(p, NV097_SET_TEXTURE_ADDRESS, 0x00050505);  // clamp U/V/P
-      p = pb_push1(p, NV097_SET_TEXTURE_CONTROL0, 0x40000000);  // enabled, LOD 0
-      p = pb_push1(p, NV097_SET_TEXTURE_FILTER, 0x02022000);    // linear min/mag
-    } else {
-      p = push_white(p);
-    }
-    g_ps.tex = tex; g_ps.format = fmt; g_ps.rect = rect;
-  }
-  const uint32_t sf = blend_factor(blend & 0x1F), df = blend_factor((blend >> 8) & 0x1F);
-  if (!g_ps.valid || g_ps.sf != sf || g_ps.df != df) {
-    p = pb_push1(p, NV097_SET_BLEND_FUNC_SFACTOR, sf);
-    p = pb_push1(p, NV097_SET_BLEND_FUNC_DFACTOR, df);
-    g_ps.sf = sf; g_ps.df = df;
-  }
-  g_ps.valid = true;
-  p = pb_push1(p, NV097_SET_BEGIN_END, op);
-  for (uint32_t first = 0; first < count; first += 256) {
-    const uint32_t n = count - first < 256 ? count - first : 256;
-    p = pb_push1(p, 0x40000000 | NV097_DRAW_ARRAYS, ((n - 1) << 24) | (g_vb_used + first));
-  }
-  p = pb_push1(p, NV097_SET_BEGIN_END, NV097_SET_BEGIN_END_OP_END);
-  xr_end(p);
+#ifdef CC_COLOUR20_BUILD
+  const uint32_t at = 20u;  // bisect build: colour read at +20 for every stride (before the fix)
+#else
+  const uint32_t at = stride >= 32u ? 28u : 20u;  // colour
+#endif
+  for (uint32_t i = 0; i < count; ++i, v += stride)
+    put_vertex(out[i], bef(v), bef(v + 4), bef(v + 12), bef(v + 16), be32(v + at), su, sv);
+  emit_draw(op, g_vb_used, count, blend);
   g_vb_used += count;
-  ++g_draws;
+}
+
+// One quad from the native sprite path: four game vertices {x, y, z, u, v,
+// argb} as host-order words (the float bit patterns the game would have
+// written to its vertex ring), drawn like cc_xr_draw(13, 4, ...) with the
+// same blend word, through the open batch.
+void cc_xr_quad(const uint32_t* v, uint32_t blend) {
+  if (!init()) return;
+  struct Tally { uint64_t t0; ~Tally() { g_draw_cycles += cycles() - t0; } } tally{cycles()};
+  if (g_batch_n && ((blend ^ g_batch_blend) & 0x1F1Fu)) flush_batch();
+  if (!g_in_frame) begin_frame();
+  if (g_vb_used + 4 > kMaxVertices) return;
+  if (!g_batch_n) { g_batch_first = g_vb_used; g_batch_blend = blend; }
+  const float su = g_have_tex && !g_cur.normalized ? float(g_cur.w) : 1.0f;
+  const float sv = g_have_tex && !g_cur.normalized ? float(g_cur.h) : 1.0f;
+  auto f = [](uint32_t b) { float x; std::memcpy(&x, &b, 4); return x; };
+  GpuVertex* out = g_vb + g_vb_used;
+  for (uint32_t i = 0; i < 4; ++i, v += 6) put_vertex(out[i], f(v[0]), f(v[1]), f(v[3]), f(v[4]), v[5], su, sv);
+  g_vb_used += 4;
+  g_batch_n += 4;
 }
 
 // Wait for the GPU to finish everything queued so far (called before a
@@ -492,6 +542,7 @@ void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t st
 // block reused).
 void cc_xr_gpu_idle() {
   if (!g_in_frame) return;
+  flush_batch();
   xr_flush(); while (pb_busy()) {}
 }
 

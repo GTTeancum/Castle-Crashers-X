@@ -20,6 +20,7 @@ void cc_xbox_audio_stats(unsigned* started, unsigned* submitted, unsigned* callb
 // nxdk-checkpoint022/xbox_render.cpp: NV2A renderer for the game's draw calls.
 void cc_xr_bind(uint32_t key, const void* data, uint32_t w, uint32_t h, int kind);
 void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t stride, uint32_t blend);
+void cc_xr_quad(const uint32_t* v, uint32_t blend);
 void cc_xr_frame_end(uint32_t update_us, uint32_t render_us);
 void cc_xr_bench(unsigned window, unsigned frames, unsigned frame_us, unsigned update_us, unsigned render_us);
 void cc_xr_gpu_idle();

@@ -6411,6 +6411,21 @@ static bool cc_quad_native(Context& ctx, Machine& base) {
     }
   }
   const uint32_t z = REX_LOAD_U32(0x8201473Cu);
+#if defined(CC_XBOX_DRIVER) && !defined(CC_SPRITE_RING_BUILD)
+  // Xbox: the quad goes to the renderer's quad batch instead of the guest
+  // vertex ring and sub_820C1980, whose hand-off is the ring's only reader
+  // there (see cc_sprite_fused in as_render.inc; make SPRITERING=1 keeps
+  // the ring).
+  {
+    uint32_t q[24];
+    for (uint32_t i = 0; i < 4; ++i) {
+      q[i * 6 + 0] = xy[i][0]; q[i * 6 + 1] = xy[i][1]; q[i * 6 + 2] = z;
+      q[i * 6 + 3] = REX_LOAD_U32(uvs[i] + 0u); q[i * 6 + 4] = REX_LOAD_U32(uvs[i] + 4u); q[i * 6 + 5] = colour;
+    }
+    REX_STORE_U32(0x82290000u - 22588u, ring + 4u);
+    ::cc_xr_quad(q, REX_LOAD_U32(REX_LOAD_U32(renderer + 4u) + 10552u));  // device blend word
+  }
+#else
   const uint32_t verts = 0x822673D8u + ring * 24u;
   for (uint32_t i = 0; i < 4; ++i) {
     const uint32_t v = verts + i * 24u;
@@ -6428,6 +6443,7 @@ static bool cc_quad_native(Context& ctx, Machine& base) {
   ctx.lr = 0x820A9AD0u;
   sub_820C1980(ctx, base);
   ctx.lr = lr;
+#endif
   return true;
 }
 #endif
