@@ -627,6 +627,19 @@ static inline __attribute__((always_inline)) void cc_prefetch(uint32_t a) {
   uint8_t* b = g_page_host[a >> 16];
   if (__builtin_expect(uintptr_t(b) > 1u, 1)) __builtin_prefetch(b + (a & 0xFFFFu));
 }
+// Host bytes of guest address a up to the end of its 64 KiB page (avail),
+// or nullptr when the page has no direct host mapping; for reading runs of
+// guest bytes (strings) without a translation per byte.
+static inline __attribute__((always_inline)) const uint8_t* cc_host_span(uint32_t a, uint32_t& avail) {
+  avail = 0x10000u - (a & 0xFFFFu);
+#ifdef CC_FLAT_WINDOW
+  return ::cc_win::ptr(a);
+#else
+  uint8_t* b = g_page_host[a >> 16];
+  if (uintptr_t(b) <= 1u) { avail = 0u; return nullptr; }
+  return b + (a & 0xFFFFu);
+#endif
+}
 // The lines of display node n that one walker visit reads: the vtable, the
 // sibling link and frame fields +82..+88, parent +96 and children +104,
 // flags and frame counters +140..+148 and the movie +156 (one translation;

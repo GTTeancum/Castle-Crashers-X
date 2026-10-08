@@ -9560,7 +9560,83 @@ static void __imp__XexGetProcedureAddress(Context& ctx, Machine& base) {
 #include "generated/sub_820A08C0.inc"
 #include "generated/sub_820A3F38.inc"
 #include "generated/sub_820A36D8.inc"
+#ifdef CC_FAST
+#define sub_8209D948 sub_8209D948_exact
+#endif
 #include "generated/sub_8209D948.inc"
+#ifdef CC_FAST
+#undef sub_8209D948
+// String table lookup (exact sub_8209D948: table r3, string r4; returns the
+// string's id, inserting it through sub_8209DAB0 when absent; a null or
+// empty string is id 0). Hash: the sum of (119 + i) * byte i, 32-bit. The
+// u16 slot array [table+36] has [table+32] entries (a power of two); probing
+// is linear from hash & (size - 1) until an empty slot, a slot's id
+// indexing the string pointers at [table+28]. The first probed slot is
+// stored at +44 and the slot after the last probed one at +40; a miss
+// passes the first slot to the insert. The string bytes are read through
+// host pointers where the page allows. The original's frame words (return
+// address, saved r31, back chain) are written as it writes them.
+// Switches: CC_INTERN_EXACT=1 (host) / CC_INTERN_EXACT_BUILD (Xbox) run the
+// original; CC_ORACLE=1 or CC_INTERN_ORACLE=1 run it instead and compare
+// the id (the new id on a miss) and +40/+44 with the native's.
+static CC_HOT_FN void sub_8209D948(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  static const bool exact = std::getenv("CC_INTERN_EXACT") != nullptr;
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr || std::getenv("CC_INTERN_ORACLE") != nullptr;
+#elif defined(CC_INTERN_EXACT_BUILD)
+  constexpr bool exact = true;
+#else
+  constexpr bool exact = false;
+#endif
+  if (exact) { sub_8209D948_exact(ctx, base); return; }
+  const uint32_t t = ctx.r3.u32, str = ctx.r4.u32, r1 = ctx.r1.u32;
+  REX_STORE_U32(r1 - 8u, uint32_t(ctx.lr));
+  REX_STORE_U64(r1 - 16u, ctx.r31.u64);
+  REX_STORE_U32(r1 - 96u, r1);
+  if (str == 0u || REX_LOAD_U8(str) == 0u) { ctx.r3.u64 = 0u; return; }
+  uint32_t avail = 0u;
+  const uint8_t* hp = cc_host_span(str, avail);
+  auto ch = [&](uint32_t i) -> uint32_t { return i < avail ? hp[i] : REX_LOAD_U8(str + i); };
+  uint32_t h = 0u, len = 0u;
+  for (uint32_t c = ch(0u); c != 0u; c = ch(++len)) h += (119u + len) * c;
+  const uint32_t mask = REX_LOAD_U32(t + 32u) - 1u, slots = REX_LOAD_U32(t + 36u);
+  const uint32_t first = h & mask;
+  uint32_t pos = first;
+  uint32_t id = REX_LOAD_U16(slots + pos * 2u);
+  pos = (pos + 1u) & mask;
+  while (id != 0u) {
+    // strcmp(str, string of id): equal when they agree up to str's zero byte
+    const uint32_t s2 = REX_LOAD_U32(REX_LOAD_U32(t + 28u) + id * 4u);
+    uint32_t avail2 = 0u;
+    const uint8_t* hq = cc_host_span(s2, avail2);
+    uint32_t i = 0u;
+    for (; i <= len; ++i) {
+      const uint32_t q = i < avail2 ? hq[i] : REX_LOAD_U8(s2 + i);
+      if (q != (i < len ? ch(i) : 0u)) break;
+    }
+    if (i > len) break;
+    id = REX_LOAD_U16(slots + pos * 2u);
+    pos = (pos + 1u) & mask;
+  }
+#ifndef CC_XBOX_DRIVER
+  if (oracle) {
+    const uint32_t count = REX_LOAD_U32(t + 20u);
+    sub_8209D948_exact(ctx, base);
+    const uint32_t want = id != 0u ? id : (count & 0xFFFFu);
+    if (ctx.r3.u32 != want) cc_oracle_mismatch(id != 0u ? "sub_8209D948 id" : "sub_8209D948 insert", 0, ctx.r3.u32, want);
+    if (REX_LOAD_U32(t + 40u) != pos) cc_oracle_mismatch("sub_8209D948 +40", 0, REX_LOAD_U32(t + 40u), pos);
+    if (REX_LOAD_U32(t + 44u) != first) cc_oracle_mismatch("sub_8209D948 +44", 0, REX_LOAD_U32(t + 44u), first);
+    return;
+  }
+#endif
+  REX_STORE_U32(t + 44u, first);
+  REX_STORE_U32(t + 40u, pos);
+  if (id != 0u) { ctx.r3.u64 = id; return; }
+  CcFrame frame(ctx, base, 96u);
+  ctx.r3.u64 = t; ctx.r4.u64 = first; ctx.r5.u64 = str; ctx.lr = 0x8209DA80u;
+  sub_8209DAB0(ctx, base);
+}
+#endif
 #include "generated/sub_82097298.inc"
 #include "generated/sub_82077310.inc"
 #include "generated/sub_820778D0.inc"
