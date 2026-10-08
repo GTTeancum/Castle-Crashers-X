@@ -472,26 +472,35 @@ static void store(AddressSpace& m,uint32_t a,unsigned n,uint64_t v) {
 
 
 #if defined(CC_FLAT_WINDOW) && defined(CC_XBOX_DRIVER)
-// A guest access outside the committed flat window faults (ring 0, no
-// handler: a kernel stop). Report it like the page-table build's memory
-// stop instead: failure bar with code 3 and the guest address.
+// A guest access to an uncommitted page of the flat window faults (ring 0,
+// no handler: a kernel stop). Every guest address lands in the window's
+// 1 GiB (0x40000000..0x7FFFFFFF) or the guard just below it
+// (guest_window.h), so report any fault there like the page-table build's
+// memory stop instead: failure bar with code 3 and the guest address (as
+// folded into the window for a stray).
 static int cc_window_fault(EXCEPTION_POINTERS* ep) {
   const EXCEPTION_RECORD* r = ep->ExceptionRecord;
   if (r->ExceptionCode != 0xC0000005u || r->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
   const uintptr_t off = r->ExceptionInformation[1] - cc_win::kBase;
-  if (off >= cc_win::kSpan) return EXCEPTION_CONTINUE_SEARCH;
+  if (!cc_win::fault_in_window(off)) return EXCEPTION_CONTINUE_SEARCH;
   cc_elog("FAIL flat window: guest %08x not mapped\n", unsigned(cc_win::guest_of(off)));
   cc_xr_show_fail(3u, cc_win::guest_of(off));
   cc_fail_exit();
 }
-static Result cc_invoke_guarded(uint32_t entry, Context& c, AddressSpace& m, uint32_t budget) {
+#endif
+// The play session's guest calls (startup steps and the game loop): on the
+// Xbox flat window under the stray-access guard above.
+static Result cc_play_invoke(uint32_t entry, Context& c, AddressSpace& m, uint32_t budget) {
+#if defined(CC_FLAT_WINDOW) && defined(CC_XBOX_DRIVER)
   __try {
     return invoke(entry, c, m, sink(), budget);
   } __except (cc_window_fault(GetExceptionInformation())) {
     return Result{};
   }
-}
+#else
+  return invoke(entry, c, m, sink(), budget);
 #endif
+}
 static void renderer_caller_prefix_controls(const char* image_path) {
   std::FILE* stream=std::fopen(image_path,"rb");
   CHECK(stream!=nullptr);
@@ -812,7 +821,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
     hc.r1.u32=0x3f000;
     hc.r13.u32=0x68000;
     hc.lr=0x0c0160c0;
-    auto hr=invoke(0x820b7880,hc,m,sink(),200000);
+    auto hr=cc_play_invoke(0x820b7880,hc,m,200000);
     uint64_t hv=0;
     const bool hok=m.load_be(0x82290B3Cu,4,hv)==cc::xbox::MemoryError::ok;
     cc_log("crt_heap_init result=%s@%08x funcs=%u memops=%u r3=%08x handle=%08x\n",
@@ -834,7 +843,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
     tc.r1.u32=0x3f000;
     tc.r13.u32=0x68000;
     tc.lr=0x0c0160c0;
-    auto tr=invoke(0x8212a630,tc,m,sink(),400000);
+    auto tr=cc_play_invoke(0x8212a630,tc,m,400000);
     uint64_t tls_index=0xffffffffu, ptd=0;
     const bool iok=m.load_be(0x82157A08u,4,tls_index)==cc::xbox::MemoryError::ok;
     const bool pok=m.load_be(0x82157A04u,4,ptd)==cc::xbox::MemoryError::ok;
@@ -860,7 +869,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
     pc.r1.u32=0x3f000;
     pc.r13.u32=0x68000;
     pc.lr=0x0c0160c0;
-    auto pr=invoke(0x820b7730,pc,m,sink(),400000);
+    auto pr=cc_play_invoke(0x820b7730,pc,m,400000);
     uint64_t tb=0;
     const bool tok=m.load_be(0x82290CACu,4,tb)==cc::xbox::MemoryError::ok;
     cc_log("crt_preinit result=%s@%08x r3=%08x onexit_table=%08x\n",
@@ -874,7 +883,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
     cc.r13.u32=0x68000;
     cc.lr=0x0c0160c0;
     cc.r3.u64=1u;
-    auto cr=invoke(0x820b7650,cc,m,sink(),4000000);
+    auto cr=cc_play_invoke(0x820b7650,cc,m,4000000);
     cc_log("crt_cinit result=%s@%08x funcs=%u memops=%u r3=%08x\n",
                 name(cr.error),cr.address,cr.functions,cr.memory_ops,cc.r3.u32);
     CHECK(cr.error==Error::ok);
@@ -885,7 +894,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   c.r1.u32=0x3f000;
   c.r13.u32=0x68000;
   c.lr=0x0c0160c0;
-  auto r=invoke(0x82070ac8,c,m,sink(),12000000);
+  auto r=cc_play_invoke(0x82070ac8,c,m,12000000);
   cc_log("renderer_prefix result=%s@%08x funcs=%u dispatch=%u memops=%u r1=%08x r3=%08x lr=%08x\n",
               name(r.error),r.address,r.functions,r.dispatches,r.memory_ops,
               c.r1.u32,c.r3.u32,uint32_t(c.lr));
@@ -912,7 +921,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // Continue at the exact PlatformRenderer::Init entry using the state and stack
   // prepared by the original caller. This prefix consumes XGetVideoMode and
   // stops immediately before the first graphics-device helper.
-  auto pr=invoke(0x820a7990,c,m,sink(),20000);
+  auto pr=cc_play_invoke(0x820a7990,c,m,20000);
   cc_log("platform_init_prefix result=%s@%08x funcs=%u memops=%u r1=%08x r3=%08x r4=%08x r7=%08x r8=%08x\n",
               name(pr.error),pr.address,pr.functions,pr.memory_ops,c.r1.u32,c.r3.u32,c.r4.u32,c.r7.u32,c.r8.u32);
   CHECK(pr.error==Error::ok);
@@ -933,7 +942,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // fanout and command-buffer flush path, closes the EDRAM/HSIO finalization,
   // and returns through sub_820CC100/sub_820BEFD0. The lower graphics object is
   // published to renderer+4 only by that original successful return path.
-  auto gr=invoke(0x820befd0,c,m,sink(),1000000);
+  auto gr=cc_play_invoke(0x820befd0,c,m,1000000);
   cc_log("graphics_init_prefix result=%s@%08x funcs=%u memops=%u r1=%08x r3=%08x r4=%u\n",
               name(gr.error),gr.address,gr.functions,gr.memory_ops,c.r1.u32,c.r3.u32,c.r4.u32);
   CHECK(gr.error==Error::ok);
@@ -952,7 +961,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // diagnostic slice stops at its fail-closed return before the original
   // caller continuation at lr=0x820A7BC8 (first unrecovered call: 0x820AA5B8).
   c.r3.u32=0u; c.lr=0x820A7B18u;
-  auto ps=invoke(0x820a7b34,c,m,sink(),400000);
+  auto ps=cc_play_invoke(0x820a7b34,c,m,400000);
   cc_log("platform_post_graphics result=%s@%08x funcs=%u memops=%u r1=%08x lr=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r8=%08x r9=%08x r10=%08x ctr=%08x\n",
               name(ps.error),ps.address,ps.functions,ps.memory_ops,c.r1.u32,uint32_t(c.lr),c.r3.u32,c.r4.u32,c.r5.u32,c.r6.u32,c.r7.u32,c.r8.u32,c.r9.u32,c.r10.u32,c.ctr.u32);
   CHECK(ps.error==Error::ok);
@@ -1374,11 +1383,7 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   cc::tree::set_exact_texture_bind(true);
   // Unlimited op budget (0xFFFFFFFF): the 10,000-frame limit ends the run;
   // op/function counters wrap deterministically at 32 bits.
-#if defined(CC_FLAT_WINDOW) && defined(CC_XBOX_DRIVER)
-  auto pi=cc_invoke_guarded(0x82070ba4,c,m,0xFFFFFFFFu);
-#else
-  auto pi=invoke(0x82070ba4,c,m,sink(),0xFFFFFFFFu);
-#endif
+  auto pi=cc_play_invoke(0x82070ba4,c,m,0xFFFFFFFFu);
   cc_log("caller_post_init result=%s@%08x funcs=%u memops=%u r1=%08x lr=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r11=%08x\n",
               name(pi.error),pi.address,pi.functions,pi.memory_ops,c.r1.u32,uint32_t(c.lr),
               c.r3.u32,c.r4.u32,c.r5.u32,c.r6.u32,c.r7.u32,c.r11.u32);

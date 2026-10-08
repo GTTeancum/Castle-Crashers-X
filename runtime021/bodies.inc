@@ -4931,7 +4931,21 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_82134EA0.inc"
 #include "generated/sub_82134F20.inc"
 #include "generated/sub_82134F50.inc"
+#if defined(CC_FLAT_WINDOW) && !defined(CC_WINDOW_NOMASK)
+// Context restore: besides the stack's back chain (bridge.cpp REX_LOAD_U32)
+// the one place r1 is loaded from memory. Flat window stack accesses skip
+// the offset mask, so r1 is kept below 0x20000000 here too (a valid stack
+// pointer is unchanged).
+#define sub_82134FAC sub_82134FAC_exact
 #include "generated/sub_82134FAC.inc"
+#undef sub_82134FAC
+static void sub_82134FAC(Context& ctx, Machine& base) {
+  sub_82134FAC_exact(ctx, base);
+  ctx.r1.u32 &= ::cc_win::kLowMask;
+}
+#else
+#include "generated/sub_82134FAC.inc"
+#endif
 #include "generated/sub_82135070.inc"
 #include "generated/sub_82135090.inc"
 #include "generated/sub_82135134.inc"

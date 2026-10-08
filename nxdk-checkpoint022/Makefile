@@ -57,6 +57,17 @@ endif
 ifneq ($(PAGETABLE),)
 CXXFLAGS += -DCC_PAGE_TABLE
 endif
+# Flat window offset mask (keeps stray guest addresses out of kernel memory;
+# runtime021/guest_window.h), for timing it: make NOWINDOWMASK=1 (no mask; a
+# stray guest address can then reach kernel memory) or WINDOWMASK=stores
+# (loads skip it; stray writes stay out of kernel memory). Touch
+# runtime021/bridge.cpp, guest_window.cpp and update_boundary_tests.cpp.
+ifneq ($(NOWINDOWMASK),)
+CXXFLAGS += -DCC_WINDOW_NOMASK
+endif
+ifeq ($(WINDOWMASK),stores)
+CXXFLAGS += -DCC_WINDOW_MASK_STORES
+endif
 # Flat window: commit the 360 command ring in full instead of sharing one
 # 256 KiB block between its pages (runtime021/guest_window.h): make NORINGALIAS=1
 # (only runtime021/update_boundary_tests.cpp reads it; touch it)

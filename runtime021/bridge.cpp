@@ -1010,7 +1010,7 @@ struct Machine {
 #endif
 #ifdef CC_FLAT_WINDOW
     // Play build: every mapped guest region sits in the flat window.
-    return get_be(cc_win::ptr(a), n);
+    return get_be(cc_win::load_ptr(a), n);
 #else
 #ifdef CC_PAGE_TABLE_FAST
     {
@@ -1928,14 +1928,30 @@ struct CcView {
 #else
 #define REX_FUNC_PROLOGUE() base.prologue(__func__,ctx)
 #endif
-// Addresses written as "ctx.r1.u32 ..." (stack accesses) are recognised from
-// the argument's spelling at compile time and use the stack hot entry.
-#define CC_R1_ADDR(a) (sizeof(#a) > 7 && (#a)[4] == 'r' && (#a)[5] == '1' && (#a)[6] == '.')
+// Addresses written as "ctx.r1.u32 + <constant>" (stack accesses) are
+// recognised from the argument's spelling at compile time and use the stack
+// hot entry (r1 plus a register index takes the general path).
+#define CC_R1_ADDR(a) (sizeof(#a) > 14 && (#a)[4] == 'r' && (#a)[5] == '1' && (#a)[6] == '.' && \
+                       ((#a)[13] == '-' || ((#a)[13] >= '0' && (#a)[13] <= '9')))
 #define CC_GLOAD(a, n) (CC_R1_ADDR(a) ? base.load_stack(uint32_t(a), n) : base.load(uint32_t(a), n))
 #define CC_GSTORE(a, n, v) (CC_R1_ADDR(a) ? base.store_stack(uint32_t(a), n, v) : base.store(uint32_t(a), n, v))
 #define REX_LOAD_U8(a) uint8_t(CC_GLOAD(a, 1))
 #define REX_LOAD_U16(a) uint16_t(CC_GLOAD(a, 2))
+#if defined(CC_FLAT_WINDOW) && !defined(CC_WINDOW_NOMASK)
+// Flat window: stack accesses skip the window's offset mask (guest_window.h),
+// so r1 must stay low. Compiled code only moves r1 by constants, except where
+// it reloads it from the stack's back chain ("ctx.r1.u32 + 0", masked here;
+// a valid back chain is below 0x20000000, so the value is unchanged) and in
+// the context restore sub_82134FAC (masked in its wrapper, bodies.inc).
+#define CC_R1_CHAIN(a) (sizeof(#a) == sizeof("ctx.r1.u32 + 0") && CC_R1_ADDR(a) && (#a)[13] == '0')
+#define REX_LOAD_U32(a) uint32_t(CC_R1_CHAIN(a) ? CC_GLOAD(a, 4) & ::cc_win::kLowMask : CC_GLOAD(a, 4))
+static_assert(CC_R1_CHAIN(ctx.r1.u32 + 0) && !CC_R1_CHAIN(ctx.r1.u32 + 8) && !CC_R1_CHAIN(ctx.r1.u32 + 0x0) &&
+                  !CC_R1_CHAIN(ctx.r11.u32 + 0) && CC_R1_ADDR(ctx.r1.u32 + -8) && CC_R1_ADDR(ctx.r1.u32 + 80u) &&
+                  !CC_R1_ADDR(ctx.r1.u32 + ctx.r12.u32) && !CC_R1_ADDR(ctx.r11.u32 + 8),
+              "stack address spellings");
+#else
 #define REX_LOAD_U32(a) uint32_t(CC_GLOAD(a, 4))
+#endif
 #define REX_LOAD_U64(a) CC_GLOAD(a, 8)
 #define REX_STORE_U8(a, v) CC_GSTORE(a, 1, v)
 #define REX_STORE_U16(a, v) CC_GSTORE(a, 2, v)
