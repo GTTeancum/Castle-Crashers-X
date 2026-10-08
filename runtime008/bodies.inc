@@ -779,9 +779,14 @@ static inline __attribute__((always_inline)) void cc_prefetch(uint32_t a) {
 // flags and frame counters +140..+148 and the movie +156 (one translation;
 // a node whose first 160 bytes cross a 64 KiB page is skipped).
 static inline __attribute__((always_inline)) void cc_prefetch_node(uint32_t n) {
+#ifdef CC_FLAT_WINDOW
+  {
+    const uint8_t* p = ::cc_win::ptr(n);
+#else
   uint8_t* b = g_page_host[n >> 16];
   if (__builtin_expect(uintptr_t(b) > 1u && (n & 0xFFFFu) < 0xFF60u, 1)) {
     const uint8_t* p = b + (n & 0xFFFFu);
+#endif
     __builtin_prefetch(p);
     __builtin_prefetch(p + 84);
     __builtin_prefetch(p + 104);
