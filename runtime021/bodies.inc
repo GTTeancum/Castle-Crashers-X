@@ -7824,7 +7824,88 @@ static CC_HOT_FN void sub_82085890(Context& ctx, Machine& base) {
 }
 #endif
 #include "generated/sub_82079970.inc"
+#ifdef CC_FAST
+#define sub_82083F50 sub_82083F50_exact
+#endif
 #include "generated/sub_82083F50.inc"
+#ifdef CC_FAST
+#undef sub_82083F50
+// SWF CXFORMWITHALPHA record reader (exact sub_82083F50: colour transform
+// r3, record r4; r3 = bytes read, a partly read last byte included).
+// HasAddTerms is bit 7 and HasMultTerms bit 6 of byte 0, tested in place;
+// the cursor then starts at bit 5 with a 4-bit count n (the unsigned
+// reader sub_82095700). Multiply terms, n signed bits each (sub_82095788),
+// go to +28 / +30 / +32 / +40 (red, green, blue, alpha) as 16 bits, a
+// negative one stored as 0; add terms to +34 / +36 / +38 / +42 as read.
+// Terms not present keep their values. When +44 is set, sub_820837C0(+44,
+// transform) passes the terms on. The original's frame words are written
+// as it leaves them (frame F = r1 - 176: back chain, byte position +80,
+// bits left +84; the unsigned reader's save of r31 at F - 8), and lr and
+// r12 as its calls leave them. Switches: CC_CXFORM_EXACT=1 (host) /
+// CC_CXFORM_EXACT_BUILD (Xbox) run the original; CC_ORACLE=1 or
+// CC_CXFORM_ORACLE=1 run it instead and compare the terms, the result and
+// the frame words with the native's.
+static CC_HOT_FN void sub_82083F50(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  static const bool exact = std::getenv("CC_CXFORM_EXACT") != nullptr;
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr || std::getenv("CC_CXFORM_ORACLE") != nullptr;
+#elif defined(CC_CXFORM_EXACT_BUILD)
+  constexpr bool exact = true;
+#else
+  constexpr bool exact = false;
+#endif
+  if (exact || !cc_swf_mask_ok(base)) { sub_82083F50_exact(ctx, base); return; }
+  const uint32_t t = ctx.r3.u32, rec = ctx.r4.u32, r1 = ctx.r1.u32, f = r1 - 176u;
+  const uint32_t b0 = REX_LOAD_U8(rec);
+  const bool has_mul = (b0 & 0x40u) != 0u, has_add = (b0 & 0x80u) != 0u;
+  CcSwfBits b{rec, 0u, 6u};
+  const uint32_t n = b.ubits(base, 4u);
+  uint16_t mul[4] = {}, add[4] = {};
+  if (has_mul)
+    for (int k = 0; k < 4; ++k) {
+      const int16_t v = int16_t(b.sbits(base, n));
+      mul[k] = v < 0 ? uint16_t(0u) : uint16_t(v);
+    }
+  if (has_add)
+    for (int k = 0; k < 4; ++k) add[k] = uint16_t(b.sbits(base, n));
+  const uint32_t used = b.bits < 8u ? b.pos + 1u : b.pos;
+  static constexpr uint32_t kMulOff[4] = {28u, 30u, 32u, 40u}, kAddOff[4] = {34u, 36u, 38u, 42u};
+#ifndef CC_XBOX_DRIVER
+  if (oracle) {
+    uint16_t before[8];
+    for (int k = 0; k < 4; ++k) { before[k] = REX_LOAD_U16(t + kMulOff[k]); before[4 + k] = REX_LOAD_U16(t + kAddOff[k]); }
+    sub_82083F50_exact(ctx, base);
+    for (int k = 0; k < 4; ++k) {
+      const uint32_t wm = has_mul ? mul[k] : before[k], wa = has_add ? add[k] : before[4 + k];
+      if (REX_LOAD_U16(t + kMulOff[k]) != wm) cc_oracle_mismatch("sub_82083F50 mul", k, REX_LOAD_U16(t + kMulOff[k]), wm);
+      if (REX_LOAD_U16(t + kAddOff[k]) != wa) cc_oracle_mismatch("sub_82083F50 add", k, REX_LOAD_U16(t + kAddOff[k]), wa);
+    }
+    if (ctx.r3.u32 != used) cc_oracle_mismatch("sub_82083F50", 8, ctx.r3.u32, used);
+    if (REX_LOAD_U32(f) != r1) cc_oracle_mismatch("sub_82083F50 stack", 0, REX_LOAD_U32(f), r1);
+    if (REX_LOAD_U32(f + 80u) != b.pos) cc_oracle_mismatch("sub_82083F50 stack", 80, REX_LOAD_U32(f + 80u), b.pos);
+    if (REX_LOAD_U32(f + 84u) != b.bits) cc_oracle_mismatch("sub_82083F50 stack", 84, REX_LOAD_U32(f + 84u), b.bits);
+    if (REX_LOAD_U64(f - 8u) != ctx.r31.u64) cc_oracle_mismatch("sub_82083F50 stack", -8, uint32_t(REX_LOAD_U64(f - 8u)), ctx.r31.u32);
+    return;
+  }
+#endif
+  REX_STORE_U64(f - 8u, ctx.r31.u64);
+  REX_STORE_U32(f, r1);
+  REX_STORE_U32(f + 80u, b.pos);
+  REX_STORE_U32(f + 84u, b.bits);
+  if (has_mul)
+    for (int k = 0; k < 4; ++k) REX_STORE_U16(t + kMulOff[k], mul[k]);
+  if (has_add)
+    for (int k = 0; k < 4; ++k) REX_STORE_U16(t + kAddOff[k], add[k]);
+  ctx.r12.u64 = ctx.lr;
+  ctx.lr = has_add ? 0x820840BCu : has_mul ? 0x8208400Cu : 0x82083F94u;
+  if (const uint32_t next = REX_LOAD_U32(t + 44u)) {
+    CcFrame frame(ctx, base, 176u);
+    ctx.r3.u64 = next; ctx.r4.u64 = t; ctx.lr = 0x820840F0u;
+    sub_820837C0(ctx, base);
+  }
+  ctx.r3.u64 = used;
+}
+#endif
 #include "generated/sub_820837C0.inc"
 #include "generated/sub_820922B8.inc"
 #ifdef CC_FAST
