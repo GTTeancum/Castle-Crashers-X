@@ -82,14 +82,393 @@ HARD_BOUNDARY(sub_82053648, 0x82053648u)
 // size) / sub_8209BF18 free(heap, ptr)) with their caller, for
 // CC_MEM_REPORT.
 static std::map<uint32_t, std::pair<uint32_t, uint32_t>> g_heap_live;  // ptr -> (size, lr)
+#endif
+#if !defined(CC_XBOX_DRIVER) || defined(CC_FAST)
 #define sub_8209BDD8 sub_8209BDD8_exact
 #define sub_8209BF18 sub_8209BF18_exact
 #endif
 #include "generated/sub_8209BDD8.inc"
 #include "generated/sub_8209BF18.inc"
-#ifndef CC_XBOX_DRIVER
+#if !defined(CC_XBOX_DRIVER) || defined(CC_FAST)
 #undef sub_8209BDD8
 #undef sub_8209BF18
+#endif
+#ifdef CC_FAST
+// Game heap index (sub_8209BDD8 alloc(heap, size) / sub_8209BF18
+// free(heap, ptr)). A heap keeps alignment A at +32, its range [+8, +12),
+// the current tag at +24 and per-tag count/bytes at +1060/+1064 + 12*tag.
+// Blocks have a header of H = (A + 15) & ~(A - 1) bytes: physical previous
+// +0 and next +4, payload size +8 (signed), and at +12 the tag 1..53 when
+// in use or, when free, the link of one address-ordered free list (head at
+// heap +16, 0 ends it). Alloc takes the first free block in that order
+// whose size is at least the rounded request, splitting off the rest when
+// it is at least H; free merges with free physical neighbours or links the
+// block in at its place in the order. Both find their block by walking the
+// list from the head: 6-15 nodes a call in 4P combat, each a cache miss.
+//
+// A host mirror of the list - address and size of every free block, in
+// address order, in chunks of up to 64 entries with each chunk's largest
+// size - answers "first fit" and "free block before b" without touching
+// guest memory; all guest reads and writes of the result are the
+// original's, in its order of effect. A heap's mirror is built from the
+// guest list on first use and after heap init (sub_8209BC98). Before each
+// call the list head, and the chosen block's size and link, are checked
+// against the mirror; a disagreement rebuilds it from the list (before any
+// write of that call). The original's red-zone saves of r30/r31 in alloc
+// are written as it writes them (dead stack can be copied into the heap by
+// later code). Switches: CC_HEAP_EXACT=1 (host) / CC_HEAP_EXACT_BUILD
+// (Xbox) run the original walks; CC_ORACLE=1 or CC_HEAP_ORACLE=1 compare
+// every answer with the walk and the whole mirror with the list.
+struct CcHeapEnt { uint32_t addr; int32_t size; };
+struct CcHeapChunk { uint32_t n; int32_t max; CcHeapEnt e[64]; };
+struct CcHeapIdx {
+  uint32_t heap = 0;
+  bool built = false;
+  std::vector<CcHeapChunk*> ch;  // address order, none empty
+  std::vector<CcHeapChunk*> spare;
+};
+struct CcHeapPos { uint32_t c, i; };
+static CcHeapIdx g_heap_idx[4];
+#ifndef CC_XBOX_DRIVER
+static struct { uint64_t allocs, frees, builds, fallbacks; } g_heap_st;
+#endif
+static void cc_heap_chunk_max(CcHeapChunk* c) {
+  int32_t m = INT32_MIN;
+  for (uint32_t i = 0; i < c->n; ++i) m = c->e[i].size > m ? c->e[i].size : m;
+  c->max = m;
+}
+static CcHeapChunk* cc_heap_chunk_new(CcHeapIdx& x) {
+  if (!x.spare.empty()) { CcHeapChunk* c = x.spare.back(); x.spare.pop_back(); c->n = 0; c->max = INT32_MIN; return c; }
+  CcHeapChunk* c = new CcHeapChunk;
+  c->n = 0; c->max = INT32_MIN;
+  return c;
+}
+static void cc_heap_clear(CcHeapIdx& x) {
+  for (CcHeapChunk* c : x.ch) x.spare.push_back(c);
+  x.ch.clear();
+  x.built = false;
+}
+// Mirror of heap h's free list read from guest memory; false (and no
+// mirror) when the list is longer than any real heap's or loops.
+static bool cc_heap_build(Machine& base, CcHeapIdx& x, uint32_t h) {
+  cc_heap_clear(x);
+  x.heap = h;
+#ifndef CC_XBOX_DRIVER
+  ++g_heap_st.builds;
+#endif
+  uint32_t last = 0u, count = 0u;
+  for (uint32_t b = REX_LOAD_U32(h + 16u); b != 0u; b = REX_LOAD_U32(b + 12u)) {
+    if (++count > 1000000u || (count > 1u && b <= last)) { cc_heap_clear(x); return false; }
+    if (x.ch.empty() || x.ch.back()->n == 48u) x.ch.push_back(cc_heap_chunk_new(x));
+    CcHeapChunk* c = x.ch.back();
+    c->e[c->n++] = {b, int32_t(REX_LOAD_U32(b + 8u))};
+    if (c->e[c->n - 1u].size > c->max) c->max = c->e[c->n - 1u].size;
+    last = b;
+  }
+  x.built = true;
+  return true;
+}
+static inline uint32_t cc_heap_first_addr(const CcHeapIdx& x) { return x.ch.empty() ? 0u : x.ch[0]->e[0].addr; }
+static inline const CcHeapEnt& cc_heap_at(const CcHeapIdx& x, CcHeapPos p) { return x.ch[p.c]->e[p.i]; }
+// Address of the entry after / before p, 0 at the ends.
+static inline uint32_t cc_heap_next_addr(const CcHeapIdx& x, CcHeapPos p) {
+  if (p.i + 1u < x.ch[p.c]->n) return x.ch[p.c]->e[p.i + 1u].addr;
+  return p.c + 1u < x.ch.size() ? x.ch[p.c + 1u]->e[0].addr : 0u;
+}
+static inline uint32_t cc_heap_prev_addr(const CcHeapIdx& x, CcHeapPos p) {
+  if (p.i > 0u) return x.ch[p.c]->e[p.i - 1u].addr;
+  return p.c > 0u ? x.ch[p.c - 1u]->e[x.ch[p.c - 1u]->n - 1u].addr : 0u;
+}
+// First entry in address order with size >= need (signed), as the walk.
+static bool cc_heap_first_fit(const CcHeapIdx& x, int32_t need, CcHeapPos& out) {
+  for (uint32_t c = 0; c < x.ch.size(); ++c) {
+    const CcHeapChunk* k = x.ch[c];
+    if (k->max < need) continue;
+    for (uint32_t i = 0; i < k->n; ++i)
+      if (k->e[i].size >= need) { out = {c, i}; return true; }
+  }
+  return false;
+}
+// Last entry whose address is below a; false when there is none.
+static bool cc_heap_before(const CcHeapIdx& x, uint32_t a, CcHeapPos& out) {
+  uint32_t lo = 0, hi = uint32_t(x.ch.size());  // chunks with e[0].addr < a: [0, lo)
+  while (lo < hi) {
+    const uint32_t mid = (lo + hi) / 2u;
+    if (x.ch[mid]->e[0].addr < a) lo = mid + 1u; else hi = mid;
+  }
+  if (lo == 0u) return false;
+  const CcHeapChunk* k = x.ch[lo - 1u];
+  uint32_t l = 1u, r = k->n;  // e[0] < a; entries below a: [0, l)
+  while (l < r) {
+    const uint32_t mid = (l + r) / 2u;
+    if (k->e[mid].addr < a) l = mid + 1u; else r = mid;
+  }
+  out = {lo - 1u, l - 1u};
+  return true;
+}
+// Entry with address a exactly.
+static bool cc_heap_find(const CcHeapIdx& x, uint32_t a, CcHeapPos& out) {
+  return cc_heap_before(x, a + 1u, out) && cc_heap_at(x, out).addr == a;
+}
+static void cc_heap_remove(CcHeapIdx& x, CcHeapPos p) {
+  CcHeapChunk* k = x.ch[p.c];
+  const int32_t old = k->e[p.i].size;
+  __builtin_memmove(&k->e[p.i], &k->e[p.i + 1u], (k->n - p.i - 1u) * sizeof(CcHeapEnt));
+  if (--k->n == 0u) {
+    x.spare.push_back(k);
+    x.ch.erase(x.ch.begin() + p.c);
+  } else if (old == k->max) {
+    cc_heap_chunk_max(k);
+  }
+}
+static void cc_heap_set(CcHeapIdx& x, CcHeapPos p, uint32_t addr, int32_t size) {
+  CcHeapChunk* k = x.ch[p.c];
+  const int32_t old = k->e[p.i].size;
+  k->e[p.i] = {addr, size};
+  if (size > k->max) k->max = size;
+  else if (old == k->max && size < old) cc_heap_chunk_max(k);
+}
+static void cc_heap_insert(CcHeapIdx& x, uint32_t addr, int32_t size) {
+  CcHeapPos p;
+  uint32_t c, i;
+  if (cc_heap_before(x, addr, p)) { c = p.c; i = p.i + 1u; }
+  else {
+    if (x.ch.empty()) x.ch.push_back(cc_heap_chunk_new(x));
+    c = 0u; i = 0u;
+  }
+  CcHeapChunk* k = x.ch[c];
+  if (k->n == 64u) {  // split: the upper half moves to a new chunk
+    CcHeapChunk* u = cc_heap_chunk_new(x);
+    u->n = 32u;
+    __builtin_memcpy(u->e, &k->e[32], 32u * sizeof(CcHeapEnt));
+    k->n = 32u;
+    cc_heap_chunk_max(k);
+    cc_heap_chunk_max(u);
+    x.ch.insert(x.ch.begin() + c + 1u, u);
+    if (i > 32u) { k = u; i -= 32u; }
+  }
+  __builtin_memmove(&k->e[i + 1u], &k->e[i], (k->n - i) * sizeof(CcHeapEnt));
+  k->e[i] = {addr, size};
+  ++k->n;
+  if (size > k->max) k->max = size;
+}
+static CcHeapIdx* cc_heap_idx(Machine& base, uint32_t h) {
+  for (CcHeapIdx& x : g_heap_idx)
+    if (x.heap == h) {
+      if (!x.built && !cc_heap_build(base, x, h)) return nullptr;
+      return &x;
+    }
+  for (CcHeapIdx& x : g_heap_idx)
+    if (x.heap == 0u) return cc_heap_build(base, x, h) ? &x : nullptr;
+  return nullptr;
+}
+static void cc_heap_forget(uint32_t h) {
+  for (CcHeapIdx& x : g_heap_idx)
+    if (x.heap == h) cc_heap_clear(x);
+}
+#ifndef CC_XBOX_DRIVER
+// Host oracle: the mirror against the guest list, entry by entry.
+static void cc_heap_check(Machine& base, const CcHeapIdx& x, uint32_t h, const char* when) {
+  uint32_t b = REX_LOAD_U32(h + 16u);
+  uint32_t k = 0;
+  for (uint32_t c = 0; c < x.ch.size(); ++c)
+    for (uint32_t i = 0; i < x.ch[c]->n; ++i, ++k) {
+      const CcHeapEnt& e = x.ch[c]->e[i];
+      if (b != e.addr || REX_LOAD_U32(b + 8u) != uint32_t(e.size)) {
+        cc_oracle_mismatch(when, int(k), b, e.addr);
+        return;
+      }
+      b = REX_LOAD_U32(b + 12u);
+    }
+  if (b != 0u) cc_oracle_mismatch(when, int(k), b, 0u);
+}
+#endif
+// Alloc as sub_8209BDD8; false when the mirror cannot answer (the caller
+// then runs the original).
+static bool cc_heap_alloc(Context& ctx, Machine& base) {
+  const uint32_t h = ctx.r3.u32;
+  CcHeapIdx* x = cc_heap_idx(base, h);
+  if (!x) return false;
+  uint32_t size = ctx.r4.u32;
+  if (size == 0u) size = 1u;
+  const uint32_t A = REX_LOAD_U32(h + 32u);
+  const uint32_t need = (size + A - 1u) & ~(A - 1u);
+  const uint32_t H = (A + 15u) & ~(A - 1u);
+  CcHeapPos p{};
+  bool found = false;
+  uint32_t r10 = 0u, link = 0u;
+  int32_t sz = 0;
+  for (int attempt = 0;; ++attempt) {
+    found = cc_heap_first_fit(*x, int32_t(need), p);
+    bool agree = REX_LOAD_U32(h + 16u) == cc_heap_first_addr(*x);
+    if (agree && found) {
+      r10 = cc_heap_at(*x, p).addr;
+      sz = int32_t(REX_LOAD_U32(r10 + 8u));
+      link = REX_LOAD_U32(r10 + 12u);
+      agree = sz == cc_heap_at(*x, p).size && link == cc_heap_next_addr(*x, p);
+    }
+    if (agree) break;
+    if (attempt == 1 || !cc_heap_build(base, *x, h)) { cc_heap_clear(*x); return false; }
+  }
+#ifndef CC_XBOX_DRIVER
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr || std::getenv("CC_HEAP_ORACLE") != nullptr;
+  if (oracle) {
+    cc_heap_check(base, *x, h, "sub_8209BDD8 mirror");
+    uint32_t w = REX_LOAD_U32(h + 16u);
+    while (w != 0u && int32_t(need) > int32_t(REX_LOAD_U32(w + 8u))) w = REX_LOAD_U32(w + 12u);
+    if (w != (found ? r10 : 0u)) cc_oracle_mismatch("sub_8209BDD8 first fit", 0, w, found ? r10 : 0u);
+  }
+  ++g_heap_st.allocs;
+#endif
+  const int32_t rem = int32_t(uint32_t(sz) - H - need);
+  if (found && rem == -1) return false;  // the original would take the block twice; leave it to it
+  REX_STORE_U64(ctx.r1.u32 - 16u, ctx.r30.u64);  // the original's red-zone saves
+  REX_STORE_U64(ctx.r1.u32 - 8u, ctx.r31.u64);
+  if (!found) { ctx.r3.u64 = 0u; return true; }
+  const uint32_t prev = cc_heap_prev_addr(*x, p);
+  uint32_t r6;
+  if (rem < int32_t(H)) {
+    r6 = link;
+    cc_heap_remove(*x, p);
+  } else {
+    r6 = r10 + H + need;
+    REX_STORE_U32(r6 + 0u, r10);
+    REX_STORE_U32(r6 + 8u, uint32_t(rem));
+    const uint32_t r9 = REX_LOAD_U32(r10 + 4u);
+    REX_STORE_U32(r6 + 4u, r9);
+    if (r9 != 0u) REX_STORE_U32(r9 + 0u, r6);
+    REX_STORE_U32(r6 + 12u, REX_LOAD_U32(r10 + 12u));
+    REX_STORE_U32(r10 + 4u, r6);
+    REX_STORE_U32(r10 + 8u, need);
+    cc_heap_set(*x, p, r6, rem);
+  }
+  const uint32_t cnt = h + REX_LOAD_U32(h + 24u) * 12u + 1060u;
+  REX_STORE_U32(cnt, REX_LOAD_U32(cnt) + 1u);
+  const uint32_t bytes = REX_LOAD_U32(r10 + 8u);
+  const uint32_t tot = h + REX_LOAD_U32(h + 24u) * 12u + 1064u;
+  REX_STORE_U32(tot, bytes + REX_LOAD_U32(tot));
+  REX_STORE_U32(r10 + 12u, REX_LOAD_U32(h + 24u));
+  if (prev != 0u) REX_STORE_U32(prev + 12u, r6);
+  else REX_STORE_U32(h + 16u, r6);
+  ctx.r3.u64 = uint64_t(H) + r10;
+  return true;
+}
+// Free as sub_8209BF18; false when the mirror cannot answer.
+static bool cc_heap_free(Context& ctx, Machine& base) {
+  const uint32_t h = ctx.r3.u32, ptr = ctx.r4.u32;
+  if (ptr <= REX_LOAD_U32(h + 8u) || ptr >= REX_LOAD_U32(h + 12u)) return true;
+  const uint32_t H = (REX_LOAD_U32(h + 32u) + 15u) & ~(REX_LOAD_U32(h + 32u) - 1u);
+  const uint32_t b = ptr - H;
+  const uint32_t tag = REX_LOAD_U32(b + 12u), prev = REX_LOAD_U32(b + 0u), next = REX_LOAD_U32(b + 4u);
+  if (tag < 1u || tag > 53u) return true;
+  CcHeapIdx* x = cc_heap_idx(base, h);
+  if (!x) return false;
+  auto is_free = [&](uint32_t blk) { const uint32_t t = REX_LOAD_U32(blk + 12u); return t == 0u || t > 53u; };
+  const bool merge_prev = prev != 0u && is_free(prev);
+  const bool merge_next = next != 0u && is_free(next);
+  // Mirror positions, checked against the guest list before any write.
+  CcHeapPos pp{}, pn{};
+  uint32_t head = 0u, before = 0u, after = 0u;
+  for (int attempt = 0;; ++attempt) {
+    head = REX_LOAD_U32(h + 16u);
+    bool agree = head == cc_heap_first_addr(*x);
+    if (agree && merge_prev) agree = cc_heap_find(*x, prev, pp);
+    if (agree && !merge_prev && head != 0u && b > head) {
+      agree = cc_heap_before(*x, b, pp);
+      if (agree) {
+        before = cc_heap_at(*x, pp).addr;
+        after = cc_heap_next_addr(*x, pp);
+        agree = REX_LOAD_U32(before + 12u) == after;
+      }
+    }
+    if (agree && merge_next) agree = cc_heap_find(*x, next, pn);
+    if (agree) break;
+    if (attempt == 1 || !cc_heap_build(base, *x, h)) { cc_heap_clear(*x); return false; }
+  }
+#ifndef CC_XBOX_DRIVER
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr || std::getenv("CC_HEAP_ORACLE") != nullptr;
+  if (oracle) {
+    cc_heap_check(base, *x, h, "sub_8209BF18 mirror");
+    if (!merge_prev && head != 0u && b > head) {
+      uint32_t r9 = head, r10 = head;
+      while (r10 != 0u && r10 < b) { r9 = r10; r10 = REX_LOAD_U32(r10 + 12u); }
+      if (r9 != before || r10 != after) cc_oracle_mismatch("sub_8209BF18 place", 0, r9, before);
+    }
+  }
+  ++g_heap_st.frees;
+#endif
+  const uint32_t cnt = h + tag * 12u + 1060u;
+  REX_STORE_U32(cnt, REX_LOAD_U32(cnt) - 1u);
+  REX_STORE_U32(cnt + 4u, REX_LOAD_U32(cnt + 4u) - REX_LOAD_U32(b + 8u));
+  uint32_t r11;
+  if (merge_prev) {
+    REX_STORE_U32(prev + 8u, H + REX_LOAD_U32(prev + 8u) + REX_LOAD_U32(b + 8u));
+    REX_STORE_U32(prev + 4u, REX_LOAD_U32(b + 4u));
+    if (next != 0u) REX_STORE_U32(next + 0u, prev);
+    r11 = prev;
+    cc_heap_set(*x, pp, prev, int32_t(REX_LOAD_U32(prev + 8u)));
+  } else {
+    if (head == 0u || b <= head) {
+      REX_STORE_U32(b + 12u, head);
+      REX_STORE_U32(h + 16u, b);
+    } else {
+      REX_STORE_U32(before + 12u, b);
+      REX_STORE_U32(b + 12u, after);
+    }
+    r11 = b;
+    cc_heap_insert(*x, b, int32_t(REX_LOAD_U32(b + 8u)));
+  }
+  if (merge_next) {
+    REX_STORE_U32(r11 + 8u, H + REX_LOAD_U32(next + 8u) + REX_LOAD_U32(r11 + 8u));
+    const uint32_t nn = REX_LOAD_U32(next + 4u);
+    if (nn != 0u) REX_STORE_U32(nn + 0u, r11);
+    REX_STORE_U32(r11 + 4u, REX_LOAD_U32(next + 4u));
+    REX_STORE_U32(r11 + 12u, REX_LOAD_U32(next + 12u));
+    CcHeapPos q;
+    cc_heap_find(*x, next, q);
+    cc_heap_remove(*x, q);
+    cc_heap_find(*x, r11, q);
+    cc_heap_set(*x, q, r11, int32_t(REX_LOAD_U32(r11 + 8u)));
+  }
+  return true;
+}
+#endif
+#if !defined(CC_XBOX_DRIVER) || defined(CC_FAST)
+#ifdef CC_FAST
+static inline bool cc_heap_exact() {
+#ifndef CC_XBOX_DRIVER
+  static const bool exact = std::getenv("CC_HEAP_EXACT") != nullptr;
+  return exact;
+#elif defined(CC_HEAP_EXACT_BUILD)
+  return true;
+#else
+  return false;
+#endif
+}
+// The original or the mirror; after the original runs in place of the
+// mirror, the mirror is rebuilt on the next call.
+static inline void cc_heap_alloc_any(Context& ctx, Machine& base) {
+  const uint32_t h = ctx.r3.u32;
+  if (cc_heap_exact() || !cc_heap_alloc(ctx, base)) {
+#ifndef CC_XBOX_DRIVER
+    if (!cc_heap_exact()) ++g_heap_st.fallbacks;
+#endif
+    sub_8209BDD8_exact(ctx, base);
+    cc_heap_forget(h);
+  }
+}
+static inline void cc_heap_free_any(Context& ctx, Machine& base) {
+  const uint32_t h = ctx.r3.u32;
+  if (cc_heap_exact() || !cc_heap_free(ctx, base)) {
+#ifndef CC_XBOX_DRIVER
+    if (!cc_heap_exact()) ++g_heap_st.fallbacks;
+#endif
+    sub_8209BF18_exact(ctx, base);
+    cc_heap_forget(h);
+  }
+}
+#endif
+#ifndef CC_XBOX_DRIVER
 // Host census (CC_HEAP_WALK=1): free-list nodes before the chosen block
 // (alloc) / the insertion point (free), averaged per 2000 calls.
 static uint64_t g_hw_alloc_calls, g_hw_alloc_nodes, g_hw_free_calls, g_hw_free_nodes;
@@ -109,10 +488,18 @@ static void cc_heap_walk_census(Machine& base, uint32_t heap, uint32_t stop_addr
                  double(g_hw_alloc_nodes) / double(g_hw_alloc_calls ? g_hw_alloc_calls : 1),
                  double(g_hw_free_nodes) / double(g_hw_free_calls ? g_hw_free_calls : 1));
 }
+#endif
 static void sub_8209BDD8(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
   const uint32_t size = ctx.r4.u32, lr = uint32_t(ctx.lr);
   cc_heap_walk_census(base, ctx.r3.u32, 0u, false, size + 16u);
+#endif
+#ifdef CC_FAST
+  cc_heap_alloc_any(ctx, base);
+#else
   sub_8209BDD8_exact(ctx, base);
+#endif
+#ifndef CC_XBOX_DRIVER
   if (ctx.r3.u32) g_heap_live[ctx.r3.u32] = {size, lr};
   // Host oracle aid (CC_HEAP_ZERO=1): new blocks are zeroed, so stale bytes
   // (the padding of copied script values, which the game fills from
@@ -124,8 +511,10 @@ static void sub_8209BDD8(Context& ctx, Machine& base) {
     for (; k + 4u <= size; k += 4u) base.store(ctx.r3.u32 + k, 4, 0u);
     for (; k < size; ++k) base.store(ctx.r3.u32 + k, 1, 0u);
   }
+#endif
 }
 static void sub_8209BF18(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
   cc_heap_walk_census(base, ctx.r3.u32, ctx.r4.u32, true, 0u);
   // CC_HEAP_ZERO=1 also clears a block before it is freed.
   static const bool zero = std::getenv("CC_HEAP_ZERO") != nullptr;
@@ -137,7 +526,12 @@ static void sub_8209BF18(Context& ctx, Machine& base) {
     for (; k < size; ++k) base.store(p + k, 1, 0u);
   }
   if (it != g_heap_live.end()) g_heap_live.erase(it);
+#endif
+#ifdef CC_FAST
+  cc_heap_free_any(ctx, base);
+#else
   sub_8209BF18_exact(ctx, base);
+#endif
 }
 #endif
 #ifdef CC_VIEW_ACTIVE
@@ -537,6 +931,49 @@ static CC_HOT_FN void sub_82082390(Context& ctx, Machine& base) {
 #include "generated/sub_820772B0.inc"
 #include "generated/sub_820A1AC0.inc"
 #ifdef CC_FAST
+// Display-node classes the advance and frame-update walkers answer without
+// a method call (vtables live in the image's read-only data): the clip
+// class 0x8203E878 is active (slot 44 = li 1); the second clip class
+// 0x8203F510 and the text field 0x8203F680 are not (li 0). Both clip
+// classes share slot 84 (advance sub_82088A08), 88 (frame update
+// sub_8208A228), 92 (sub_8208ADE8), 124 (bit 2 of byte +140) and 148
+// (setParent, stw r4,96(r3)). Checked once against the mapped image; any
+// difference leaves every call to cc_vcall. Host switch CC_WALK_VCALL=1,
+// Xbox build CC_WALK_VCALL_BUILD: always the method calls.
+enum : uint32_t { kVtClip = 0x8203E878u, kVtClip2 = 0x8203F510u, kVtText = 0x8203F680u };
+static bool cc_walk_classes_check(Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  if (std::getenv("CC_WALK_VCALL") != nullptr) return false;
+#elif defined(CC_WALK_VCALL_BUILD)
+  return false;
+#endif
+  auto slot = [&](uint32_t vt, uint32_t s) { uint64_t v = 0; base.memory.load_be(vt + s, 4, v); return uint32_t(v); };
+  for (const uint32_t vt : {kVtClip, kVtClip2}) {
+    if (slot(vt, 84u) != 0x82088A08u || slot(vt, 88u) != 0x8208A228u || slot(vt, 92u) != 0x8208ADE8u ||
+        slot(vt, 124u) != 0x82086818u || slot(vt, 148u) != 0x820868C8u)
+      return false;
+  }
+  return slot(kVtClip, 44u) == 0x820619E8u && slot(kVtClip2, 44u) == 0x82053A98u && slot(kVtText, 44u) == 0x82053A98u &&
+         slot(0x820619E8u, 0u) == 0x38600001u && slot(0x82053A98u, 0u) == 0x38600000u && slot(0x820868C8u, 0u) == 0x90830060u &&
+         slot(0x82086818u, 0u) == 0x8963008Cu && slot(0x82086818u, 4u) == 0x5563F7FEu &&
+         slot(0x82086818u, 8u) == 0x4E800020u;
+}
+static inline bool cc_walk_classes_ok(Machine& base) {
+  static const bool ok = cc_walk_classes_check(base);
+  return ok;
+}
+// Slot 44 ("active") of child ch whose vtable word is vt: 1 / 0 for the
+// classes above (r3 as the leaf leaves it), else the method call at return
+// address lr.
+#define cc_walk_active(CTX, BASE, CH, VT, OK, LR) ([&]() __attribute__((always_inline)) -> uint32_t { \
+    if ((OK) && (VT) == kVtClip) { (CTX).r3.u64 = 1u; return 1u; } \
+    if ((OK) && ((VT) == kVtClip2 || (VT) == kVtText)) { (CTX).r3.u64 = 0u; return 0u; } \
+    return cc_vcall(CTX, BASE, CH, 44u, LR) & 0xFFu; }())
+// The manager of node n's movie, [[[n+156]+76]+156] (its update stack:
+// count +8248, entries at +(count+1998)*4).
+static inline __attribute__((always_inline)) uint32_t cc_walk_mgr(Machine& base, uint32_t n) {
+  return REX_LOAD_U32(REX_LOAD_U32(REX_LOAD_U32(n + 156u) + 76u) + 156u);
+}
 #define sub_82088A08 sub_82088A08_exact
 #endif
 #include "generated/sub_82088A08.inc"
@@ -553,7 +990,9 @@ static CC_HOT_FN void sub_82082390(Context& ctx, Machine& base) {
 // +82 differs from the node's +144 is released via sub_82084C78(list,
 // [child+28]); otherwise its +82 is cleared and, if active (slot 44), it
 // advances (slot 148, r4 = node) and updates (slot 84). The stack entry is
-// popped at the end.
+// popped at the end. The known classes skip the method calls
+// (cc_walk_classes_ok); the next sibling's lines are prefetched while the
+// current child is visited.
 static CC_HOT_FN void sub_82088A08(Context& ctx, Machine& base) {
 #ifndef CC_XBOX_DRIVER
   static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
@@ -567,15 +1006,25 @@ static CC_HOT_FN void sub_82088A08(Context& ctx, Machine& base) {
   const uint32_t node = ctx.r3.u32;
   if ((REX_LOAD_U8(node + 140u) & 0x80u) == 0u) return;
   CcFrame frame(ctx, base, 128u);
-  auto mgr_of = [&]() { return REX_LOAD_U32(REX_LOAD_U32(REX_LOAD_U32(node + 156u) + 76u) + 156u); };
+  if (const uint32_t first = REX_LOAD_U32(node + 104u)) cc_prefetch_node(first);
+  const bool ok = cc_walk_classes_ok(base);
+  const uint32_t nvt = REX_LOAD_U32(node);
+  const bool nclip = ok && (nvt == kVtClip || nvt == kVtClip2);
   {
-    const uint32_t mgr = mgr_of();
+    const uint32_t mgr = cc_walk_mgr(base, node);
     const uint32_t cnt = REX_LOAD_U32(mgr + 8248u) + 1u;
     REX_STORE_U32(mgr + 8248u, cnt);
     REX_STORE_U32(mgr + (cnt + 1998u) * 4u, node);
   }
   bool wrapped = false;
-  if ((cc_vcall(ctx, base, node, 124u, 0x82088A64u) & 0xFFu) != 0u) {
+  uint32_t playing;
+  if (nclip) {
+    playing = (REX_LOAD_U8(node + 140u) >> 2) & 1u;
+    ctx.r3.u64 = playing;
+  } else {
+    playing = cc_vcall(ctx, base, node, 124u, 0x82088A64u) & 0xFFu;
+  }
+  if (playing != 0u) {
     const uint32_t f = (REX_LOAD_U16(node + 146u) + 1u) & 0xFFFFu;
     REX_STORE_U16(node + 146u, uint16_t(f));
     if (f > REX_LOAD_U16(node + 148u)) {
@@ -596,23 +1045,36 @@ static CC_HOT_FN void sub_82088A08(Context& ctx, Machine& base) {
     }
     REX_STORE_U16(node + 144u, REX_LOAD_U16(node + 146u));
     ctx.r4.u64 = 1u;
-    cc_vcall(ctx, base, node, 92u, 0x82088AF8u);
+    if (nclip) {
+      ctx.r3.u64 = node; ctx.lr = 0x82088AF8u;
+      sub_8208ADE8(ctx, base);
+    } else {
+      cc_vcall(ctx, base, node, 92u, 0x82088AF8u);
+    }
   }
   for (uint32_t ch = REX_LOAD_U32(node + 104u); ch; ch = REX_LOAD_U32(ch + 88u)) {
+    if (const uint32_t next = REX_LOAD_U32(ch + 88u)) cc_prefetch_node(next);
     if (wrapped && REX_LOAD_U16(node + 144u) != REX_LOAD_U16(ch + 82u)) {
       ctx.r3.u64 = node + 104u; ctx.r4.u64 = REX_LOAD_U32(ch + 28u); ctx.lr = 0x82088B30u;
       sub_82084C78(ctx, base);
       continue;
     }
     REX_STORE_U16(ch + 82u, 0u);
-    if ((cc_vcall(ctx, base, ch, 44u, 0x82088B4Cu) & 0xFFu) != 0u) {
+    const uint32_t vt = REX_LOAD_U32(ch);
+    if (cc_walk_active(ctx, base, ch, vt, ok, 0x82088B4Cu) != 0u) {
       ctx.r4.u64 = node;
-      cc_vcall(ctx, base, ch, 148u, 0x82088B70u);
-      cc_vcall(ctx, base, ch, 84u, 0x82088B84u);
+      if (ok && vt == kVtClip) {
+        REX_STORE_U32(ch + 96u, node);  // setParent
+        ctx.r3.u64 = ch; ctx.lr = 0x82088B84u;
+        sub_82088A08(ctx, base);
+      } else {
+        cc_vcall(ctx, base, ch, 148u, 0x82088B70u);
+        cc_vcall(ctx, base, ch, 84u, 0x82088B84u);
+      }
     }
   }
   {
-    const uint32_t mgr = mgr_of();
+    const uint32_t mgr = cc_walk_mgr(base, node);
     const uint32_t idx = REX_LOAD_U32(mgr + 8248u);
     REX_STORE_U32(mgr + (idx + 1998u) * 4u, 0u);
     REX_STORE_U32(mgr + 8248u, idx - 1u);
@@ -638,6 +1100,8 @@ static CC_HOT_FN void sub_82088A08(Context& ctx, Machine& base) {
 // into the return value; active children while bit 6 is set, and inactive
 // children with bit 4 of their +86, set bit 0. Without bit 0 the node's
 // bit 4 of +86 is cleared; bit 6 of +140 is cleared and the stack popped.
+// As in the advance walk, the known classes skip the method calls and the
+// next sibling's lines are prefetched.
 #ifndef CC_XBOX_DRIVER
 static uint32_t g_clip_ticks = 0;  // host CC_TICK_STATS: clip frame updates per frame
 #endif
@@ -663,9 +1127,10 @@ static CC_HOT_FN void sub_8208A228(Context& ctx, Machine& base) {
   }
   if (REX_LOAD_U16(node + 144u) == 0u) REX_STORE_U16(node + 144u, 1u);
   if (REX_LOAD_U16(node + 146u) == 0u) REX_STORE_U16(node + 146u, 1u);
-  auto mgr_of = [&]() { return REX_LOAD_U32(REX_LOAD_U32(REX_LOAD_U32(node + 156u) + 76u) + 156u); };
+  if (const uint32_t first = REX_LOAD_U32(node + 104u)) cc_prefetch_node(first);
+  const bool ok = cc_walk_classes_ok(base);
   {
-    const uint32_t mgr = mgr_of();
+    const uint32_t mgr = cc_walk_mgr(base, node);
     const uint32_t cnt = REX_LOAD_U32(mgr + 8248u) + 1u;
     REX_STORE_U32(mgr + 8248u, cnt);
     REX_STORE_U32(mgr + (cnt + 1998u) * 4u, node);
@@ -679,9 +1144,23 @@ static CC_HOT_FN void sub_8208A228(Context& ctx, Machine& base) {
     sub_8207B8B8(ctx, base);
     REX_STORE_U8(node + 140u, uint8_t(REX_LOAD_U8(node + 140u) | 8u));
   }
-  if ((cc_vcall(ctx, base, node, 124u, 0x8208A30Cu) & 0xFFu) != 0u) {
+  const uint32_t nvt = REX_LOAD_U32(node);
+  const bool nclip = ok && (nvt == kVtClip || nvt == kVtClip2);
+  uint32_t playing;
+  if (nclip) {
+    playing = (REX_LOAD_U8(node + 140u) >> 2) & 1u;
+    ctx.r3.u64 = playing;
+  } else {
+    playing = cc_vcall(ctx, base, node, 124u, 0x8208A30Cu) & 0xFFu;
+  }
+  if (playing != 0u) {
     ctx.r4.u64 = 2u;
-    cc_vcall(ctx, base, node, 92u, 0x8208A330u);
+    if (nclip) {
+      ctx.r3.u64 = node; ctx.lr = 0x8208A330u;
+      sub_8208ADE8(ctx, base);
+    } else {
+      cc_vcall(ctx, base, node, 92u, 0x8208A330u);
+    }
     ctx.r3.u64 = node + 160u;
     ctx.lr = 0x8208A338u;
     sub_8207B630(ctx, base);
@@ -692,11 +1171,18 @@ static CC_HOT_FN void sub_8208A228(Context& ctx, Machine& base) {
   }
   uint64_t acc = 0u;
   for (uint32_t ch = REX_LOAD_U32(node + 104u); ch; ch = REX_LOAD_U32(ch + 88u)) {
+    if (const uint32_t next = REX_LOAD_U32(ch + 88u)) cc_prefetch_node(next);
     uint32_t bit;
-    if ((cc_vcall(ctx, base, ch, 44u, 0x8208A380u) & 0xFFu) != 0u) {
+    const uint32_t vt = REX_LOAD_U32(ch);
+    if (cc_walk_active(ctx, base, ch, vt, ok, 0x8208A380u) != 0u) {
       if ((REX_LOAD_U8(node + 140u) & 0x40u) == 0u || REX_LOAD_U16(ch + 82u) == REX_LOAD_U16(node + 144u)) {
         ctx.r4.u64 = 0u;
-        cc_vcall(ctx, base, ch, 88u, 0x8208A3C4u);
+        if (ok && vt == kVtClip) {
+          ctx.r3.u64 = ch; ctx.lr = 0x8208A3C4u;
+          sub_8208A228(ctx, base);
+        } else {
+          cc_vcall(ctx, base, ch, 88u, 0x8208A3C4u);
+        }
         acc |= ctx.r3.u64;
       }
       bit = REX_LOAD_U8(node + 140u) & 0x40u;
@@ -708,7 +1194,7 @@ static CC_HOT_FN void sub_8208A228(Context& ctx, Machine& base) {
   if ((acc & 1u) == 0u) REX_STORE_U8(node + 86u, uint8_t(REX_LOAD_U8(node + 86u) & ~16u));
   REX_STORE_U8(node + 140u, uint8_t(REX_LOAD_U8(node + 140u) & ~64u));
   {
-    const uint32_t mgr = mgr_of();
+    const uint32_t mgr = cc_walk_mgr(base, node);
     const uint32_t idx = REX_LOAD_U32(mgr + 8248u);
     REX_STORE_U32(mgr + (idx + 1998u) * 4u, 0u);
     REX_STORE_U32(mgr + 8248u, idx - 1u);
@@ -2720,6 +3206,18 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     g_dl_st = {};
     g_dl_rst = {};
   }
+  static const bool heap_stats = std::getenv("CC_HEAP_STATS") != nullptr;  // heap index census
+  if (heap_stats && (g_frame_delay_calls + 1u) % 300u == 0u) {
+    size_t entries = 0, chunks = 0;
+    for (const CcHeapIdx& x : g_heap_idx) {
+      chunks += x.ch.size();
+      for (const CcHeapChunk* c : x.ch) entries += c->n;
+    }
+    cc_log("HEAPIDX frame=%u allocs=%llu frees=%llu builds=%llu fallbacks=%llu free_blocks=%zu chunks=%zu\n",
+           g_frame_delay_calls + 1u, (unsigned long long)g_heap_st.allocs, (unsigned long long)g_heap_st.frees,
+           (unsigned long long)g_heap_st.builds, (unsigned long long)g_heap_st.fallbacks, entries, chunks);
+    g_heap_st = {};
+  }
 #endif
   if (std::getenv("CC_WORKSET") && (g_frame_delay_calls + 1u) % 1000u == 0u)
     cc_log("RASTER frame=%u count=%u seconds=%.3f update=%.3f render=%.3f%c", g_frame_delay_calls + 1u, g_raster_count, g_raster_seconds, g_update_seconds, g_render_seconds, 10);
@@ -3598,7 +4096,20 @@ static void __imp__MmAllocatePhysicalMemoryEx(Context& ctx, Machine& base) {
   base.fail(Error::unsupported, 0x8214A4F4u);
 }
 #include "generated/sub_820B6108.inc"
+#ifdef CC_FAST
+#define sub_8209BC98 sub_8209BC98_exact
+#endif
 #include "generated/sub_8209BC98.inc"
+#ifdef CC_FAST
+#undef sub_8209BC98
+// Heap init (exact sub_8209BC98: heap r3): one free block; the heap's
+// free-list mirror (cc_heap_idx) starts over.
+static void sub_8209BC98(Context& ctx, Machine& base) {
+  const uint32_t h = ctx.r3.u32;
+  sub_8209BC98_exact(ctx, base);
+  cc_heap_forget(h);
+}
+#endif
 #ifdef CC_VIEW_ACTIVE
 #undef DEFINE_REX_FUNC
 #define DEFINE_REX_FUNC DEFINE_REX_FUNC_PLAIN
@@ -7288,7 +7799,144 @@ static void sub_82084DB8(Context& ctx, Machine& base) {
 #include "generated/sub_82085540.inc"
 #include "generated/sub_820867F0.inc"
 #include "generated/sub_8208F9E8.inc"
+#ifdef CC_FAST
+#define sub_82085890 sub_82085890_exact
+#endif
 #include "generated/sub_82085890.inc"
+#ifdef CC_FAST
+#undef sub_82085890
+// MSB-first bit cursor over a SWF record as the game's readers keep it
+// (sub_82095700 unsigned, sub_82095788 signed, and the inline single-bit
+// reads): byte position pos from p, bits left in the current byte (8..1);
+// a byte is read when its first bit is. The readers test bits through the
+// mask table at 0x820146B0, which holds 1 << i for i = 0..31 (checked once
+// by cc_swf_mask_ok). A signed field of n bits takes bit n-1 as its sign;
+// n = 0 reads 0 and moves nothing.
+struct CcSwfBits {
+  uint32_t p, pos, bits, cpos = ~0u, cur = 0u;
+  uint32_t bit(Machine& base) {
+    if (pos != cpos) { cpos = pos; cur = REX_LOAD_U8(p + pos); }
+    const uint32_t b = (cur >> (bits - 1u)) & 1u;
+    if (--bits == 0u) { bits = 8u; ++pos; }
+    return b;
+  }
+  uint32_t ubits(Machine& base, uint32_t n) {
+    uint32_t v = 0u;
+    for (uint32_t i = 0; i < n; ++i) v = (v << 1) | bit(base);
+    return v;
+  }
+  int32_t sbits(Machine& base, uint32_t n) {
+    if (n == 0u) return 0;
+    const uint32_t v = ubits(base, n);
+    return int32_t(((v >> (n - 1u)) & 1u) && n < 32u ? v | (~0u << n) : v);
+  }
+};
+static bool cc_swf_mask_check(Machine& base) {
+  for (uint32_t i = 0; i < 32u; ++i)
+    if (REX_LOAD_U32(0x820146B0u + 4u * i) != (1u << i)) return false;
+  return true;
+}
+static inline bool cc_swf_mask_ok(Machine& base) {
+  static const bool ok = cc_swf_mask_check(base);
+  return ok;
+}
+// SWF MATRIX record reader (exact sub_82085890: matrix r3, record r4; r3 =
+// bytes read, a partly read last byte included). HasScale is bit 7 of byte
+// 0, tested in place; the cursor then starts at bit 6. With it, a 5-bit
+// count n and two signed n-bit fields, each converted to float and
+// multiplied by the float at 0x820425E0, go to +16 / +20. One bit
+// HasRotate: the same with the float at 0x820425DC into +24 / +28. Then a
+// count n and, only when n is nonzero, two fields as plain floats into
+// +32 / +36. Bytes +12..+14 are cleared; fields not present keep their
+// values. Conversions as compiled: int -> double -> float, the product in
+// double rounded to float. Switches: CC_PLACE_EXACT=1 (host) /
+// CC_PLACE_EXACT_BUILD (Xbox) run the exact body; CC_ORACLE=1 or
+// CC_PLACE_ORACLE=1 run it after the native decode and compare.
+static CC_HOT_FN void sub_82085890(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  static const bool exact = std::getenv("CC_PLACE_EXACT") != nullptr;
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr || std::getenv("CC_PLACE_ORACLE") != nullptr;
+#elif defined(CC_PLACE_EXACT_BUILD)
+  constexpr bool exact = true;
+#else
+  constexpr bool exact = false;
+#endif
+  if (exact || !cc_swf_mask_ok(base)) { sub_82085890_exact(ctx, base); return; }
+  const uint32_t m = ctx.r3.u32, rec = ctx.r4.u32;
+  ctx.fpscr.disableFlushMode();
+  auto f32 = [](uint32_t b) { float f; __builtin_memcpy(&f, &b, 4); return f; };
+  auto bits = [](float f) { uint32_t b; __builtin_memcpy(&b, &f, 4); return b; };
+  auto scaled = [](int32_t v, float c) { const float f = float(double(int64_t(v))); return float(double(f) * double(c)); };
+  CcSwfBits b{rec, 0u, 7u};
+  uint32_t out[6] = {};
+  bool have[3] = {false, false, false};  // scale, rotate, translate
+  int32_t last = 0;  // the last field converted
+  bool converted = false;
+  auto field = [&](uint32_t n) { last = b.sbits(base, n); converted = true; return last; };
+  if (REX_LOAD_U8(rec) & 0x80u) {
+    const float c = f32(REX_LOAD_U32(0x820425E0u));
+    const uint32_t n = b.ubits(base, 5u);
+    out[0] = bits(scaled(field(n), c));
+    out[1] = bits(scaled(field(n), c));
+    have[0] = true;
+  }
+  if (b.bit(base)) {
+    const float c = f32(REX_LOAD_U32(0x820425DCu));
+    const uint32_t n = b.ubits(base, 5u);
+    out[2] = bits(scaled(field(n), c));
+    out[3] = bits(scaled(field(n), c));
+    have[1] = true;
+  }
+  if (const uint32_t n = b.ubits(base, 5u)) {
+    out[4] = bits(float(double(int64_t(field(n)))));
+    out[5] = bits(float(double(int64_t(field(n)))));
+    have[2] = true;
+  }
+  const uint32_t used = b.bits < 8u ? b.pos + 1u : b.pos;
+  // The original's stack frame as it leaves it (frame F = r1 - 144: back
+  // chain, bits left +80, position +84, the last converted field as int64
+  // at +88; the unsigned reader's save of r31 at F - 8). The game later
+  // copies uninitialised stack words into heap objects (the 8-byte keys of
+  // the tree nodes sub_82099B48 builds carry 2 padding bytes), so these
+  // dead bytes are written as the original writes them.
+  auto stack_frame = [&]() {
+    const uint32_t r1 = ctx.r1.u32, f = r1 - 144u;
+    REX_STORE_U64(f - 8u, ctx.r31.u64);
+    REX_STORE_U32(f, r1);
+    REX_STORE_U32(f + 80u, b.bits);
+    REX_STORE_U32(f + 84u, b.pos);
+    if (converted) REX_STORE_U64(f + 88u, uint64_t(int64_t(last)));
+  };
+#ifndef CC_XBOX_DRIVER
+  if (oracle) {
+    uint32_t before[6];
+    for (int k = 0; k < 6; ++k) before[k] = REX_LOAD_U32(m + 16u + 4u * uint32_t(k));
+    sub_82085890_exact(ctx, base);
+    for (int k = 0; k < 6; ++k) {
+      const uint32_t want = have[k / 2] ? out[k] : before[k];
+      const uint32_t got = REX_LOAD_U32(m + 16u + 4u * uint32_t(k));
+      if (got != want) cc_oracle_mismatch("sub_82085890", k, got, want);
+    }
+    if (ctx.r3.u32 != used) cc_oracle_mismatch("sub_82085890", 6, ctx.r3.u32, used);
+    for (uint32_t k = 12u; k < 15u; ++k)
+      if (REX_LOAD_U8(m + k) != 0u) cc_oracle_mismatch("sub_82085890", int(k), REX_LOAD_U8(m + k), 0u);
+    const uint32_t f = ctx.r1.u32 - 144u;
+    if (REX_LOAD_U32(f + 80u) != b.bits) cc_oracle_mismatch("sub_82085890 stack", 80, REX_LOAD_U32(f + 80u), b.bits);
+    if (REX_LOAD_U32(f + 84u) != b.pos) cc_oracle_mismatch("sub_82085890 stack", 84, REX_LOAD_U32(f + 84u), b.pos);
+    if (converted && REX_LOAD_U64(f + 88u) != uint64_t(int64_t(last)))
+      cc_oracle_mismatch("sub_82085890 stack", 88, uint32_t(REX_LOAD_U64(f + 88u)), uint32_t(last));
+    if (REX_LOAD_U32(f) != ctx.r1.u32) cc_oracle_mismatch("sub_82085890 stack", 0, REX_LOAD_U32(f), ctx.r1.u32);
+    if (REX_LOAD_U64(f - 8u) != ctx.r31.u64) cc_oracle_mismatch("sub_82085890 stack", -8, uint32_t(REX_LOAD_U64(f - 8u)), ctx.r31.u32);
+    return;
+  }
+#endif
+  stack_frame();
+  for (int k = 0; k < 6; ++k)
+    if (have[k / 2]) REX_STORE_U32(m + 16u + 4u * uint32_t(k), out[k]);
+  REX_STORE_U8(m + 12u, 0u); REX_STORE_U8(m + 13u, 0u); REX_STORE_U8(m + 14u, 0u);
+  ctx.r3.u64 = used;
+}
+#endif
 #include "generated/sub_82079970.inc"
 #include "generated/sub_82083F50.inc"
 #include "generated/sub_820837C0.inc"
@@ -8137,7 +8785,108 @@ static CC_HOT_FN void sub_82066EA8(Context& ctx, Machine& base) {
 #include "generated/sub_8209B9D0.inc"
 #include "generated/sub_820B6B80.inc"
 #include "generated/sub_8209B830.inc"
+#ifdef CC_FAST
+#define sub_820798D8 sub_820798D8_exact
+#endif
 #include "generated/sub_820798D8.inc"
+#ifdef CC_FAST
+#undef sub_820798D8
+// Rotating-buffer sprintf (exact sub_820798D8: format r3, arguments from
+// r4): the CRT's vsprintf (sub_821280E8 -> _output sub_8212C6F0) into the
+// next of four 512-byte buffers at 0x82290288, picked by the signed index
+// byte at 0x82290A88 (read again afterwards, then advanced mod 4); returns
+// that buffer. The formats "%d" (the low word of r4 as int) and "%s" (the
+// string at r4, copied up to its zero byte) are written here; any other
+// format, and "%s" of a null pointer, run the original. The two outer
+// stack frames are left as the original leaves them (return addresses,
+// saved r30/r31, the argument save area, back chains, the string FILE
+// block); _output's own frame is not reproduced.
+// Switches: CC_FORMAT_EXACT=1 (host) / CC_FORMAT_EXACT_BUILD (Xbox) run
+// the original; CC_ORACLE=1 or CC_FORMAT_ORACLE=1 run it after the native
+// text is made and compare buffer, length and result.
+static CC_HOT_FN void sub_820798D8(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  static const bool exact = std::getenv("CC_FORMAT_EXACT") != nullptr;
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr || std::getenv("CC_FORMAT_ORACLE") != nullptr;
+#elif defined(CC_FORMAT_EXACT_BUILD)
+  constexpr bool exact = true;
+#else
+  constexpr bool exact = false;
+#endif
+  const uint32_t fmt = ctx.r3.u32;
+  const uint32_t c1 = REX_LOAD_U8(fmt + 1u);
+  if (exact || REX_LOAD_U8(fmt) != 0x25u || (c1 != 0x64u && c1 != 0x73u) || REX_LOAD_U8(fmt + 2u) != 0u ||
+      (c1 == 0x73u && ctx.r4.u32 == 0u)) {
+    sub_820798D8_exact(ctx, base);
+    return;
+  }
+  // The text: digits of the int, or the string's length (copied below).
+  char num[12];
+  uint32_t len = 0u;
+  if (c1 == 0x64u) {
+    const int32_t v = int32_t(ctx.r4.u32);
+    uint32_t u = v < 0 ? 0u - uint32_t(v) : uint32_t(v);
+    char tmp[10];
+    uint32_t n = 0u;
+    do { tmp[n++] = char(0x30u + u % 10u); u /= 10u; } while (u != 0u);
+    if (v < 0) num[len++] = 0x2D;
+    while (n != 0u) num[len++] = tmp[--n];
+  } else {
+    while (REX_LOAD_U8(ctx.r4.u32 + len) != 0u) ++len;
+  }
+#ifndef CC_XBOX_DRIVER
+  std::vector<uint8_t> want;
+  if (oracle) {
+    want.resize(len);
+    for (uint32_t i = 0; i < len; ++i) want[i] = c1 == 0x64u ? uint8_t(num[i]) : REX_LOAD_U8(ctx.r4.u32 + i);
+    const uint32_t buf0 = (uint32_t(int32_t(int8_t(REX_LOAD_U8(0x82290A88u)))) << 9) + 0x82290288u;
+    sub_820798D8_exact(ctx, base);
+    if (ctx.r3.u32 != buf0) cc_oracle_mismatch("sub_820798D8 buffer", 0, ctx.r3.u32, buf0);
+    for (uint32_t i = 0; i <= len; ++i) {
+      const uint32_t got = REX_LOAD_U8(buf0 + i), w = i < len ? want[i] : 0u;
+      if (got != w) { cc_oracle_mismatch("sub_820798D8 text", int(i), got, w); break; }
+    }
+    return;
+  }
+#endif
+  // Stack as the original leaves it: its frame F0 = r1 - 112 below the
+  // saved return address, r30, r31 and the argument save area, the
+  // va_list at F0 + 80; vsprintf's frame F1 = F0 - 128 with its return
+  // address, saved r31 and the FILE block {ptr, count, base, flags 66} at
+  // F1 + 80 as _output leaves it.
+  const uint32_t r1 = ctx.r1.u32, f0 = r1 - 112u, f1 = f0 - 128u;
+  REX_STORE_U32(r1 - 8u, uint32_t(ctx.lr));
+  REX_STORE_U64(r1 - 24u, ctx.r30.u64);
+  REX_STORE_U64(r1 - 16u, ctx.r31.u64);
+  REX_STORE_U64(r1 + 24u, ctx.r4.u64); REX_STORE_U64(r1 + 32u, ctx.r5.u64);
+  REX_STORE_U64(r1 + 40u, ctx.r6.u64); REX_STORE_U64(r1 + 48u, ctx.r7.u64);
+  REX_STORE_U64(r1 + 56u, ctx.r8.u64); REX_STORE_U64(r1 + 64u, ctx.r9.u64);
+  REX_STORE_U64(r1 + 72u, ctx.r10.u64);
+  REX_STORE_U32(f0, r1);
+  REX_STORE_U32(f0 + 80u, r1 + 24u);
+  const uint32_t idx = uint32_t(int32_t(int8_t(REX_LOAD_U8(0x82290A88u))));
+  const uint32_t buf = (idx << 9) + 0x82290288u;
+  REX_STORE_U32(f0 - 8u, 0x8207993Cu);
+  REX_STORE_U64(f0 - 16u, ctx.r31.u64);
+  REX_STORE_U32(f1, f0);
+  // The text, byte by byte in order (a source inside the buffers reads as
+  // the original's copy does), then the zero byte.
+  if (c1 == 0x64u) {
+    for (uint32_t i = 0; i < len; ++i) REX_STORE_U8(buf + i, uint8_t(num[i]));
+  } else {
+    const uint32_t src = ctx.r4.u32;
+    for (uint32_t i = 0; i < len; ++i) REX_STORE_U8(buf + i, REX_LOAD_U8(src + i));
+  }
+  REX_STORE_U8(buf + len, 0u);
+  REX_STORE_U32(f1 + 80u, buf + len);
+  REX_STORE_U32(f1 + 84u, 0x7FFFFFFFu - len - 1u);
+  REX_STORE_U32(f1 + 88u, buf);
+  REX_STORE_U32(f1 + 92u, 66u);
+  const int32_t now = int32_t(int8_t(REX_LOAD_U8(0x82290A88u)));
+  REX_STORE_U8(0x82290A88u, uint8_t((now + 1) & 3));
+  ctx.r3.u64 = uint32_t(uint32_t(now) << 9) + 0x82290288u;
+}
+#endif
 #include "generated/sub_820B6B90.inc"
 #include "generated/sub_8209BA50.inc"
 #include "generated/sub_821280E8.inc"
