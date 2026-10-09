@@ -3312,6 +3312,19 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     g_heap_st = {};
   }
 #endif
+  // Host CC_POOL_HWM=1: highest nonzero 4 KiB page of the main pool at
+  // 0x10000000 (the arena starts zeroed), every 500 frames.
+  if (std::getenv("CC_POOL_HWM") && (g_frame_delay_calls + 1u) % 500u == 0u) {
+    uint32_t top = 0;
+    for (uint32_t pg = 0; pg < (16u << 20) / 4096u; ++pg) {
+      uint64_t v = 0;
+      bool nz = false;
+      for (uint32_t o = 0; o < 4096u && !nz; o += 8u)
+        if (base.memory.load_be(0x10000000u + pg * 4096u + o, 8, v) == cc::xbox::MemoryError::ok && v) nz = true;
+      if (nz) top = pg + 1u;
+    }
+    cc_log("POOLHWM frame=%u top=%uK%c", g_frame_delay_calls + 1u, top * 4u, 10);
+  }
   if (std::getenv("CC_WORKSET") && (g_frame_delay_calls + 1u) % 1000u == 0u)
     cc_log("RASTER frame=%u count=%u seconds=%.3f update=%.3f render=%.3f%c", g_frame_delay_calls + 1u, g_raster_count, g_raster_seconds, g_update_seconds, g_render_seconds, 10);
   if (std::getenv("CC_WORKSET") && (g_frame_delay_calls + 1u) % 250u == 0u)
@@ -9624,9 +9637,12 @@ static void __imp__XamShowMarketplaceUI([[maybe_unused]] Context& ctx, Machine& 
 // exactly as a real console answers for an empty slot.
 static bool cc_four_players();
 static void __imp__XamUserGetName(Context& ctx, Machine& base) {
-  if (ctx.r3.u32 > 3u || (ctx.r4.u32 == 0u && ctx.r5.u32 != 0u))
+  if (ctx.r4.u32 == 0u && ctx.r5.u32 != 0u)
     base.fail(Error::unsupported, 0x8214A234u);
   if (ctx.r4.u32 && ctx.r5.u32) base.store(ctx.r4.u32, 1, 0u);
+  // An index past the four slots (the world map after level 3 asks for
+  // 0xFFFFFFFF in a four-player game) is no signed-in user either.
+  if (ctx.r3.u32 > 3u) { ctx.r3.u64 = 0x4DDu; return; }
   if (cc_four_players() && ctx.r3.u32 >= 1u && ctx.r3.u32 <= 3u && ctx.r4.u32 && ctx.r5.u32 >= 9u) {
     const char name[] = "Player ";
     for (uint32_t k = 0; k < 7u; ++k) base.store(ctx.r4.u32 + k, 1, uint8_t(name[k]));

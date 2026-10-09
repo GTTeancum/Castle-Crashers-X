@@ -512,7 +512,13 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   CHECK(uint32_t(image_size)==kImageBytes);
   constexpr uint32_t kHeapBytes = 0xE00000;  // game heap: level 1 high-water 13.3 MiB (retail budget)
   // Retail sizes of the guest arenas mapped further down (see there).
-  constexpr uint32_t kCrtHeapBytes = 0x100000, kMainPoolBytes = 0x480000, kPhysBytes = 0x480000;
+// Main pool backing (the game reserves 16 MiB): 7 MiB. Host 4P runs of
+// every level (CC_POOL_HWM) peak at 3.6-6.3 MiB (levels 1 and 20 highest);
+// 4.5 MiB stopped level 11 after level 13 and would stop levels 1, 9, 19, 20.
+#ifndef CC_MAIN_POOL_BYTES
+#define CC_MAIN_POOL_BYTES 0x700000
+#endif
+  constexpr uint32_t kCrtHeapBytes = 0x100000, kMainPoolBytes = CC_MAIN_POOL_BYTES, kPhysBytes = 0x480000;
   constexpr uint32_t kPhysSmallBytes = 0x100000, kTexStubBytes = 0x180000;
 #ifdef CC_FLAT_WINDOW
   // Play build: every guest region below lives in the flat guest window
@@ -762,9 +768,10 @@ static void renderer_caller_prefix_controls(const char* image_path) {
 #endif
   // Guest arena backing the single observed MmAllocatePhysicalMemoryEx main
   // pool (16 MiB + guard page) requested by exact sub_8209BC98 after Init.
-  // Retail budget: the game reserves 16 MiB but uses 3.9 MiB (high-water)
-  // once SOUNDS.PAK's unused MP3 data is stripped; only 4.5 MiB is backed and
-  // any access beyond it fails closed.
+  // Retail budget: the game reserves 16 MiB; single-player level 1 peaks
+  // at 3.9 MiB once SOUNDS.PAK's unused MP3 data is stripped, four players
+  // at up to 6.3 MiB (see CC_MAIN_POOL_BYTES); 7 MiB is backed and any
+  // access beyond it fails closed.
 #ifdef CC_FLAT_WINDOW
   uint8_t* const main_pool_host = cc_win::ptr(0x10000000u);
 #else
