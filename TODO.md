@@ -345,8 +345,14 @@ sound effects where possible; stream art wherever it can be streamed.
       test (menus at the old step, fight at true speed through level 13,
       the map and level 11): steady fight seconds 80% at 30 FPS, 96% at
       28+, average 29.0; area changes and level loads dip to 10-20 FPS for
-      about a second. Open: level 25 with four players stops on a stray
-      write; area-change hitches (heap churn, texture reads, load).
+      about a second. Then the font check backs off, game files are read
+      straight into guest memory (one NtReadFile per request), and audio
+      top-ups moved into the vblank wait: fight seconds 88% at a full 30
+      FPS, 95% at 28+, average 29.1 (runs differ in load: the real clock
+      makes every console run play out differently, so compare script ops
+      per frame too). Open: level 25 with four players stops on a stray
+      write; area-change hitches (heap churn, texture reads, load); the
+      built-in input script still runs in the play build until a pad press.
       The host capture now records the
       texture from the bind wrapper itself, since it used to read it in the
       exact bind's prologue hook; written from the exact
