@@ -334,6 +334,19 @@ sound effects where possible; stream art wherever it can be streamed.
       then continues through level 19 and the map into level 11, whose load
       stops at 3 @ 0x10529000: the main pool backs only 4.5 MiB (the next
       level needs more; see "later levels' memory").
+      2026-10-09 (branch speed-integ, console): flat guest window (no page
+      table; .text 12.1 -> 7 MB), native interpreter fast paths, display
+      list caches, fused native sprite/text drawing, native timeline seek,
+      game clock = real frame time (the 30 FPS present lock had made the
+      game run at half speed: movies ticked every other frame), no double
+      frame wait, frame end without a GPU wait (CPU/GPU overlap), main pool
+      7 MiB, full texture pack (7,009 textures, 253 MB, eager bake of
+      levels 1-33, first-use order with 512 KiB read-ahead). Scripted 4P
+      test (menus at the old step, fight at true speed through level 13,
+      the map and level 11): steady fight seconds 80% at 30 FPS, 96% at
+      28+, average 29.0; area changes and level loads dip to 10-20 FPS for
+      about a second. Open: level 25 with four players stops on a stray
+      write; area-change hitches (heap churn, texture reads, load).
       The host capture now records the
       texture from the bind wrapper itself, since it used to read it in the
       exact bind's prologue hook; written from the exact
