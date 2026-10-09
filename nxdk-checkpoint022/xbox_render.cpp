@@ -22,6 +22,7 @@
 void cc_xbox_audio_stats(unsigned* started, unsigned* submitted, unsigned* callbacks,
                          unsigned* underruns, unsigned* dropped);
 
+bool cc_xbox_audio_idle();  // xbox_audio.cpp: one audio buffer toward the queue target
 namespace {
 constexpr uint32_t kMaxGpuAddress = 0x03FFAFFFu;
 struct GpuVertex { float pos[4], col[4], uv[2]; };
@@ -75,7 +76,10 @@ void xr_end(uint32_t* p) {
 constexpr DWORD kPresentVblanks = 2;
 DWORD g_present_vbl = 0;
 void present() {
-  while (pb_get_vbl_counter() - g_present_vbl < kPresentVblanks) pb_wait_for_vbl();
+  // The wait for the vblank tops up the audio queue first (one buffer,
+  // ~0.5 ms, per check, so the present is late by at most one buffer).
+  while (pb_get_vbl_counter() - g_present_vbl < kPresentVblanks)
+    if (!cc_xbox_audio_idle()) pb_wait_for_vbl();
   while (pb_finished()) {}
   g_present_vbl = pb_get_vbl_counter();
 }

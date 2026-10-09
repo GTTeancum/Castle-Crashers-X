@@ -36,6 +36,16 @@ void provide(void (*render)(int16_t*, int)) {
 
 void on_interrupt(void*, void*) {}  // feeding is polled from the game thread
 
+void (*g_render)(int16_t*, int) = nullptr;  // the mixer, set by each pump
+unsigned g_target = 8;                      // queue depth the pump asked for
+
+// Buffers queued ahead of the one the AC97 is playing.
+unsigned queued() {
+  const unsigned civ = ac97()[0x114] & 31u;
+  const unsigned last = (g_provided - 1u) & 31u;
+  return (last - civ) & 31u;
+}
+
 bool start() {
   for (unsigned i = 0; i < kDma; ++i) {
     g_dma[i] = static_cast<uint8_t*>(MmAllocateContiguousMemoryEx(
@@ -69,15 +79,29 @@ void cc_xbox_audio_pump(void (*render)(int16_t* out, int samples)) {
   last_tick = now;
   // Margin of 8 buffers (~133 ms) past the last frame's length: the console
   // has frames of 55-140 ms in four-player fights, which drained the old
-  // 3-buffer margin (music stutter, 2026-10-04).
+  // 3-buffer margin (music stutter, 2026-10-04). Here only the buffers the
+  // next frame of the same length needs plus 3 are mixed; the rest of the
+  // margin is topped up while the frame waits for its vblank
+  // (cc_xbox_audio_idle), so a slow frame's refill no longer lands on the
+  // next frame as a burst (up to ~20 ms of mixing in one frame).
   unsigned target = unsigned(dt * 60u / 1000u) + 8u;
   if (target < 8u) target = 8u;
   if (target > kDma - 2u) target = kDma - 2u;
-  const unsigned civ = ac97()[0x114] & 31u;
-  const unsigned last = (g_provided - 1u) & 31u;
-  unsigned ahead = (last - civ) & 31u;
+  g_render = render;
+  g_target = target;
+  unsigned now_target = unsigned(dt * 60u / 1000u) + 3u;
+  if (now_target > target) now_target = target;
+  unsigned ahead = queued();
   if (ahead == 0) ++g_underruns;
-  while (ahead < target) { provide(render); ++ahead; }
+  while (ahead < now_target) { provide(render); ++ahead; }
+}
+
+// One more buffer toward the frame boundary's target if the queue is short
+// of it; false when it is full (the caller then waits for the vblank).
+bool cc_xbox_audio_idle() {
+  if (!g_start_ok || !g_render || queued() >= g_target) return false;
+  provide(g_render);
+  return true;
 }
 
 // Diagnostics for the on-screen overlay.
