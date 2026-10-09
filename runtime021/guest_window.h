@@ -54,6 +54,14 @@
 // play builds (verification build; make PAGETABLE=1 on the Xbox).
 #pragma once
 #include <stdint.h>
+// Backed game heap at 0x71000 (runtime021/update_boundary_tests.cpp; the
+// game's allocator is told CC_GAME_HEAP_LIMIT there). Host bake runs raise it.
+#ifndef CC_GAME_HEAP_BYTES
+#define CC_GAME_HEAP_BYTES 0xE00000
+#endif
+#ifndef CC_GAME_HEAP_LIMIT
+#define CC_GAME_HEAP_LIMIT 0x1000000
+#endif
 #if defined(CC_FAST) && !defined(CC_PAGE_TABLE)
 #define CC_FLAT_WINDOW 1
 #elif defined(CC_FAST)
@@ -152,6 +160,16 @@ __attribute__((always_inline)) inline const uint8_t* load_ptr(uint32_t a) {
 // stay within 32 KiB of the window.
 __attribute__((always_inline)) inline uint8_t* low_ptr(uint32_t a) {
   return reinterpret_cast<uint8_t*>(CC_WINDOW_BASE + uintptr_t(a));
+}
+// What a faulting guest address is, for the stop report: the failure bar
+// shows code 4 (instead of 3) for a game-heap block past the backed heap.
+inline bool past_backed_heap(uint32_t a) {
+  return a >= 0x71000u + CC_GAME_HEAP_BYTES && a < 0x71000u + CC_GAME_HEAP_LIMIT;
+}
+inline const char* fault_note(uint32_t a) {
+  if (a < 0x10000u) return "null pointer";
+  if (past_backed_heap(a)) return "game heap block past the backed heap";
+  return "unmapped";
 }
 inline bool in_window(const void* p) {
   return uintptr_t(p) - CC_WINDOW_BASE < uintptr_t(kWindowBytes);

@@ -483,8 +483,9 @@ static int cc_window_fault(EXCEPTION_POINTERS* ep) {
   if (r->ExceptionCode != 0xC0000005u || r->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
   const uintptr_t off = r->ExceptionInformation[1] - cc_win::kBase;
   if (!cc_win::fault_in_window(off)) return EXCEPTION_CONTINUE_SEARCH;
-  cc_elog("FAIL flat window: guest %08x not mapped\n", unsigned(cc_win::guest_of(off)));
-  cc_xr_show_fail(3u, cc_win::guest_of(off));
+  const uint32_t g = cc_win::guest_of(off);
+  ::DbgPrint("FAIL flat window: guest %08x not mapped (%s)\n", unsigned(g), cc_win::fault_note(g));
+  cc_xr_show_fail(cc_win::past_backed_heap(g) ? 4u : 3u, g);
   cc_fail_exit();
 }
 #endif
@@ -510,9 +511,6 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   CHECK(image_size>0);
   constexpr uint32_t kImageBytes = 0x2d0000u;
   CHECK(uint32_t(image_size)==kImageBytes);
-#ifndef CC_GAME_HEAP_BYTES
-#define CC_GAME_HEAP_BYTES 0xE00000
-#endif
   constexpr uint32_t kHeapBytes = CC_GAME_HEAP_BYTES;  // game heap: level 1 high-water 13.3 MiB (retail budget)
   // Retail sizes of the guest arenas mapped further down (see there).
 // Main pool backing (the game reserves 16 MiB): 7 MiB. Host 4P runs of
@@ -703,9 +701,6 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   // The allocator's heap limit (CC_GAME_HEAP_LIMIT, 16 MiB) is larger than
   // the backed heap (kHeapBytes): play stays far below it, and host bake runs
   // raise both (see CC_GAME_HEAP_BYTES).
-#ifndef CC_GAME_HEAP_LIMIT
-#define CC_GAME_HEAP_LIMIT 0x1000000
-#endif
   store(m,0x70000+8,4,0x71000);
   store(m,0x70000+12,4,0x71000+CC_GAME_HEAP_LIMIT);
   store(m,0x70000+16,4,0x71000);

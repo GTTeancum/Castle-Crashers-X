@@ -8822,6 +8822,9 @@ static uint32_t cc_tex_rasterize(Context& ctx, Machine& base, uint32_t job,
   ++g_raster_count;
   return r;
 #else
+  // A texture rasterized on the console is missing from the bake pack (the
+  // rasterizer's 4.8 MiB of game-heap work blocks then come mid-level).
+  ::DbgPrint("TEXBAKE miss: job %08x %ux%u rasterized live (not in the pack)\n", unsigned(job), unsigned(w), unsigned(h));
   return cc_tex_rasterize_impl(ctx, base, job, w, h, hash);
 #endif
 }

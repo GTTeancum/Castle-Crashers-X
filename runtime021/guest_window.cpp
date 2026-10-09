@@ -47,7 +47,8 @@ static long __stdcall fault_report(CcExceptionPointers* ep) {
   if (r->code != 0xC0000005ul || r->count < 2) return 0;  // EXCEPTION_CONTINUE_SEARCH
   const uintptr_t off = r->info[1] - uintptr_t(g_base);
   if (!fault_in_window(off)) return 0;
-  cc_elog("FAIL flat window: guest %08x not mapped (%s)\n", guest_of(off), r->info[0] ? "write" : "read");
+  cc_elog("FAIL flat window: guest %08x not mapped (%s, %s)\n", guest_of(off), r->info[0] ? "write" : "read",
+          fault_note(guest_of(off)));
   if (std::getenv("CC_FAULT_TRACE")) {
     // Host code addresses (offsets from the exe's base) of the faulting
     // instruction and the stack, for llvm-symbolizer on a -g build.
