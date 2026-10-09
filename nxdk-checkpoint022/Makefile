@@ -155,6 +155,14 @@ endif
 ifneq ($(TEXTEXACT),)
 CXXFLAGS += -DCC_TEXT_EXACT_BUILD
 endif
+# Depth set bisect: DEPTHEXACT=1 (recompiled sub_820878E0)
+ifneq ($(DEPTHEXACT),)
+CXXFLAGS += -DCC_DEPTH_EXACT_BUILD
+endif
+# Timeline seek bisect: SEEKEXACT=1 (recompiled sub_82087F70, runtime021/seek.inc)
+ifneq ($(SEEKEXACT),)
+CXXFLAGS += -DCC_SEEK_EXACT_BUILD
+endif
 ifneq ($(NOFMAFAST),)
 CXXFLAGS += -DCC_NO_FMA_FAST
 endif
@@ -183,7 +191,7 @@ CFLAGS += -fms-compatibility-version=19.29
 NXDK_SDL = y
 include $(NXDK_DIR)/Makefile
 
-$(CURDIR)/../runtime021/bridge.obj: $(CURDIR)/../runtime021/audio.inc $(CURDIR)/../runtime021/bodies.inc $(wildcard $(CURDIR)/../runtime021/as_*.inc) $(CURDIR)/../runtime008/bodies.inc $(CURDIR)/../runtime021/decls.inc $(CURDIR)/../runtime021/dispatch.inc $(wildcard $(CURDIR)/../runtime021/generated/*.inc) $(CURDIR)/../runtime021/cc_log.h $(CURDIR)/../runtime021/guest_window.h
+$(CURDIR)/../runtime021/bridge.obj: $(CURDIR)/../runtime021/audio.inc $(CURDIR)/../runtime021/bodies.inc $(CURDIR)/../runtime021/seek.inc $(wildcard $(CURDIR)/../runtime021/as_*.inc) $(CURDIR)/../runtime008/bodies.inc $(CURDIR)/../runtime021/decls.inc $(CURDIR)/../runtime021/dispatch.inc $(wildcard $(CURDIR)/../runtime021/generated/*.inc) $(CURDIR)/../runtime021/cc_log.h $(CURDIR)/../runtime021/guest_window.h
 $(CURDIR)/../runtime021/update_boundary_tests.obj: $(CURDIR)/../runtime021/cc_log.h $(CURDIR)/../runtime021/selftest.h $(CURDIR)/../runtime021/guest_window.h
 $(CURDIR)/../runtime021/guest_window.obj: $(CURDIR)/../runtime021/cc_log.h $(CURDIR)/../runtime021/guest_window.h
 
