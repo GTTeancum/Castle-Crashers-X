@@ -58,10 +58,13 @@ ifneq ($(PAGETABLE),)
 CXXFLAGS += -DCC_PAGE_TABLE
 endif
 # Flat window offset mask (keeps stray guest addresses out of kernel memory;
-# runtime021/guest_window.h), for timing it: make NOWINDOWMASK=1 (no mask; a
-# stray guest address can then reach kernel memory) or WINDOWMASK=stores
-# (loads skip it; stray writes stay out of kernel memory). Touch
+# runtime021/guest_window.h). Default: stores only (loads skip it; a stray
+# write still cannot reach kernel memory). Console 4P level 13: the full
+# mask cost ~4% of update time (18.4 vs 17.6 ms median), so loads go
+# without. make WINDOWMASK=all masks loads too; make NOWINDOWMASK=1 drops
+# it (a stray guest address can then reach kernel memory). Touch
 # runtime021/bridge.cpp, guest_window.cpp and update_boundary_tests.cpp.
+WINDOWMASK ?= stores
 ifneq ($(NOWINDOWMASK),)
 CXXFLAGS += -DCC_WINDOW_NOMASK
 endif
