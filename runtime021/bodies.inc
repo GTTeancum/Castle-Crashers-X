@@ -489,7 +489,15 @@ static void cc_heap_walk_census(Machine& base, uint32_t heap, uint32_t stop_addr
                  double(g_hw_free_nodes) / double(g_hw_free_calls ? g_hw_free_calls : 1));
 }
 #endif
+#ifdef CC_XBOX_DRIVER
+// Console SLOW lines: per-frame counts of script ops, custom function calls,
+// clip frame updates and game-heap allocations.
+static uint32_t g_fc[4];
+#endif
 static void sub_8209BDD8(Context& ctx, Machine& base) {
+#ifdef CC_XBOX_DRIVER
+  ++g_fc[3];
+#endif
 #ifndef CC_XBOX_DRIVER
   const uint32_t size = ctx.r4.u32, lr = uint32_t(ctx.lr);
   cc_heap_walk_census(base, ctx.r3.u32, 0u, false, size + 16u);
@@ -1106,6 +1114,9 @@ static CC_HOT_FN void sub_82088A08(Context& ctx, Machine& base) {
 static uint32_t g_clip_ticks = 0;  // host CC_TICK_STATS: clip frame updates per frame
 #endif
 static CC_HOT_FN void sub_8208A228(Context& ctx, Machine& base) {
+#ifdef CC_XBOX_DRIVER
+  ++g_fc[2];
+#endif
 #ifndef CC_XBOX_DRIVER
   static const bool walk_exact = std::getenv("CC_WALK_EXACT") != nullptr;  // host A/B switch
   ++g_clip_ticks;
@@ -2984,6 +2995,9 @@ static void cc_drain_workers(Machine& base, uint32_t r13) {
 // frames, then stops fail-closed at this exact boundary with Error::capacity
 // so the harness measures whole frames and never fakes an exit path.
 static uint32_t g_frame_delay_calls = 0;
+#if defined(CC_XBOX_DRIVER) && defined(CC_FAST) && !defined(CC_BENCH)
+static bool g_main_loop_sleep = false;  // inside the main loop's Sleep (sub_820B6068 wrapper)
+#endif
 static constexpr uint32_t k_frame_budget_default = 10000;
 // Host-only probe override: CC_FRAME_BUDGET=<n> stops the diagnostic after
 // n frames. The Xbox build and the sealed test always use the default.
@@ -3088,16 +3102,68 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   }
   g_frame_update_us = g_frame_render_us = 0;
 #if defined(CC_FAST) && !defined(CC_BENCH)
-  // Play build: honour the game's own frame pacing (it asks to sleep the
-  // rest of a 1/60 s frame when it finished early). A late frame still
-  // asks for its 2 ms minimum; skip that.
+  // Game clock = real frame time. The main loop (sub_82070AC8) takes the
+  // next update's step from f31 = this frame's update + render time,
+  // clamped to 1/60..1/10 s afterwards; on the 360 its own sleep filled the
+  // rest of a 1/60 s frame, so that matched the real frame. Here the
+  // present above holds frames to two vblanks outside that measurement: a
+  // 33 ms frame was stepped as 1/60 s, so the 30 fps movies advanced every
+  // other frame and the game ran at half speed in light scenes (one frame
+  // with the whole movie tick, the next with nothing). When the loop's own
+  // Sleep led here (sub_820B6068, sub_820B74B0 and this hook leave f31
+  // alone), f31 is replaced by the time since the previous present, rounded
+  // to single precision as the loop's frsp does. CC_GAME_STEP builds keep
+  // the old step.
   {
+    static uint64_t last_present = 0;
+    const uint64_t now = ::cc_xbox_clock(1000000u);
+#ifndef CC_GAME_STEP
+    if (last_present && g_main_loop_sleep) ctx.f31.f64 = double(float(double(now - last_present) * 1e-6));
+#endif
+    last_present = now;
+  }
+#endif
+#if defined(CC_FAST) && !defined(CC_BENCH)
+  // Play build: the game's own frame pacing (it asks to sleep the rest of a
+  // 1/60 s frame when it finished early; a late frame still asks for its
+  // 2 ms minimum, which was always skipped).
+  {
+    // The Xbox renderer's present already holds frames to two vblanks (30
+    // FPS); the game computed this sleep for a 1/60 s frame before that
+    // wait, so honouring it as well stretched light frames to ~45 ms. Only
+    // CC_GAME_SLEEP builds still sleep.
     const uint64_t interval = uint64_t(0) - base.load(ctx.r5.u32, 8);
+#ifdef CC_GAME_SLEEP
     if (interval > 20000u) {
+#else
+    if (false) {
+#endif
       const uint64_t t = ::cc_xbox_clock(1000000u);
       ::cc_xbox_sleep_100ns(interval);
       g_fs_us[3] += ::cc_xbox_clock(1000000u) - t;
     }
+  }
+  {
+    // Frames well over the 30 FPS budget, one debug line each with their
+    // parts in 0.1 ms: update, render, audio, frame end (overlay, GPU wait,
+    // present), the game's pacing sleep and what it asked for, and workers.
+    static uint64_t last = 0, prev[7];
+    static uint32_t frame_no = 0;
+    const uint64_t now = ::cc_xbox_clock(1000000u);
+    const uint64_t asked = uint64_t(0) - base.load(ctx.r5.u32, 8);
+    ++frame_no;
+    // The sums restart once a second (cc_xbox_frame_stats), mid-frame.
+    auto d = [](unsigned k) { return unsigned((g_fs_us[k] >= prev[k] ? g_fs_us[k] - prev[k] : g_fs_us[k]) / 100u); };
+    if (last && now - last > 45000u)
+      ::DbgPrint("SLOW f=%u ms=%u upd=%u ren=%u aud=%u end=%u slp=%u ask=%u wrk=%u ops=%u calls=%u clips=%u allocs=%u\n", frame_no,
+                 unsigned((now - last) / 100u), d(5), d(6), d(1), d(2), d(3), unsigned(asked / 1000u), d(4), g_fc[0], g_fc[1], g_fc[2], g_fc[3]);
+    // A plain frame once a second, for comparison.
+    else if (frame_no % 30u == 0u)
+      ::DbgPrint("NORM f=%u ms=%u upd=%u ren=%u ops=%u calls=%u clips=%u allocs=%u\n", frame_no, unsigned((now - last) / 100u), d(5), d(6),
+                 g_fc[0], g_fc[1], g_fc[2], g_fc[3]);
+    __builtin_memset(g_fc, 0, sizeof g_fc);
+    __builtin_memcpy(prev, g_fs_us, sizeof prev);
+    last = now;
   }
 #endif
 #endif
@@ -3358,7 +3424,21 @@ static void checkpoint020_mm_store_u32(Machine& base, uint32_t a, uint32_t v) {
 #undef DEFINE_REX_FUNC
 #define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
 #endif
+#if defined(CC_XBOX_DRIVER) && defined(CC_FAST) && !defined(CC_BENCH)
+#define sub_820B6068 sub_820B6068_exact
 #include "generated/sub_820B6068.inc"
+#undef sub_820B6068
+// Sleep (tail call to SleepEx sub_820B74B0). The main loop's call, return
+// address 0x82070EB8, is the frame boundary whose f31 the
+// KeDelayExecutionThread hook replaces with the real frame time.
+static void sub_820B6068(Context& ctx, Machine& base) {
+  g_main_loop_sleep = uint32_t(ctx.lr) == 0x82070EB8u;
+  sub_820B6068_exact(ctx, base);
+  g_main_loop_sleep = false;
+}
+#else
+#include "generated/sub_820B6068.inc"
+#endif
 #include "generated/sub_820B74B0.inc"
 #include "generated/sub_820BE8F8.inc"
 #include "generated/sub_820BE928.inc"

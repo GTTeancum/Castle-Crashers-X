@@ -601,13 +601,18 @@ void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
     // The same window on the debug channel (XBDM debug strings, read on the
     // PC by tools/xbox_console.py): times in 0.1 ms.
     {
+      // dbg: how long the previous second's debug lines took to send (they
+      // go out over the debug monitor's network channel), in 0.1 ms.
+      static uint64_t dbg_us = 0;
+      const uint64_t d0 = now_us();
       const unsigned el = now - window_start;
-      DbgPrint("PERF t=%u fps=%u ms=%u max=%u upd=%u ren=%u draw=%u wait=%u\n", unsigned(now), window_frames * 1000u / el,
+      DbgPrint("PERF t=%u fps=%u ms=%u max=%u upd=%u ren=%u draw=%u wait=%u dbg=%u\n", unsigned(now), window_frames * 1000u / el,
                el * 10u / window_frames, unsigned(max_frame_us / 100u), unsigned(sum_update / window_frames / 100u),
                unsigned(sum_render / window_frames / 100u), unsigned(sum_draw / window_frames / 100u),
-               unsigned(sum_wait / window_frames / 100u));
+               unsigned(sum_wait / window_frames / 100u), unsigned(dbg_us / 100u));
       max_frame_us = 0;
       { void cc_xbox_perf_second(unsigned frames); cc_xbox_perf_second(window_frames); }  // xbox_perf.cpp
+      dbg_us = now_us() - d0;
     }
     shown_fps = window_frames * 1000u / (now - window_start);
     shown_ms = (now - window_start) / window_frames;

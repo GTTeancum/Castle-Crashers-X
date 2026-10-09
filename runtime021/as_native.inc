@@ -443,6 +443,9 @@ static __attribute__((noinline)) uint32_t cc_as_step_guest(Context& ctx, Machine
   return cc_as_guest_op(ctx, base, op, L.s, L.rec, L.r6, L.done, lr);
 }
 static CC_HOT_FN inline uint32_t cc_as_step(Context& ctx, Machine& base, CcAsLoop& L, uint32_t op, uint32_t lr) {
+#ifdef CC_XBOX_DRIVER
+  ++g_fc[0];
+#endif
 #ifdef CC_OP_STATS
   const uint64_t t0 = __builtin_ia32_rdtsc();
   const int me = g_op_sp < 127 ? g_op_sp++ : 127;
@@ -769,6 +772,9 @@ static __attribute__((noinline, cold)) void cc_as_call_error(Context& ctx, Machi
 static CC_HOT_FN void sub_8207B150(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8207B150);
   CC_FPROF_SCOPE(sub_8207B150_native);
+#ifdef CC_XBOX_DRIVER
+  ++g_fc[1];
+#endif
   cc_as_init_switches(base);
   const uint32_t s = ctx.r3.u32, id = ctx.r4.u32, argc = ctx.r5.u32, argv = ctx.r6.u32;
   const uint32_t ret = ctx.r7.u32, done = ctx.r8.u32;
