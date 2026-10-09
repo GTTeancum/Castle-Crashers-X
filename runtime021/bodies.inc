@@ -9652,6 +9652,14 @@ static bool cc_four_players() {
 // attacks, walk back, heavy and light attacks; offsets keep the players apart.
 static void cc_combat_loop(uint32_t user, uint32_t frame, uint32_t start, uint32_t& buttons, uint32_t& thumbs) {
   if (frame < start) return;
+#if defined(CC_XBOX_DRIVER) && defined(CC_FAST) && !defined(CC_BENCH) && !defined(CC_GAME_STEP)
+  // The play build steps the game by the real frame (1/30 s), twice the
+  // game time per frame of the host harness the loop was tuned on (1/60 s);
+  // each action is held for twice as many frames, so the fight plays out
+  // the same in game time instead of marching through the level at double
+  // pace.
+  frame = start + (frame - start) / 2u;
+#endif
   // Net movement is to the right (the camera only scrolls when the whole
   // party moves on, and the enemies are ahead), attacking all the way.
   const uint32_t t = (frame - start + user * 23u) % 400u;

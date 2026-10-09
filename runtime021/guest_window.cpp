@@ -501,8 +501,11 @@ bool open(const Layout& L) {
     CC_WIN_LOG("MEM ring alias window %08x..%08x on one %uK block: %s\n", unsigned(alo), unsigned(ahi),
                unsigned(period >> 10), ring_on ? "on" : ring_why);
   }
-  CC_WIN_LOG("MEM flat window base=%08llx span=%08x reserved=%08x guard=%s committed=%uK (4K pages %uK, 4M pages %uK, ring block %uK) ranges=%u\n",
-             (unsigned long long)CC_WINDOW_BASE, unsigned(kSpan), unsigned(reserved), guard ? "on" : "off", total_k,
+  // (The kernel's DbgPrint has no 64-bit conversions: %llx shifts the
+  // arguments after it, and the next %s then reads a number as a string,
+  // which faulted at boot. The base goes out as two 32-bit halves.)
+  CC_WIN_LOG("MEM flat window base=%08x%08x span=%08x reserved=%08x guard=%s committed=%uK (4K pages %uK, 4M pages %uK, ring block %uK) ranges=%u\n",
+             unsigned(uint64_t(CC_WINDOW_BASE) >> 32), unsigned(CC_WINDOW_BASE), unsigned(kSpan), unsigned(reserved), guard ? "on" : "off", total_k,
              unsigned(g_committed >> 10),
              unsigned(large_bytes >> 10), unsigned(ring_bytes >> 10), pages.n);
 #undef CC_WIN_LOG
