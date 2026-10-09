@@ -7699,16 +7699,43 @@ static void sub_82084DB8(Context& ctx, Machine& base) {
 // by cc_swf_mask_ok). A signed field of n bits takes bit n-1 as its sign;
 // n = 0 reads 0 and moves nothing.
 struct CcSwfBits {
-  uint32_t p, pos, bits, cpos = ~0u, cur = 0u;
+  uint32_t p, pos, bits;
+  // Host bytes of the record (to the end of its page); the cursor reads a
+  // byte only when it takes a bit from it, as the readers do, and takes
+  // all the bits it needs from a byte at once.
+  uint32_t avail = 0u;
+  const uint8_t* hp;
+  CcSwfBits(uint32_t rec, uint32_t start_bits) : p(rec), pos(0u), bits(start_bits), hp(cc_host_span(rec, avail)) {}
+  uint32_t byte(Machine& base) const { return pos < avail ? hp[pos] : REX_LOAD_U8(p + pos); }
   uint32_t bit(Machine& base) {
-    if (pos != cpos) { cpos = pos; cur = REX_LOAD_U8(p + pos); }
-    const uint32_t b = (cur >> (bits - 1u)) & 1u;
+    const uint32_t b = (byte(base) >> (bits - 1u)) & 1u;
     if (--bits == 0u) { bits = 8u; ++pos; }
     return b;
   }
+  // n <= 32 bits, most significant first. When 8 bytes from the current
+  // one are host-mapped, one big-endian load covers the field (the bytes
+  // past it are host reads only, never guest accesses).
   uint32_t ubits(Machine& base, uint32_t n) {
+    if (n == 0u) return 0u;
+    if (pos + 8u <= avail) {
+      uint64_t w;
+      __builtin_memcpy(&w, hp + pos, 8);
+      w = __builtin_bswap64(w);
+      const uint32_t v = uint32_t((w << (8u - bits)) >> (64u - n));
+      const uint32_t used = 8u - bits + n;  // from the start of byte pos
+      pos += used >> 3;
+      bits = 8u - (used & 7u);
+      return v;
+    }
     uint32_t v = 0u;
-    for (uint32_t i = 0; i < n; ++i) v = (v << 1) | bit(base);
+    while (n != 0u) {
+      const uint32_t take = n < bits ? n : bits;
+      const uint32_t chunk = (byte(base) >> (bits - take)) & ((1u << take) - 1u);
+      v = take < 32u ? (v << take) | chunk : chunk;
+      bits -= take;
+      n -= take;
+      if (bits == 0u) { bits = 8u; ++pos; }
+    }
     return v;
   }
   int32_t sbits(Machine& base, uint32_t n) {
@@ -7739,6 +7766,7 @@ static inline bool cc_swf_mask_ok(Machine& base) {
 // CC_PLACE_EXACT_BUILD (Xbox) run the exact body; CC_ORACLE=1 or
 // CC_PLACE_ORACLE=1 run it after the native decode and compare.
 static CC_HOT_FN void sub_82085890(Context& ctx, Machine& base) {
+  CC_FPROF_SCOPE(sub_82085890_native);
 #ifndef CC_XBOX_DRIVER
   static const bool exact = std::getenv("CC_PLACE_EXACT") != nullptr;
   static const bool oracle = std::getenv("CC_ORACLE") != nullptr || std::getenv("CC_PLACE_ORACLE") != nullptr;
@@ -7753,7 +7781,7 @@ static CC_HOT_FN void sub_82085890(Context& ctx, Machine& base) {
   auto f32 = [](uint32_t b) { float f; __builtin_memcpy(&f, &b, 4); return f; };
   auto bits = [](float f) { uint32_t b; __builtin_memcpy(&b, &f, 4); return b; };
   auto scaled = [](int32_t v, float c) { const float f = float(double(int64_t(v))); return float(double(f) * double(c)); };
-  CcSwfBits b{rec, 0u, 7u};
+  CcSwfBits b(rec, 7u);
   uint32_t out[6] = {};
   bool have[3] = {false, false, false};  // scale, rotate, translate
   int32_t last = 0;  // the last field converted
@@ -7846,6 +7874,7 @@ static CC_HOT_FN void sub_82085890(Context& ctx, Machine& base) {
 // CC_CXFORM_ORACLE=1 run it instead and compare the terms, the result and
 // the frame words with the native's.
 static CC_HOT_FN void sub_82083F50(Context& ctx, Machine& base) {
+  CC_FPROF_SCOPE(sub_82083F50_native);
 #ifndef CC_XBOX_DRIVER
   static const bool exact = std::getenv("CC_CXFORM_EXACT") != nullptr;
   static const bool oracle = std::getenv("CC_ORACLE") != nullptr || std::getenv("CC_CXFORM_ORACLE") != nullptr;
@@ -7858,7 +7887,7 @@ static CC_HOT_FN void sub_82083F50(Context& ctx, Machine& base) {
   const uint32_t t = ctx.r3.u32, rec = ctx.r4.u32, r1 = ctx.r1.u32, f = r1 - 176u;
   const uint32_t b0 = REX_LOAD_U8(rec);
   const bool has_mul = (b0 & 0x40u) != 0u, has_add = (b0 & 0x80u) != 0u;
-  CcSwfBits b{rec, 0u, 6u};
+  CcSwfBits b(rec, 6u);
   const uint32_t n = b.ubits(base, 4u);
   uint16_t mul[4] = {}, add[4] = {};
   if (has_mul)
@@ -9661,6 +9690,7 @@ static void __imp__XexGetProcedureAddress(Context& ctx, Machine& base) {
 // original; CC_ORACLE=1 or CC_INTERN_ORACLE=1 run it instead and compare
 // the id (the new id on a miss) and +40/+44 with the native's.
 static CC_HOT_FN void sub_8209D948(Context& ctx, Machine& base) {
+  CC_FPROF_SCOPE(sub_8209D948_native);
 #ifndef CC_XBOX_DRIVER
   static const bool exact = std::getenv("CC_INTERN_EXACT") != nullptr;
   static const bool oracle = std::getenv("CC_ORACLE") != nullptr || std::getenv("CC_INTERN_ORACLE") != nullptr;
@@ -9677,25 +9707,32 @@ static CC_HOT_FN void sub_8209D948(Context& ctx, Machine& base) {
   if (str == 0u || REX_LOAD_U8(str) == 0u) { ctx.r3.u64 = 0u; return; }
   uint32_t avail = 0u;
   const uint8_t* hp = cc_host_span(str, avail);
-  auto ch = [&](uint32_t i) -> uint32_t { return i < avail ? hp[i] : REX_LOAD_U8(str + i); };
   uint32_t h = 0u, len = 0u;
-  for (uint32_t c = ch(0u); c != 0u; c = ch(++len)) h += (119u + len) * c;
-  const uint32_t mask = REX_LOAD_U32(t + 32u) - 1u, slots = REX_LOAD_U32(t + 36u);
+  while (len < avail && hp[len] != 0u) { h += (119u + len) * hp[len]; ++len; }
+  if (len == avail)  // no host bytes, or the string runs past its page
+    for (uint32_t c; (c = REX_LOAD_U8(str + len)) != 0u; ++len) h += (119u + len) * c;
+  const bool host_str = len < avail;
+  const uint32_t mask = REX_LOAD_U32(t + 32u) - 1u, slots = REX_LOAD_U32(t + 36u), strings = REX_LOAD_U32(t + 28u);
   const uint32_t first = h & mask;
   uint32_t pos = first;
   uint32_t id = REX_LOAD_U16(slots + pos * 2u);
   pos = (pos + 1u) & mask;
   while (id != 0u) {
     // strcmp(str, string of id): equal when they agree up to str's zero byte
-    const uint32_t s2 = REX_LOAD_U32(REX_LOAD_U32(t + 28u) + id * 4u);
+    const uint32_t s2 = REX_LOAD_U32(strings + id * 4u);
     uint32_t avail2 = 0u;
     const uint8_t* hq = cc_host_span(s2, avail2);
     uint32_t i = 0u;
-    for (; i <= len; ++i) {
-      const uint32_t q = i < avail2 ? hq[i] : REX_LOAD_U8(s2 + i);
-      if (q != (i < len ? ch(i) : 0u)) break;
+    if (host_str && len < avail2) {
+      while (i < len && hp[i] == hq[i]) ++i;
+      if (i == len && hq[len] == 0u) break;
+    } else {
+      for (; i <= len; ++i) {
+        const uint32_t q = i < avail2 ? hq[i] : REX_LOAD_U8(s2 + i);
+        if (q != (i < len ? REX_LOAD_U8(str + i) : 0u)) break;
+      }
+      if (i > len) break;
     }
-    if (i > len) break;
     id = REX_LOAD_U16(slots + pos * 2u);
     pos = (pos + 1u) & mask;
   }
