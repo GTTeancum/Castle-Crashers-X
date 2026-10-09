@@ -18,6 +18,8 @@ __declspec(dllimport) void* __stdcall CreateFileMappingA(void*, void*, unsigned 
 __declspec(dllimport) void* __stdcall MapViewOfFileEx(void*, unsigned long, unsigned long, unsigned long, size_t, void*);
 __declspec(dllimport) int __stdcall UnmapViewOfFile(const void*);
 __declspec(dllimport) int __stdcall CloseHandle(void*);
+__declspec(dllimport) void* __stdcall GetModuleHandleA(const char*);
+__declspec(dllimport) unsigned short __stdcall RtlCaptureStackBackTrace(unsigned long, unsigned long, void**, unsigned long*);
 }
 struct CcExceptionRecord {
   unsigned long code, flags;
@@ -46,6 +48,15 @@ static long __stdcall fault_report(CcExceptionPointers* ep) {
   const uintptr_t off = r->info[1] - uintptr_t(g_base);
   if (!fault_in_window(off)) return 0;
   cc_elog("FAIL flat window: guest %08x not mapped (%s)\n", guest_of(off), r->info[0] ? "write" : "read");
+  if (std::getenv("CC_FAULT_TRACE")) {
+    // Host code addresses (offsets from the exe's base) of the faulting
+    // instruction and the stack, for llvm-symbolizer on a -g build.
+    const uintptr_t mod = uintptr_t(GetModuleHandleA(nullptr));
+    cc_elog("FAULTPC %llx\n", (unsigned long long)(uintptr_t(r->address) - mod));
+    void* frames[24];
+    const unsigned short n = RtlCaptureStackBackTrace(0, 24, frames, nullptr);
+    for (unsigned short i = 0; i < n; ++i) cc_elog("FAULTSTACK %llx\n", (unsigned long long)(uintptr_t(frames[i]) - mod));
+  }
   std::fflush(nullptr);
   std::exit(1);
 }

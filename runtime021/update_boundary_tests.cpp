@@ -700,14 +700,20 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   store(m,0x6810c,1,0);
   store(m,0x822673c0,4,0x70000);
   store(m,0x8228a7b7,1,1);
+  // The allocator's heap limit (CC_GAME_HEAP_LIMIT, 16 MiB) is larger than
+  // the backed heap (kHeapBytes): play stays far below it, and host bake runs
+  // raise both (see CC_GAME_HEAP_BYTES).
+#ifndef CC_GAME_HEAP_LIMIT
+#define CC_GAME_HEAP_LIMIT 0x1000000
+#endif
   store(m,0x70000+8,4,0x71000);
-  store(m,0x70000+12,4,0x1071000);
+  store(m,0x70000+12,4,0x71000+CC_GAME_HEAP_LIMIT);
   store(m,0x70000+16,4,0x71000);
   store(m,0x70000+24,4,1);
   store(m,0x70000+32,4,16);
   store(m,0x71000+0,4,0);
   store(m,0x71000+4,4,0);
-  store(m,0x71000+8,4,0x1000000);
+  store(m,0x71000+8,4,CC_GAME_HEAP_LIMIT);
   store(m,0x71000+12,4,0);
   // The sealed image carries unresolved Xbox loader tokens in imported-variable
   // slots. Model only the exact variable slots reached by this graphics path, and

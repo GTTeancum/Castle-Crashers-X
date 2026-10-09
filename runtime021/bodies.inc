@@ -449,6 +449,10 @@ static inline bool cc_heap_exact() {
 // mirror, the mirror is rebuilt on the next call.
 static inline void cc_heap_alloc_any(Context& ctx, Machine& base) {
   const uint32_t h = ctx.r3.u32;
+#ifndef CC_XBOX_DRIVER
+  if (std::getenv("CC_HEAP_BIG") && ctx.r4.u32 >= 0x40000u)
+    std::fprintf(stderr, "HEAPBIG size=%u lr=%08x\n", ctx.r4.u32, uint32_t(ctx.lr));
+#endif
   if (cc_heap_exact() || !cc_heap_alloc(ctx, base)) {
 #ifndef CC_XBOX_DRIVER
     if (!cc_heap_exact()) ++g_heap_st.fallbacks;
@@ -8824,6 +8828,10 @@ static uint32_t cc_tex_rasterize(Context& ctx, Machine& base, uint32_t job,
 static uint32_t cc_tex_rasterize_impl(Context& ctx, Machine& base, uint32_t job,
                                       uint32_t w, uint32_t h, uint32_t& hash) {
   const uint32_t scratch = cc_phys_alloc(base, w * h * 4u, 0x1000u);
+#ifndef CC_XBOX_DRIVER
+  if (std::getenv("CC_RASTER_LOG"))
+    std::fprintf(stderr, "RASTERIZE frame=%u job=%08x w=%u h=%u scratch=%08x\n", g_frame_delay_calls, job, w, h, scratch);
+#endif
   base.memory.store_be(job + 564u, 4, scratch);
   Context c = ctx;
   c.r3.u64 = job;
