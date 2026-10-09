@@ -3328,7 +3328,16 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
         if (base.memory.load_be(0x10000000u + pg * 4096u + o, 8, v) == cc::xbox::MemoryError::ok && v) nz = true;
       if (nz) top = pg + 1u;
     }
-    cc_log("POOLHWM frame=%u top=%uK%c", g_frame_delay_calls + 1u, top * 4u, 10);
+    // Game heap (0x71000 up, 24 MiB probe builds): the same scan.
+    uint32_t htop = 0;
+    for (uint32_t pg = 0; pg < (24u << 20) / 4096u; ++pg) {
+      uint64_t v = 0;
+      bool nz = false;
+      for (uint32_t o = 0; o < 4096u && !nz; o += 8u)
+        if (base.memory.load_be(0x71000u + pg * 4096u + o, 8, v) == cc::xbox::MemoryError::ok && v) nz = true;
+      if (nz) htop = pg + 1u;
+    }
+    cc_log("POOLHWM frame=%u top=%uK heap=%uK%c", g_frame_delay_calls + 1u, top * 4u, htop * 4u, 10);
   }
   if (std::getenv("CC_WORKSET") && (g_frame_delay_calls + 1u) % 1000u == 0u)
     cc_log("RASTER frame=%u count=%u seconds=%.3f update=%.3f render=%.3f%c", g_frame_delay_calls + 1u, g_raster_count, g_raster_seconds, g_update_seconds, g_render_seconds, 10);

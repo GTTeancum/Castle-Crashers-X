@@ -510,7 +510,10 @@ static void renderer_caller_prefix_controls(const char* image_path) {
   CHECK(image_size>0);
   constexpr uint32_t kImageBytes = 0x2d0000u;
   CHECK(uint32_t(image_size)==kImageBytes);
-  constexpr uint32_t kHeapBytes = 0xE00000;  // game heap: level 1 high-water 13.3 MiB (retail budget)
+#ifndef CC_GAME_HEAP_BYTES
+#define CC_GAME_HEAP_BYTES 0xE00000
+#endif
+  constexpr uint32_t kHeapBytes = CC_GAME_HEAP_BYTES;  // game heap: level 1 high-water 13.3 MiB (retail budget)
   // Retail sizes of the guest arenas mapped further down (see there).
 // Main pool backing (the game reserves 16 MiB): 7 MiB. Host 4P runs of
 // every level (CC_POOL_HWM) peak at 3.6-6.3 MiB (levels 1 and 20 highest);
