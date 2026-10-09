@@ -669,7 +669,18 @@ void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
     flush_overlay();
   }
   const uint64_t w0 = now_us();
+  // No wait for the GPU here: the flip is queued behind this frame's draws,
+  // and the next frame's begin_frame (pb_reset jumps the push buffer back
+  // to its head and waits for the GPU to get there) is the first point that
+  // reuses push-buffer, vertex or texture memory the GPU may still read. So
+  // the game's next update runs while the GPU draws this frame (the wait
+  // here was ~15% of the CPU in the four-player marsh fight). XRSERIAL=1
+  // waits here as before.
+#ifdef CC_XR_SERIAL
   xr_flush(); while (pb_busy()) {}
+#else
+  xr_flush();
+#endif
   present();
   last_wait = now_us() - w0;
   if (!g_shown) { pb_show_front_screen(); g_shown = true; }

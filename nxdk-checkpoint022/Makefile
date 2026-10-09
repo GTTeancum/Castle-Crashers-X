@@ -131,6 +131,11 @@ endif
 ifneq ($(SPRITERING),)
 CXXFLAGS += -DCC_SPRITE_RING_BUILD
 endif
+# Frame end waits for the GPU to finish the frame before presenting (the
+# CPU and GPU then never overlap): make XRSERIAL=1 (bisect only)
+ifneq ($(XRSERIAL),)
+CXXFLAGS += -DCC_XR_SERIAL
+endif
 # Draw walk bisect: WALKVCALL=1 (every method through cc_vcall, no visibility
 # chains), WALKNOINHERIT=1 (the visibility query for every child),
 # WALKNOPREFETCH=1 (no next-sibling prefetch)
