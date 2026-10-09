@@ -674,7 +674,50 @@ static inline __attribute__((always_inline)) void cc_glyph_rotate(const double d
   out[2][0] = cc_rf(cc_fmaf<Plain>(dx[1], k, -sy1)); out[2][1] = cc_rf(cc_fmaf<Plain>(dy[1], k, sx1));
   out[3][0] = cc_rf(cc_fmaf<Plain>(dx[0], k, -sy1)); out[3][1] = cc_rf(cc_fmaf<Plain>(dy[1], k, sx0));
 }
+#ifndef CC_XBOX_DRIVER
+// Glyph-loop oracle (CC_ORACLE=1, see sub_820A9E98 below): the inputs of
+// each glyph rectangle call, as the native loop computed them and as the
+// exact loop passes them: r1, r3, r4, r5, r10, lr, r14..r31, f1..f5,
+// f14..f31 and the frame words +100, +128..+152 and byte +95.
+namespace cc_text_oracle {
+struct Call { uint64_t g[24]; uint64_t f[23]; uint32_t w[9]; };
+static_assert(offsetof(Context, r31) == offsetof(Context, r0) + 31u * sizeof(Register), "register layout");
+static_assert(offsetof(Context, f31) == offsetof(Context, f0) + 31u * sizeof(Register), "register layout");
+std::vector<Call> g_expect;
+size_t g_seen = 0;
+bool g_check = false;
+inline void capture(Context& ctx, Machine& base, Call& c) {
+  const Register* r = &ctx.r0;
+  const Register* f = &ctx.f0;
+  c.g[0] = ctx.r1.u64; c.g[1] = ctx.r3.u64; c.g[2] = ctx.r4.u64; c.g[3] = ctx.r5.u64; c.g[4] = ctx.r10.u64; c.g[5] = ctx.lr;
+  for (int i = 14; i < 32; ++i) c.g[6 + i - 14] = r[i].u64;
+  for (int i = 1; i < 6; ++i) c.f[i - 1] = f[i].u64;
+  for (int i = 14; i < 32; ++i) c.f[5 + i - 14] = f[i].u64;
+  const uint32_t r1 = ctx.r1.u32;
+  c.w[0] = REX_LOAD_U32(r1 + 100u);
+  for (uint32_t k = 0; k < 7u; ++k) c.w[1 + k] = REX_LOAD_U32(r1 + 128u + 4u * k);
+  c.w[8] = REX_LOAD_U8(r1 + 95u);
+}
+// Called at the glyph rectangle's entry while the exact loop runs.
+__attribute__((noinline)) void check(Context& ctx, Machine& base) {
+  Call c;
+  capture(ctx, base, c);
+  const size_t k = g_seen++;
+  if (k >= g_expect.size()) { cc_oracle_mismatch("sub_820A9E98 extra glyph call", int(k), 0u, uint32_t(g_expect.size())); return; }
+  const Call& e = g_expect[k];
+  for (int i = 0; i < 24; ++i)
+    if (c.g[i] != e.g[i]) { cc_oracle_mismatch("sub_820A9E98 glyph call gpr", i, uint32_t(c.g[i]), uint32_t(e.g[i])); return; }
+  for (int i = 0; i < 23; ++i)
+    if (c.f[i] != e.f[i]) { cc_oracle_mismatch("sub_820A9E98 glyph call fpr", i, uint32_t(c.f[i] >> 32), uint32_t(e.f[i] >> 32)); return; }
+  for (int i = 0; i < 9; ++i)
+    if (c.w[i] != e.w[i]) { cc_oracle_mismatch("sub_820A9E98 glyph call frame", i, c.w[i], e.w[i]); return; }
+}
+}  // namespace cc_text_oracle
+#endif
 static CC_HOT_FN void sub_820A8FF8(Context& ctx, Machine& base) {
+#ifndef CC_XBOX_DRIVER
+  if (cc_text_oracle::g_check) cc_text_oracle::check(ctx, base);
+#endif
   CC_AS_SWITCH(sub_820A8FF8);
   uint32_t aw[3], bw[3];
   cc_load_words(base, ctx.r4.u32, 3u, aw);
@@ -776,4 +819,394 @@ static CC_HOT_FN void sub_820A8FF8(Context& ctx, Machine& base) {
   ctx.r1.u64 = r0;
   ctx.r12.u64 = lr0;
   ctx.lr = lr0;
+}
+
+// Text switches: host CC_TEXT_EXACT=1 (the recompiled glyph loop and string
+// measure; CC_EXACT_FNS=sub_820A9E98 / sub_820A9D78 select one), Xbox make
+// TEXTEXACT=1.
+static inline bool cc_text_native_on() {
+#if defined(CC_TEXT_EXACT_BUILD)
+  return false;
+#elif defined(CC_XBOX_DRIVER)
+  return true;
+#else
+  static const bool on = !std::getenv("CC_TEXT_EXACT");
+  return on;
+#endif
+}
+// a*b + c rounded once, a a float: plain in double when b is a float too
+// (b_float) and the result is finite, else the checked fma.
+static inline __attribute__((always_inline)) double cc_text_fma(bool b_float, double a, double b, double c) {
+  if (b_float) {
+    const double v = a * b + c;
+    if (__builtin_expect(__builtin_isfinite(v), 1)) return v;
+  }
+  return std::fma(a, b, c);
+}
+
+// String measure (exact sub_820A9D78: font r3, UTF-16 string r4, outputs r5
+// and r6 (floats), x scale f1, y scale f2; returns 0 when the font is not
+// ready (u8 +0 clear), the string is null or the font has no glyph header
+// (+108), else 1). The line height h = [+108]+4 * f2 + 1.0 (0x82042544,
+// fused) is the first line's bottom; *r5 and *r6 start at 0.0 (0x82042540).
+// For each character before the terminating 0: a newline (10) sets the pen
+// back to 0.0 and adds h to the line bottom; a character whose glyph entry
+// e = [+116] + 16 * u16 [+112][c] is not null advances the pen by its s16
+// widths e.8 and e.12, each times f1 and fused, then raises *r5 to the pen
+// and *r6 to the line bottom when they are larger. The widths pass through
+// the stack words r1-16 / r1-8 (their last values stay there).
+// Native: the same guest reads and stores in the same order (outputs that
+// alias the inputs behave the same); a multiply-add is plain when its
+// operands are floats and its result finite, else the checked fma.
+// With CC_ORACLE=1 the host runs the native measure, puts the four words
+// back, runs the exact body and logs any difference.
+static CC_HOT_FN void cc_text_measure(Context& ctx, Machine& base) {
+  const uint32_t font = ctx.r3.u32, str = ctx.r4.u32, o5 = ctx.r5.u32, o6 = ctx.r6.u32;
+  if (REX_LOAD_U8(font + 0u) == 0u || str == 0u) { ctx.r3.u64 = 0u; return; }
+  const uint32_t hdr = REX_LOAD_U32(font + 108u);
+  if (hdr == 0u) { ctx.r3.u64 = 0u; return; }
+  ctx.fpscr.disableFlushMode();
+  const double sx = ctx.f1.f64, sy = ctx.f2.f64;
+  const bool plain = cc_plain_fma();
+  const bool fx = plain && double(float(sx)) == sx, fy = plain && double(float(sy)) == sy;
+  const double lh = cc_f32d(REX_LOAD_U32(hdr + 4u));
+  const uint32_t c0 = REX_LOAD_U16(str);
+  const double h = cc_rf(cc_text_fma(fy, lh, sy, cc_f32d(REX_LOAD_U32(0x82042544u))));
+  const double zero = cc_f32d(REX_LOAD_U32(0x82042540u));
+  REX_STORE_U32(o5, cc_dbits(zero));
+  REX_STORE_U32(o6, cc_dbits(zero));
+  uint32_t end = str;
+  if (c0 != 0u) do end += 2u; while (REX_LOAD_U16(end) != 0u);
+  double pen = zero, bottom = h;
+  for (uint32_t p = str; p < end; p += 2u) {
+    const uint32_t c = REX_LOAD_U16(p);
+    if (c == 10u) { pen = zero; bottom = cc_rf(h + bottom); continue; }
+    const uint32_t tbl = REX_LOAD_U32(font + 112u), first = REX_LOAD_U32(font + 116u);
+    const uint32_t e = (uint32_t(REX_LOAD_U16(c * 2u + tbl)) << 4) + first;
+    if (e == 0u) continue;
+    const int64_t w12 = int16_t(REX_LOAD_U16(e + 12u));
+    const double cur = cc_f32d(REX_LOAD_U32(o5));
+    const int64_t w8 = int16_t(REX_LOAD_U16(e + 8u));
+    REX_STORE_U64(ctx.r1.u32 - 16u, uint64_t(w12));
+    REX_STORE_U64(ctx.r1.u32 - 8u, uint64_t(w8));
+    const double x = cc_rf(cc_text_fma(fx, cc_rf(double(w8)), sx, pen));
+    pen = cc_rf(cc_text_fma(fx, cc_rf(double(w12)), sx, x));
+    if (pen > cur) REX_STORE_U32(o5, cc_dbits(pen));
+    if (bottom > cc_f32d(REX_LOAD_U32(o6))) REX_STORE_U32(o6, cc_dbits(bottom));
+  }
+  ctx.r3.u64 = 1u;
+}
+static CC_HOT_FN void sub_820A9D78(Context& ctx, Machine& base) {
+  CC_AS_SWITCH(sub_820A9D78);
+  CC_FPROF_SCOPE(sub_820A9D78_native);
+  if (!cc_text_native_on()) { sub_820A9D78_exact(ctx, base); return; }
+#ifndef CC_XBOX_DRIVER
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr;
+  if (oracle && REX_LOAD_U8(ctx.r3.u32) != 0u && ctx.r4.u32 != 0u && REX_LOAD_U32(ctx.r3.u32 + 108u) != 0u) {
+    const uint32_t o5 = ctx.r5.u32, o6 = ctx.r6.u32, r1 = ctx.r1.u32;
+    auto snap = [&](uint32_t w[6]) {
+      w[0] = REX_LOAD_U32(o5); w[1] = REX_LOAD_U32(o6);
+      for (uint32_t k = 0; k < 4u; ++k) w[2 + k] = REX_LOAD_U32(r1 - 16u + 4u * k);
+    };
+    uint32_t before[6], nat[6], ex[6];
+    snap(before);
+    const Context in = ctx;
+    cc_text_measure(ctx, base);
+    const uint32_t rn = ctx.r3.u32;
+    snap(nat);
+    for (uint32_t k = 0; k < 4u; ++k) REX_STORE_U32(r1 - 16u + 4u * k, before[2 + k]);
+    REX_STORE_U32(o6, before[1]);
+    REX_STORE_U32(o5, before[0]);
+    ctx = in;
+    sub_820A9D78_exact(ctx, base);
+    snap(ex);
+    if (ctx.r3.u32 != rn) cc_oracle_mismatch("sub_820A9D78 result", 0, ctx.r3.u32, rn);
+    for (int k = 0; k < 6; ++k)
+      if (ex[k] != nat[k]) cc_oracle_mismatch("sub_820A9D78", k, ex[k], nat[k]);
+    return;
+  }
+#endif
+  cc_text_measure(ctx, base);
+}
+
+// Text glyph loop (exact sub_820A9E98: font r3, renderer r4, colour r7,
+// UTF-16 string r8, position f1 f2, scale f3 f4, alignment word [r1+84]:
+// 0 ends each line at x, 2 centres it on x, else it starts at x). It opens
+// a 560-byte frame and returns 0 when the font has no glyph header (+108),
+// the string is null or the font is not ready (u8 +0), else 1.
+// With the game's renderer (vtable 0x82042048) the renderer slots it calls
+// do this: 32 / 36 push / pop a state (return buffer frame+176, mode 5);
+// 92 binds the font's texture (font+12); 72 gives z = [0x8201473C]; 100
+// writes the scale s = 1.0 to frame+156 / +160; 44 writes the viewport size
+// w, h ([rnd+28720], [rnd+28724]) to frame+196 / +164 when the draw flag
+// (+28715) is set (else those words keep what they held); 68 (y up) answers
+// 0, 76 (normalised) 1; 80 writes 1/w, 1/h to frame+172 / +168 (its
+// conversion word at r1-16); 112 draws a glyph (sub_820A8FF8).
+// Layout (each step rounded to float as compiled; 0.5 = [0x82014748],
+// 1.0 = [0x82042544]): origin ox = (x*s/w - 0.5) / s, oy = (1 - (h - y*s)/h
+// - 0.5) / s; kx = f3 / w, ky = f4 / h. The string is measured
+// (sub_820A9D78 into frame+120 width / +112 height) and the first baseline
+// is floor(height * [0x820425D0]) (sub_82129038). At a line start the pen
+// is ox, or with alignment 0 / 2 floor(ox - width) / floor(ox - width * 0.5)
+// (a fresh measure, outputs swapped). A newline moves the baseline by the
+// font's line height ([+108]+4) and starts a new line. A character with a
+// glyph entry e ([+116] + 16 * u16 [+112][c], not null) has left edge
+// l = pen + e.8, moves the pen to l + e.12 and, unless it is a space (32),
+// is drawn as the rectangle (l - 0.5, baseline - 0.5) .. (l - 0.5 + e.10 +
+// 1, baseline - 0.5 + height - 1), mapped by kx / ky and the origin, with
+// uvs (e.0, e.2) .. (e.4, e.6) over the texture size (+28, +32), z, the
+// colour, angle 0.0 and frame+100 = 1, +95 = 0. The conversion words of
+// each glyph go to frame+176 and +248..+304.
+// The play build runs the recompiled body on the register view (bridge.cpp):
+// its callee-saved registers are locals, the register save helpers do
+// nothing, so callees see the Context's callee-saved registers as they were
+// at entry; on return r12 = r1 - 104 and lr is the last return address set.
+// Native (game renderer only): the same guest stores and calls, with the
+// argument registers the exact body passes and the Context's callee-saved
+// registers untouched; slots 44, 68, 72, 76, 80 and 100 are answered
+// inline, the others called directly; stores the exact body overwrites
+// before anything reads them are made once. Another renderer, or a frame
+// across a host page, takes the exact body.
+// With CC_ORACLE=1 the host first runs the native loop without its calls
+// (push, bind, glyphs, pop), recording each glyph call's registers and
+// frame words, then runs the exact body: each glyph call is checked against
+// the record, and afterwards the result, r1, r12, lr, the callee-saved
+// registers and the frame (except the push / pop return buffer) are
+// compared.
+namespace cc_text {
+// Renderer slots 32..112 the loop calls, and the game's own methods there.
+inline bool renderer_ok(Machine& base, uint32_t rnd) {
+  const uint32_t vt = REX_LOAD_U32(rnd);
+  if (vt != 0x82042048u) return false;
+  static const uint32_t want[21] = {
+      0x820A8038u, 0x820A8100u, 0u, 0x820A86B0u, 0u, 0u, 0u, 0u, 0u, 0x82053A98u, 0x820A74F8u,  // 32..72
+      0x820619E8u, 0x820A7508u, 0u, 0u, 0x820A89F8u, 0u, 0x820A75C8u, 0u, 0u, 0x820A8FF8u};   // 76..112
+  const uint8_t* p = cc_obj_host(vt + 32u, 84u);
+  for (uint32_t k = 0; k < 21u; ++k) {
+    if (want[k] == 0u) continue;
+    const uint32_t fn = p ? cc_hb32(p + 4u * k) : REX_LOAD_U32(vt + 32u + 4u * k);
+    if (fn != want[k]) return false;
+  }
+  return true;
+}
+// The loop's frame: host address of frame+0, valid from -16 to +560.
+struct Frame {
+  uint8_t* p;
+  void put(int32_t off, uint32_t v) const { cc_hput32(p + off, v); }
+  void put64(int32_t off, uint64_t v) const { cc_hput32(p + off, uint32_t(v >> 32)); cc_hput32(p + off + 4, uint32_t(v)); }
+  uint32_t get(int32_t off) const { return cc_hb32(p + off); }
+};
+// Returns false, having done nothing, for another renderer or a frame that
+// is not in one host page; else runs the loop. Record = true (host oracle)
+// skips the push, bind, glyph and pop calls and records each glyph call.
+template <bool Record>
+static CC_HOT_FN bool glyphs(Context& ctx, Machine& base) {
+  const uint32_t R = ctx.r1.u32, F = R - 560u, rnd = ctx.r4.u32;
+  uint8_t* hp = cc_obj_host(F - 16u, 576u);
+  if (!hp || !renderer_ok(base, rnd)) return false;
+  const Frame fr{hp + 16};
+  const uint64_t r1_entry = ctx.r1.u64;
+  fr.put(0, R);
+  ctx.r1.u32 = F;
+  ctx.fpscr.disableFlushMode();
+  const uint32_t font = ctx.r3.u32;
+  const uint64_t font64 = ctx.r3.u64, rnd64 = ctx.r4.u64, colour64 = ctx.r7.u64, str64 = ctx.r8.u64;
+  const double x = ctx.f1.f64, y = ctx.f2.f64, sx = ctx.f3.f64, sy = ctx.f4.f64;
+  uint32_t result = 0u;
+  if (REX_LOAD_U32(font + 108u) != 0u && uint32_t(str64) != 0u && REX_LOAD_U8(font + 0u) != 0u) {
+    result = 1u;
+    // Slot 32: push a state (mode 5); slot 92: bind the font's texture.
+    ctx.r5.s64 = 5; ctx.r3.s64 = ctx.r1.s64 + 176; ctx.lr = 0x820A9F04u;
+    if constexpr (!Record) sub_820A8038(ctx, base);
+    ctx.r4.u64 = font64 + 12u; ctx.r3.u64 = rnd64; ctx.lr = 0x820A9F1Cu;
+    if constexpr (!Record) sub_820A89F8(ctx, base);
+    ctx.fpscr.disableFlushMode();
+    // Slot 72: z; slot 100: the scale 1.0 twice.
+    const double z = cc_f32d(REX_LOAD_U32(0x8201473Cu));
+    {
+      const uint32_t s = cc_dbits(cc_f32d(REX_LOAD_U32(0x82042544u)));
+      fr.put(156, s); fr.put(160, s);
+    }
+    double ox = cc_rf(cc_f32d(fr.get(156)) * x);
+    double ty = cc_rf(cc_f32d(fr.get(160)) * y);
+    // Slot 44: the viewport size while the draw flag is set.
+    if (REX_LOAD_U8(rnd + 28715u) != 0u) {
+      fr.put(196, REX_LOAD_U32(rnd + 28720u));
+      fr.put(164, REX_LOAD_U32(rnd + 28724u));
+    }
+    // Slot 68 answers 0 (y = h - y), slot 76 answers 1 (normalised origin).
+    ty = cc_rf(cc_rf(double(int64_t(fr.get(164)))) - ty);
+    const double half = cc_f32d(REX_LOAD_U32(0x82014748u)), one = cc_f32d(REX_LOAD_U32(0x82042544u));
+    double oy;
+    {
+      const uint32_t w = fr.get(196), h = fr.get(164);
+      const double s0 = cc_f32d(fr.get(156)), s1 = cc_f32d(fr.get(160));
+      fr.put64(120, h);  // the last of the three conversion words there
+      const double fh = cc_rf(double(int64_t(h))), fw = cc_rf(double(int64_t(w)));
+      const double ny = cc_rf(ty / fh), nx = cc_rf(ox / fw);
+      const double f4 = cc_rf(one - ny), f3 = cc_rf(nx - half), f2 = cc_rf(f4 - half);
+      ox = cc_rf(f3 / s0);
+      oy = cc_rf(f2 / s1);
+    }
+    // Slot 80: 1/w and 1/h (its conversion word at r1-16 ends as h), then
+    // times the scale arguments.
+    double kx, ky;
+    {
+      const double k1 = cc_f32d(REX_LOAD_U32(0x82042544u));
+      const uint32_t w = REX_LOAD_U32(rnd + 28720u);
+      fr.put(172, cc_dbits(k1 / cc_rf(double(int64_t(w)))));
+      const uint32_t h = REX_LOAD_U32(rnd + 28724u);
+      fr.put64(-16, h);
+      fr.put(168, cc_dbits(k1 / cc_rf(double(int64_t(h)))));
+      kx = cc_rf(cc_f32d(fr.get(172)) * sx);
+      ky = cc_rf(cc_f32d(fr.get(168)) * sy);
+      fr.put(172, cc_dbits(kx));
+      fr.put(168, cc_dbits(ky));
+    }
+    const double zero = cc_f32d(REX_LOAD_U32(0x82042540u));
+    double pen = zero;
+    // Measure (width +120, height +112) and the first baseline.
+    ctx.r9.s64 = 0; ctx.f2.f64 = one; ctx.r6.s64 = ctx.r1.s64 + 112; ctx.f1.f64 = one;
+    ctx.r5.s64 = ctx.r1.s64 + 120; ctx.r4.u64 = str64; ctx.r3.u64 = font64; ctx.lr = 0x820AA0A0u;
+    sub_820A9D78(ctx, base);
+    ctx.fpscr.disableFlushMode();
+    ctx.f1.f64 = cc_rf(cc_f32d(fr.get(112)) * cc_f32d(REX_LOAD_U32(0x820425D0u)));
+    ctx.lr = 0x820AA0B4u;
+    sub_82129038(ctx, base);
+    ctx.fpscr.disableFlushMode();
+    double baseline = cc_rf(ctx.f1.f64);
+    uint32_t end = uint32_t(str64);
+    if (REX_LOAD_U16(end + 0u) != 0u) do end += 2u; while (REX_LOAD_U16(end + 0u) != 0u);
+    if (uint32_t(str64) < end) {
+      const uint32_t align = REX_LOAD_U32(ctx.r1.u32 + 644u);  // the caller's frame +84
+      bool line_start = true;
+      for (uint32_t p = uint32_t(str64); p < end; p += 2u) {
+        if (line_start) {
+          // Right or centre alignment measures again.
+          if (align == 0u || align == 2u) {
+            ctx.r9.s64 = 0; ctx.f2.f64 = one; ctx.r6.s64 = ctx.r1.s64 + 120; ctx.f1.f64 = one;
+            ctx.r5.s64 = ctx.r1.s64 + 112; ctx.r4.u64 = str64; ctx.r3.u64 = font64; ctx.lr = 0x820AA130u;
+            sub_820A9D78(ctx, base);
+            ctx.fpscr.disableFlushMode();
+            const double wd = cc_f32d(fr.get(112));
+            ctx.f1.f64 = align == 0u ? cc_rf(ox - wd) : cc_rf(-std::fma(wd, half, -ox));
+            ctx.lr = 0x820AA158u;
+            sub_82129038(ctx, base);
+            ctx.fpscr.disableFlushMode();
+            pen = cc_rf(ctx.f1.f64);
+          }
+          line_start = false;
+        }
+        const uint32_t c = REX_LOAD_U16(p + 0u);
+        if (c == 10u) {
+          // Newline (slot 68 answers 0: the baseline moves down).
+          pen = ox;
+          baseline = cc_rf(cc_f32d(REX_LOAD_U32(REX_LOAD_U32(font + 108u) + 4u)) + baseline);
+          line_start = true;
+          continue;
+        }
+        const uint32_t tbl = REX_LOAD_U32(font + 112u), first = REX_LOAD_U32(font + 116u);
+        const uint32_t e = (uint32_t(REX_LOAD_U16((c << 1) + tbl)) << 4) + first;
+        if (e == 0u) continue;
+        const uint8_t* ep = cc_obj_host(e, 14u);
+        auto e16 = [&](uint32_t off) -> uint32_t { return ep ? cc_hb16(ep + off) : REX_LOAD_U16(e + off); };
+        const double top = cc_rf(baseline - half);
+        const int64_t a10 = int16_t(e16(10u)), a8 = int16_t(e16(8u));
+        fr.put64(264, uint64_t(a10));
+        fr.put64(280, uint64_t(a8));
+        const double left = cc_rf(cc_rf(double(a8)) + pen);
+        const double x0 = cc_rf(left - half);
+        const double x1 = cc_rf(cc_rf(cc_rf(double(a10)) + one) + x0);
+        const double y1 = cc_rf(cc_rf(cc_f32d(REX_LOAD_U32(REX_LOAD_U32(font + 108u) + 4u)) - one) + top);
+        const int64_t a12 = int16_t(e16(12u));
+        fr.put64(296, uint64_t(a12));
+        pen = cc_rf(cc_rf(double(a12)) + left);
+        if (c == 32u) continue;
+        const uint32_t u1 = e16(4u), v0 = e16(2u), u0 = e16(0u), v1 = e16(6u);
+        const uint32_t tw = REX_LOAD_U32(font + 28u), th = REX_LOAD_U32(font + 32u);
+        fr.put64(272, u1); fr.put64(248, tw); fr.put64(304, v0); fr.put64(288, th); fr.put64(256, u0); fr.put64(176, v1);
+        const double fw = cc_rf(double(int64_t(tw))), fh = cc_rf(double(int64_t(th)));
+        // Corners {x, y, z} at +128 and +144 (and their staging words
+        // +184..+208) for slot 112.
+        const uint32_t zb = cc_dbits(z);
+        const uint32_t ay = cc_dbits(cc_rf(ky * top) + oy);
+        const uint32_t bx = cc_dbits(cc_rf(kx * x1) + ox);
+        const uint32_t ax = cc_dbits(cc_rf(kx * x0) + ox);
+        const uint32_t by = cc_dbits(cc_rf(ky * y1) + oy);
+        fr.put(184, ax); fr.put(188, ay); fr.put(192, zb); fr.put(200, bx); fr.put(204, by); fr.put(208, zb);
+        fr.put(128, ax); fr.put(132, ay); fr.put(136, zb); fr.put(144, bx); fr.put(148, by); fr.put(152, zb);
+        fr.put(100, 1u);
+        fr.p[95] = 0u;
+        ctx.f5.f64 = zero; ctx.r10.u64 = colour64;
+        ctx.f4.f64 = cc_rf(cc_rf(double(int64_t(v1))) / fh);
+        ctx.f3.f64 = cc_rf(cc_rf(double(int64_t(u1))) / fw);
+        ctx.f1.f64 = cc_rf(cc_rf(double(int64_t(u0))) / fw);
+        ctx.f2.f64 = cc_rf(cc_rf(double(int64_t(v0))) / fh);
+        ctx.r5.s64 = ctx.r1.s64 + 144; ctx.r4.s64 = ctx.r1.s64 + 128; ctx.r3.u64 = rnd64; ctx.lr = 0x820AA43Cu;
+        if constexpr (Record) {
+#ifndef CC_XBOX_DRIVER
+          cc_text_oracle::Call k;
+          cc_text_oracle::capture(ctx, base, k);
+          cc_text_oracle::g_expect.push_back(k);
+#endif
+        } else {
+          sub_820A8FF8(ctx, base);
+          ctx.fpscr.disableFlushMode();
+        }
+      }
+    }
+    // Slot 36: pop the state.
+    ctx.r4.u64 = rnd64; ctx.r3.s64 = ctx.r1.s64 + 176; ctx.lr = 0x820AA460u;
+    if constexpr (!Record) sub_820A8100(ctx, base);
+  }
+  ctx.r1.u64 = r1_entry;
+  ctx.r12.s64 = ctx.r1.s64 - 104;
+  ctx.lr = result ? 0x820AA470u : 0x820AA484u;
+  ctx.r3.u64 = result;
+  return true;
+}
+#ifndef CC_XBOX_DRIVER
+// Oracle run (CC_ORACLE=1): the native loop without its calls, then the
+// exact body (whose effects stay), compared as described above.
+__attribute__((noinline)) void oracle_run(Context& ctx, Machine& base) {
+  using namespace cc_text_oracle;
+  const Context in = ctx;
+  const uint32_t F = ctx.r1.u32 - 560u;
+  g_expect.clear();
+  if (!glyphs<true>(ctx, base)) { ctx = in; sub_820A9E98_exact(ctx, base); return; }
+  const Context nat = ctx;
+  uint32_t fw[140];
+  for (uint32_t k = 0; k < 140u; ++k) fw[k] = REX_LOAD_U32(F + 4u * k);
+  ctx = in;
+  g_seen = 0; g_check = true;
+  sub_820A9E98_exact(ctx, base);
+  g_check = false;
+  if (g_seen != g_expect.size()) cc_oracle_mismatch("sub_820A9E98 glyph calls", 0, uint32_t(g_seen), uint32_t(g_expect.size()));
+  if (ctx.r3.u32 != nat.r3.u32) cc_oracle_mismatch("sub_820A9E98 result", 0, ctx.r3.u32, nat.r3.u32);
+  if (ctx.r1.u64 != nat.r1.u64) cc_oracle_mismatch("sub_820A9E98 r1", 0, ctx.r1.u32, nat.r1.u32);
+  if (ctx.r12.u64 != nat.r12.u64) cc_oracle_mismatch("sub_820A9E98 r12", 0, ctx.r12.u32, nat.r12.u32);
+  if (ctx.lr != nat.lr) cc_oracle_mismatch("sub_820A9E98 lr", 0, uint32_t(ctx.lr), uint32_t(nat.lr));
+  const Register* er = &ctx.r0; const Register* nr = &nat.r0;
+  const Register* ef = &ctx.f0; const Register* nf = &nat.f0;
+  for (int i = 14; i < 32; ++i) {
+    if (er[i].u64 != nr[i].u64) cc_oracle_mismatch("sub_820A9E98 gpr", i, uint32_t(er[i].u64), uint32_t(nr[i].u64));
+    if (ef[i].u64 != nf[i].u64) cc_oracle_mismatch("sub_820A9E98 fpr", i, uint32_t(ef[i].u64 >> 32), uint32_t(nf[i].u64 >> 32));
+  }
+  for (uint32_t k = 0; k < 140u; ++k) {
+    if (k == 44u || k == 45u) continue;  // +176: the push / pop return buffer
+    const uint32_t e = REX_LOAD_U32(F + 4u * k);
+    if (e != fw[k]) cc_oracle_mismatch("sub_820A9E98 frame", int(4u * k), e, fw[k]);
+  }
+}
+#endif
+}  // namespace cc_text
+static CC_HOT_FN void sub_820A9E98(Context& ctx, Machine& base) {
+  CC_AS_SWITCH(sub_820A9E98);
+  CC_FPROF_SCOPE(sub_820A9E98_native);
+  if (!cc_text_native_on()) { sub_820A9E98_exact(ctx, base); return; }
+#ifndef CC_XBOX_DRIVER
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr;
+  if (oracle) { cc_text::oracle_run(ctx, base); return; }
+#endif
+  if (!cc_text::glyphs<false>(ctx, base)) sub_820A9E98_exact(ctx, base);
 }
