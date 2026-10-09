@@ -619,6 +619,9 @@ static uint32_t g_frame_update_us, g_frame_render_us;
 // and longest read time in microseconds (cc_bake_disk). Summed until read by
 // cc_xbox_frame_stats (bridge.cpp).
 static uint64_t g_fs_us[7];
+// One frame's parts for the SLOW lines (microseconds): hook entry and the
+// previous hook exit, audio, update, render and frame end.
+static struct { uint64_t in, out; uint32_t aud, upd, ren, end; } g_slow;
 static uint32_t g_fs_frames, g_fs_bake_reads, g_fs_bake_bytes;
 static uint32_t g_fs_disk_reads, g_fs_disk_seeks, g_fs_disk_bytes, g_fs_disk_us, g_fs_disk_max_us;
 #endif
@@ -3053,6 +3056,7 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   }
 #ifdef CC_XBOX_DRIVER
   const uint64_t fs_t0 = ::cc_xbox_clock(1000000u);
+  g_slow.in = fs_t0;
   {
     static uint64_t last = 0;
     if (last) { g_fs_us[0] += fs_t0 - last; ++g_fs_frames; }
@@ -3061,7 +3065,8 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
 #endif
   cc_audio_frame();
 #ifdef CC_XBOX_DRIVER
-  g_fs_us[1] += ::cc_xbox_clock(1000000u) - fs_t0;
+  g_slow.aud = uint32_t(::cc_xbox_clock(1000000u) - fs_t0);
+  g_fs_us[1] += g_slow.aud;
 #endif
 #ifdef CC_FAST
   cc_menu_text_patch(base);
@@ -3104,8 +3109,10 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   {
     const uint64_t t = ::cc_xbox_clock(1000000u);
     ::cc_xr_frame_end(g_frame_update_us, g_frame_render_us);
-    g_fs_us[2] += ::cc_xbox_clock(1000000u) - t;
+    g_slow.end = uint32_t(::cc_xbox_clock(1000000u) - t);
+    g_fs_us[2] += g_slow.end;
   }
+  g_slow.upd = g_frame_update_us; g_slow.ren = g_frame_render_us;
   g_frame_update_us = g_frame_render_us = 0;
 #if defined(CC_FAST) && !defined(CC_BENCH)
   // Game clock = real frame time. The main loop (sub_82070AC8) takes the
@@ -3124,7 +3131,16 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
     static uint64_t last_present = 0;
     const uint64_t now = ::cc_xbox_clock(1000000u);
 #ifndef CC_GAME_STEP
-    if (last_present && g_main_loop_sleep) ctx.f31.f64 = double(float(double(now - last_present) * 1e-6));
+    // The scripted four-player benchmark (make FOURP=1) drives menus and
+    // character select by frame numbers tuned on the old 1/60 s step, so it
+    // keeps that step until its fight starts (cc_combat_loop holds each
+    // fight action for two frames from then on).
+#ifdef CC_SCRIPT_4P
+    const bool real_step = g_frame_delay_calls >= (cc_direct_level() ? 6500u : 9400u);
+#else
+    const bool real_step = true;
+#endif
+    if (last_present && g_main_loop_sleep && real_step) ctx.f31.f64 = double(float(double(now - last_present) * 1e-6));
 #endif
     last_present = now;
   }
@@ -3151,25 +3167,28 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   }
   {
     // Frames well over the 30 FPS budget, one debug line each with their
-    // parts in 0.1 ms: update, render, audio, frame end (overlay, GPU wait,
-    // present), the game's pacing sleep and what it asked for, and workers.
-    static uint64_t last = 0, prev[7];
+    // parts in 0.1 ms: update, render, the rest of the game's main loop
+    // between the previous frame boundary and this one (loop), audio, frame
+    // end (overlay, GPU wait, present), what the game asked to sleep, and
+    // the frame's script ops, custom calls, clip updates and heap allocs.
+    static uint64_t last = 0;
     static uint32_t frame_no = 0;
     const uint64_t now = ::cc_xbox_clock(1000000u);
     const uint64_t asked = uint64_t(0) - base.load(ctx.r5.u32, 8);
     ++frame_no;
-    // The sums restart once a second (cc_xbox_frame_stats), mid-frame.
-    auto d = [](unsigned k) { return unsigned((g_fs_us[k] >= prev[k] ? g_fs_us[k] - prev[k] : g_fs_us[k]) / 100u); };
+    const uint64_t outside = g_slow.out ? g_slow.in - g_slow.out : 0u;
+    const uint32_t loop = outside > uint64_t(g_slow.upd) + g_slow.ren ? uint32_t(outside - g_slow.upd - g_slow.ren) : 0u;
     if (last && now - last > 45000u)
-      ::DbgPrint("SLOW f=%u ms=%u upd=%u ren=%u aud=%u end=%u slp=%u ask=%u wrk=%u ops=%u calls=%u clips=%u allocs=%u\n", frame_no,
-                 unsigned((now - last) / 100u), d(5), d(6), d(1), d(2), d(3), unsigned(asked / 1000u), d(4), g_fc[0], g_fc[1], g_fc[2], g_fc[3]);
+      ::DbgPrint("SLOW f=%u ms=%u upd=%u ren=%u loop=%u aud=%u end=%u ask=%u ops=%u calls=%u clips=%u allocs=%u\n", frame_no,
+                 unsigned((now - last) / 100u), g_slow.upd / 100u, g_slow.ren / 100u, loop / 100u, g_slow.aud / 100u,
+                 g_slow.end / 100u, unsigned(asked / 1000u), g_fc[0], g_fc[1], g_fc[2], g_fc[3]);
     // A plain frame once a second, for comparison.
     else if (frame_no % 30u == 0u)
-      ::DbgPrint("NORM f=%u ms=%u upd=%u ren=%u ops=%u calls=%u clips=%u allocs=%u\n", frame_no, unsigned((now - last) / 100u), d(5), d(6),
-                 g_fc[0], g_fc[1], g_fc[2], g_fc[3]);
+      ::DbgPrint("NORM f=%u ms=%u upd=%u ren=%u loop=%u ops=%u calls=%u clips=%u allocs=%u\n", frame_no, unsigned((now - last) / 100u),
+                 g_slow.upd / 100u, g_slow.ren / 100u, loop / 100u, g_fc[0], g_fc[1], g_fc[2], g_fc[3]);
     __builtin_memset(g_fc, 0, sizeof g_fc);
-    __builtin_memcpy(prev, g_fs_us, sizeof prev);
     last = now;
+    g_slow.out = ::cc_xbox_clock(1000000u);
   }
 #endif
 #endif
