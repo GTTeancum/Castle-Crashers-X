@@ -147,7 +147,11 @@ def load(path):
         off += 20 + 64
         vb, = struct.unpack_from('<I', d, off)
         off += 4
-        verts = [struct.unpack_from('>5fI', d, off + i * stride)
+        # x, y, z, u, v floats, then the colour: at +20 in 24-byte vertices,
+        # at +28 in the 32-byte effect vertices (+20/+24 hold extra
+        # coordinates there; sub_820A9308 stores the colour with stw r26,28).
+        cofs = 28 if stride >= 32 else 20
+        verts = [struct.unpack_from('>5f', d, off + i * stride) + struct.unpack_from('>I', d, off + i * stride + cofs)
                  for i in range(min(count, vb // max(stride, 1)))] if stride >= 24 else []
         off += vb
         draws.append((prim, count, blend, tex, verts))
