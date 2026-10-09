@@ -875,8 +875,18 @@ static void sub_820A8DD8(Context& ctx, Machine& base) {
 #undef sub_820A8FF8
 #endif
 #include "generated/sub_820A9068.inc"
+#ifdef CC_FAST
+#define sub_820A9D78 sub_820A9D78_exact  // native in runtime021/as_render.inc
+#endif
 #include "generated/sub_820A9D78.inc"
+#ifdef CC_FAST
+#undef sub_820A9D78
+#define sub_820A9E98 sub_820A9E98_exact  // native in runtime021/as_render.inc
+#endif
 #include "generated/sub_820A9E98.inc"
+#ifdef CC_FAST
+#undef sub_820A9E98
+#endif
 #ifdef CC_FAST
 #define sub_82127A08 sub_82127A08_exact
 #define sub_82127AE8 sub_82127AE8_exact

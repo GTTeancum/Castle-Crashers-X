@@ -148,6 +148,10 @@ endif
 ifneq ($(GLYPHEXACT),)
 CXXFLAGS += -DCC_GLYPH_EXACT_BUILD
 endif
+# TEXTEXACT=1 (recompiled glyph loop sub_820A9E98 and string measure sub_820A9D78)
+ifneq ($(TEXTEXACT),)
+CXXFLAGS += -DCC_TEXT_EXACT_BUILD
+endif
 ifneq ($(NOFMAFAST),)
 CXXFLAGS += -DCC_NO_FMA_FAST
 endif
