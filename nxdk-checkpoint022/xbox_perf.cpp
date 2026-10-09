@@ -7,7 +7,10 @@
 //          (slp), worker jobs at the frame boundary (wrk) and everything
 //          else (oth = frame - upd - ren - aud - end - slp - wrk: the main
 //          loop outside update/render and the frame-boundary glue); and the
-//          baked textures read in the second (count, KiB).
+//          baked textures read in the second (count, KiB), and the texture
+//          pack's disk reads behind them (disk reads, seeks: reads not
+//          continuing the previous one, KiB, total ms and longest read ms;
+//          fewer than bake= when the read-ahead serves some from memory).
 //   PMC (make PMC=1): two Pentium III performance counters, rotating through
 //          event pairs one second at a time. The title runs in ring 0, so it
 //          programs PerfEvtSel0/1 (MSR 0x186/0x187) and reads with rdpmc.
@@ -41,8 +44,9 @@ void cc_xbox_mem_line(const char* when) {
 
 // runtime021 (bridge.cpp): FRAME line counters since the last call, reset:
 // {frames, baked-texture reads, baked-texture bytes, then microseconds of
-// frame, audio, end, sleep, workers, update, render}.
-void cc_xbox_frame_stats(uint64_t out[10]);
+// frame, audio, end, sleep, workers, update, render, then the pack's disk
+// reads, seeks, bytes, microseconds and longest read}.
+void cc_xbox_frame_stats(uint64_t out[15]);
 
 #ifdef CC_PMC
 namespace {
@@ -82,16 +86,18 @@ void arm(unsigned set) {
 
 // frames: frames completed in the second just ended.
 void cc_xbox_perf_second([[maybe_unused]] unsigned frames) {
-  uint64_t fs[10] = {};
+  uint64_t fs[15] = {};
   cc_xbox_frame_stats(fs);
   const uint64_t f = fs[0] ? fs[0] : 1u;
   uint64_t known = 0;
   for (unsigned i = 4; i < 10; ++i) known += fs[i];
   const uint64_t other = fs[3] > known ? fs[3] - known : 0u;
-  DbgPrint("FRAME frames=%u ms=%u aud=%u end=%u slp=%u wrk=%u oth=%u bake=%u bakeKB=%u\n", unsigned(fs[0]),
-           unsigned(fs[3] / f / 100u), unsigned(fs[4] / f / 100u), unsigned(fs[5] / f / 100u),
+  DbgPrint("FRAME frames=%u ms=%u aud=%u end=%u slp=%u wrk=%u oth=%u bake=%u bakeKB=%u disk=%u seek=%u diskKB=%u "
+           "diskms=%u diskmax=%u\n",
+           unsigned(fs[0]), unsigned(fs[3] / f / 100u), unsigned(fs[4] / f / 100u), unsigned(fs[5] / f / 100u),
            unsigned(fs[6] / f / 100u), unsigned(fs[7] / f / 100u), unsigned(other / f / 100u),
-           unsigned(fs[1]), unsigned(fs[2] >> 10));
+           unsigned(fs[1]), unsigned(fs[2] >> 10), unsigned(fs[10]), unsigned(fs[11]), unsigned(fs[12] >> 10),
+           unsigned(fs[13] / 1000u), unsigned(fs[14] / 1000u));
   static unsigned seconds = 0;
   if (seconds % 60u == 0u) {
     char when[16];

@@ -89,6 +89,14 @@ CXXFLAGS += -DCC_LARGE_PAGES=1
 else ifeq ($(LARGEPAGES),image)
 CXXFLAGS += -DCC_LARGE_PAGES=2
 endif
+# Texture pack read-ahead buffer in KiB (runtime021/bodies.inc,
+# cc_bake_fetch; default 512, 0 = off): make BAKERA=256 (touch
+# runtime021/bridge.cpp). It pays off with a pack laid out in first-use
+# order (tools/texbake_order.py); discdata copies TEXPACK as texbake.pak.
+ifneq ($(BAKERA),)
+CXXFLAGS += -DCC_BAKE_READAHEAD_KB=$(BAKERA)
+endif
+TEXPACK ?= $(CURDIR)/../game-data/converted/texbake.pak
 # Console census of slow-path memory pages (page-table builds only):
 # make PAGETABLE=1 SLOWSTATS=1
 ifneq ($(SLOWSTATS),)
@@ -155,7 +163,8 @@ discdata: $(OUTPUT_DIR)
 	if [ -d $(CURDIR)/../game-data/converted/data ]; then cp -rf $(CURDIR)/../game-data/converted/data/. $(OUTPUT_DIR)/data/game-data/; fi
 	@mkdir -p $(OUTPUT_DIR)/data/game-data/audio
 	cp -rf $(CURDIR)/../game-data/converted/audio/. $(OUTPUT_DIR)/data/game-data/audio/
-	# Pre-rasterized DXT5 textures (runtime021 CC_TEX_BAKE), optional.
-	if [ -f $(CURDIR)/../game-data/converted/texbake.pak ]; then cp -f $(CURDIR)/../game-data/converted/texbake.pak $(OUTPUT_DIR)/data/game-data/; fi
+	# Pre-rasterized DXT5 textures (runtime021 CC_TEX_BAKE), optional;
+	# TEXPACK=<file> picks another pack (e.g. texbake_ordered.pak).
+	if [ -f $(TEXPACK) ]; then cp -f $(TEXPACK) $(OUTPUT_DIR)/data/game-data/texbake.pak; fi
 
 $(GEN_XISO): discdata

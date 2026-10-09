@@ -213,10 +213,12 @@ static uint32_t g_frame_update_us, g_frame_render_us;
 // frame-to-frame time and its parts outside the game's update and render,
 // in microseconds: {frame, audio mix, frame end (overlay, GPU wait,
 // present), frame-pacing sleep, worker jobs, update, render}; frames, and
-// baked-texture reads and bytes. Summed until read by cc_xbox_frame_stats
-// (bridge.cpp).
+// baked-texture reads and bytes; the pack's disk reads, seeks, bytes, total
+// and longest read time in microseconds (cc_bake_disk). Summed until read by
+// cc_xbox_frame_stats (bridge.cpp).
 static uint64_t g_fs_us[7];
 static uint32_t g_fs_frames, g_fs_bake_reads, g_fs_bake_bytes;
+static uint32_t g_fs_disk_reads, g_fs_disk_seeks, g_fs_disk_bytes, g_fs_disk_us, g_fs_disk_max_us;
 #endif
 static uint32_t g_tex_swap_ins = 0, g_tex_swap_outs = 0;
 static uint32_t g_bake_hits = 0, g_bake_misses = 0;
@@ -7184,8 +7186,8 @@ static std::vector<CcBakeEntry> g_bake_index;   // sorted by key0
 static bool g_bake_loaded = false, g_bake_ready = false;
 #ifdef CC_XBOX_DRIVER
 // The Xbox reads the pack with NtReadFile at each entry's offset, straight
-// into the texture's cache block (nxdk's fread copies through its buffer
-// byte by byte, unoptimised).
+// into the texture's cache block or the read-ahead buffer (nxdk's fread
+// copies through its buffer byte by byte, unoptimised).
 static HANDLE g_bake_handle = INVALID_HANDLE_VALUE;
 #else
 static std::FILE* g_bake_file = nullptr;
@@ -7205,6 +7207,121 @@ static bool cc_bake_pixels(uint8_t* q, uint32_t offset, uint32_t bytes) {
   return std::fseek(g_bake_file, long(offset), SEEK_SET) == 0 && std::fread(q, 1, bytes, g_bake_file) == bytes;
 #endif
 }
+// Read-ahead. On the console a pack read in key order is a disk seek each
+// (36 reads of 1.5 MB took one 370 ms frame when new enemies appeared).
+// With the pack laid out in first-use order (tools/texbake_order.py) the
+// textures needed next follow the one being read, so a first read that
+// misses the buffer reads that texture and the whole entries stored after
+// it, up to the buffer size, in one disk read, and the next first uses are
+// copied from memory. A fill that served nothing stops further fills until
+// a read continues where the previous disk read ended (a pack in key order
+// gains nothing from reading ahead); re-reads of evicted textures go
+// straight to their cache block. Bytes are the pack's either way. Size:
+// host CC_BAKE_READAHEAD_KB=<KiB> (0: off), Xbox make BAKERA=<KiB> (0: off);
+// default 512 KiB (MEM shows ~7.5 MB free in a 4P fight). Larger buffers
+// mean fewer disk reads but more bytes read during the frame that misses.
+#ifndef CC_BAKE_READAHEAD_KB
+#define CC_BAKE_READAHEAD_KB 512
+#endif
+constexpr uint32_t kBakeNone = 0xFFFFFFFFu;
+static std::vector<uint32_t> g_bake_next;  // entry -> the entry stored after it
+static std::vector<uint8_t> g_bake_seen;   // entry read before
+static uint8_t* g_bake_buf = nullptr;
+static uint32_t g_bake_buf_size = 0, g_bake_buf_lo = 0, g_bake_buf_hi = 0, g_bake_buf_hits = 0;
+static uint32_t g_bake_disk_end = kBakeNone;  // pack offset where the last disk read ended
+static bool g_bake_filled = false;
+static uint32_t g_bake_disk_reads = 0, g_bake_disk_seeks = 0, g_bake_from_buf = 0;
+static uint64_t g_bake_disk_bytes = 0;
+// One disk read of the pack, counted (reads, seeks: reads not starting where
+// the previous one ended, bytes; on the Xbox also its time for FRAME).
+static bool cc_bake_disk(uint8_t* q, uint32_t offset, uint32_t bytes) {
+  const bool seek = offset != g_bake_disk_end;
+  ++g_bake_disk_reads; g_bake_disk_seeks += seek; g_bake_disk_bytes += bytes;
+#ifdef CC_XBOX_DRIVER
+  const unsigned long long t0 = cc_monotonic_ns();
+  const bool ok = cc_bake_pixels(q, offset, bytes);
+  const uint32_t us = uint32_t((cc_monotonic_ns() - t0) / 1000u);
+  ++g_fs_disk_reads; g_fs_disk_seeks += seek; g_fs_disk_bytes += bytes;
+  g_fs_disk_us += us;
+  if (us > g_fs_disk_max_us) g_fs_disk_max_us = us;
+#else
+  const bool ok = cc_bake_pixels(q, offset, bytes);
+#endif
+  g_bake_disk_end = ok ? offset + bytes : kBakeNone;
+  return ok;
+}
+// Oracle (host, CC_ORACLE=1): pixels copied from the read-ahead buffer are
+// checked against a direct read of the pack.
+static void cc_bake_oracle([[maybe_unused]] size_t i, [[maybe_unused]] const uint8_t* q,
+                           [[maybe_unused]] uint32_t bytes) {
+#ifndef CC_XBOX_DRIVER
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr;
+  if (!oracle) return;
+  std::vector<uint8_t> direct(bytes);
+  if (!cc_bake_pixels(direct.data(), g_bake_index[i].offset, bytes) || std::memcmp(direct.data(), q, bytes) != 0)
+    cc_oracle_mismatch("cc_bake_fetch", int(i), cc_hash_bytes(direct.data(), bytes), cc_hash_bytes(q, bytes));
+#endif
+}
+// Copy pack entry i's pixels (bytes) to q: from the read-ahead buffer, by
+// filling it, or straight from the disk. first: the entry's first read;
+// buffered: served from memory.
+static bool cc_bake_fetch(size_t i, uint8_t* q, uint32_t bytes, bool& first, bool& buffered) {
+  const uint32_t o = g_bake_index[i].offset;
+  first = !g_bake_seen[i];
+  g_bake_seen[i] = 1;
+  buffered = false;
+  if (g_bake_buf && o >= g_bake_buf_lo && o <= g_bake_buf_hi && g_bake_buf_hi - o >= bytes) {
+    std::memcpy(q, g_bake_buf + (o - g_bake_buf_lo), bytes);
+    ++g_bake_buf_hits; ++g_bake_from_buf;
+    buffered = true;
+    cc_bake_oracle(i, q, bytes);
+    return true;
+  }
+  if (g_bake_buf && first && bytes <= g_bake_buf_size &&
+      (!g_bake_filled || g_bake_buf_hits || o == g_bake_disk_end)) {
+    uint32_t end = o + bytes;
+    for (uint32_t k = g_bake_next[i]; k != kBakeNone; k = g_bake_next[k]) {
+      const CcBakeEntry& n = g_bake_index[k];
+      const uint32_t ne = n.offset + n.w * n.h;
+      if (ne - o > g_bake_buf_size) break;
+      end = ne;
+    }
+    g_bake_filled = true;
+    g_bake_buf_hits = 0;
+    g_bake_buf_lo = g_bake_buf_hi = 0;
+    if (cc_bake_disk(g_bake_buf, o, end - o)) {
+      g_bake_buf_lo = o;
+      g_bake_buf_hi = end;
+      std::memcpy(q, g_bake_buf, bytes);
+      cc_bake_oracle(i, q, bytes);
+      return true;
+    }
+    // A fill cut short (damaged pack): read just the entry.
+  }
+  return cc_bake_disk(q, o, bytes);
+}
+#ifndef CC_XBOX_DRIVER
+// Host recorder CC_TEX_ORDER=<file>: one line per baked-texture read, the
+// input of tools/texbake_order.py (pack layout in first-use order).
+static void cc_bake_note_read(size_t i, bool first, bool buffered) {
+  static std::FILE* f = [] { const char* p = std::getenv("CC_TEX_ORDER"); return p ? std::fopen(p, "w") : nullptr; }();
+  if (!f) return;
+  const CcBakeEntry& e = g_bake_index[i];
+  std::fprintf(f, "TEXREAD frame=%u entry=%u key0=%08x full=%08x bytes=%u first=%d from=%s%c", g_frame_delay_calls + 1u,
+               unsigned(i), e.key0, e.full, e.w * e.h, int(first), buffered ? "buffer" : "disk", 10);
+  std::fflush(f);
+}
+// Pack reading totals at exit (host runs; the Xbox shows them per second in
+// FRAME).
+static struct CcBakeTotals {
+  ~CcBakeTotals() {
+    if (!g_bake_ready) return;
+    cc_log("TEXBAKE totals reads=%u from_buffer=%u disk_reads=%u seeks=%u disk_kb=%llu readahead=%uK%c",
+           g_bake_hits, g_bake_from_buf, g_bake_disk_reads, g_bake_disk_seeks,
+           (unsigned long long)(g_bake_disk_bytes >> 10), unsigned(g_bake_buf_size >> 10), 10);
+  }
+} g_bake_totals;
+#endif
 static uint32_t cc_fnv(uint32_t h, const uint8_t* p, size_t n) {
   for (size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 16777619u; }
   return h;
@@ -7272,7 +7389,38 @@ static void cc_bake_load() {
   g_bake_file = f;
 #endif
   g_bake_ready = true;
-  CC_BAKE_NOTE("TEXBAKE pack %s: %u textures%c", path, count, 10);
+  // Storage order for the read-ahead: each entry's successor in the file.
+  {
+    std::vector<uint32_t> order(count);
+    for (uint32_t i = 0; i < count; ++i) order[i] = i;
+    std::sort(order.begin(), order.end(),
+              [](uint32_t a, uint32_t b) { return g_bake_index[a].offset < g_bake_index[b].offset; });
+    g_bake_next.assign(count, kBakeNone);
+    for (uint32_t k = 0; k + 1u < count; ++k) g_bake_next[order[k]] = order[k + 1u];
+    g_bake_seen.assign(count, 0);
+  }
+#ifdef CC_XBOX_DRIVER
+  const uint32_t ra_kb = CC_BAKE_READAHEAD_KB;
+  if (ra_kb) {
+    PVOID b = nullptr;
+    SIZE_T s = SIZE_T(ra_kb) << 10;
+    if (NT_SUCCESS(NtAllocateVirtualMemory(&b, 0, &s, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE))) {
+      g_bake_buf = static_cast<uint8_t*>(b);
+      g_bake_buf_size = ra_kb << 10;
+    }
+  }
+#else
+  const char* ra_env = std::getenv("CC_BAKE_READAHEAD_KB");
+  const uint32_t ra_kb = ra_env ? uint32_t(std::strtoul(ra_env, nullptr, 10)) : uint32_t(CC_BAKE_READAHEAD_KB);
+  if (ra_kb) {
+    static std::vector<uint8_t> storage;
+    storage.assign(size_t(ra_kb) << 10, 0);
+    g_bake_buf = storage.data();
+    g_bake_buf_size = ra_kb << 10;
+  }
+#endif
+  CC_BAKE_NOTE("TEXBAKE pack %s: %u textures, read-ahead %uK%s%c", path, count, unsigned(g_bake_buf_size >> 10),
+               ra_kb && !g_bake_buf ? " (allocation failed: off)" : "", 10);
 }
 // Look the job up in the pack (the shape stream must be resident, so this
 // is done when the texture is registered): the entry index, or -1.
@@ -7298,14 +7446,17 @@ static int32_t cc_bake_find(Machine& base, const uint8_t* job, uint32_t w, uint3
 // Read a pack entry's DXT5 pixels into a new cache block (0 on failure).
 static uint32_t cc_bake_read(Machine& base, int32_t entry, uint32_t w, uint32_t h, uint32_t keep) {
   if (entry < 0 || size_t(entry) >= g_bake_index.size() || !g_bake_ready) { ++g_bake_misses; return 0; }
-  const CcBakeEntry& e = g_bake_index[size_t(entry)];
   const uint32_t cache = cc_texzone_alloc(base, w * h, keep);
   uint8_t* q = base.memory.contiguous(cache, size_t(w) * h, 3);
-  if (!q || !cc_bake_pixels(q, e.offset, w * h)) {
+  bool first = false, buffered = false;
+  if (!q || !cc_bake_fetch(size_t(entry), q, w * h, first, buffered)) {
     cc_texzone_free(cache);
     ++g_bake_misses;
     return 0;
   }
+#ifndef CC_XBOX_DRIVER
+  cc_bake_note_read(size_t(entry), first, buffered);
+#endif
   g_tex_cache_bytes += uint64_t(w) * h;
   ++g_bake_hits;
 #ifdef CC_XBOX_DRIVER
