@@ -368,14 +368,25 @@ static CC_HOT_FN void cc_seek_native(Context& ctx, Machine& base) {
   CcFrame frame(ctx, base, 384u);
   REX_STORE_U16(sp + 414u, uint16_t(arg));
   CC_SEEK_COUNT(calls, 1);
-  const uint32_t now = cc_vcall(ctx, base, clip, 160u, 0x82087FA4u) & 0xFFFFu;
+  // Current frame (slot 160; the clip classes' sub_820867F0, u16 +146 or 1
+  // when 0, is answered inline).
+  const uint32_t vt0 = REX_LOAD_U32(clip + 0u), get = REX_LOAD_U32(vt0 + 160u);
+  uint32_t now;
+  if (get == 0x820867F0u) {
+    now = REX_LOAD_U16(clip + 146u);
+    if (now == 0u) now = 1u;
+    ctx.r3.u64 = now;
+    ctx.lr = 0x82087FA4u;
+    ctx.ctr.u64 = get;
+  } else {
+    now = cc_vcall(ctx, base, clip, 160u, 0x82087FA4u) & 0xFFFFu;
+  }
   if (want == now) {
     // Volatile registers as the original leaves them (a later variadic
     // call can spill them into stack words that later reach the heap).
-    const uint32_t vt = REX_LOAD_U32(clip + 0u);
     ctx.r9.u64 = now;
-    ctx.r11.u64 = vt;
-    ctx.r10.u64 = REX_LOAD_U32(vt + 160u);
+    ctx.r11.u64 = vt0;
+    ctx.r10.u64 = get;
     CC_SEEK_COUNT(same, 1);
     return;
   }
