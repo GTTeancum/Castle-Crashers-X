@@ -57,6 +57,17 @@ endif
 ifneq ($(PAGETABLE),)
 CXXFLAGS += -DCC_PAGE_TABLE
 endif
+# Flat window offset mask (keeps stray guest addresses out of kernel memory;
+# runtime021/guest_window.h), for timing it: make NOWINDOWMASK=1 (no mask; a
+# stray guest address can then reach kernel memory) or WINDOWMASK=stores
+# (loads skip it; stray writes stay out of kernel memory). Touch
+# runtime021/bridge.cpp, guest_window.cpp and update_boundary_tests.cpp.
+ifneq ($(NOWINDOWMASK),)
+CXXFLAGS += -DCC_WINDOW_NOMASK
+endif
+ifeq ($(WINDOWMASK),stores)
+CXXFLAGS += -DCC_WINDOW_MASK_STORES
+endif
 # Flat window: commit the 360 command ring in full instead of sharing one
 # 256 KiB block between its pages (runtime021/guest_window.h): make NORINGALIAS=1
 # (only runtime021/update_boundary_tests.cpp reads it; touch it)
@@ -68,7 +79,9 @@ endif
 # a step fails; MEM lines on the debug channel say which path is active):
 # make LARGEPAGES=1 (stack/TLS/game heap and the game data image),
 # LARGEPAGES=heap or LARGEPAGES=image for one of them (only
-# runtime021/update_boundary_tests.cpp reads it; touch it)
+# runtime021/update_boundary_tests.cpp reads it; touch it). Unmapped gaps
+# inside those 4 MiB pages read as zeros instead of stopping a stray access
+# (runtime021/guest_window.h).
 ifeq ($(LARGEPAGES),1)
 CXXFLAGS += -DCC_LARGE_PAGES=3
 else ifeq ($(LARGEPAGES),heap)
@@ -76,6 +89,14 @@ CXXFLAGS += -DCC_LARGE_PAGES=1
 else ifeq ($(LARGEPAGES),image)
 CXXFLAGS += -DCC_LARGE_PAGES=2
 endif
+# Texture pack read-ahead buffer in KiB (runtime021/bodies.inc,
+# cc_bake_fetch; default 512, 0 = off): make BAKERA=256 (touch
+# runtime021/bridge.cpp). It pays off with a pack laid out in first-use
+# order (tools/texbake_order.py); discdata copies TEXPACK as texbake.pak.
+ifneq ($(BAKERA),)
+CXXFLAGS += -DCC_BAKE_READAHEAD_KB=$(BAKERA)
+endif
+TEXPACK ?= $(CURDIR)/../game-data/converted/texbake.pak
 # Console census of slow-path memory pages (page-table builds only):
 # make PAGETABLE=1 SLOWSTATS=1
 ifneq ($(SLOWSTATS),)
@@ -175,7 +196,8 @@ discdata: $(OUTPUT_DIR)
 	if [ -d $(CURDIR)/../game-data/converted/data ]; then cp -rf $(CURDIR)/../game-data/converted/data/. $(OUTPUT_DIR)/data/game-data/; fi
 	@mkdir -p $(OUTPUT_DIR)/data/game-data/audio
 	cp -rf $(CURDIR)/../game-data/converted/audio/. $(OUTPUT_DIR)/data/game-data/audio/
-	# Pre-rasterized DXT5 textures (runtime021 CC_TEX_BAKE), optional.
-	if [ -f $(CURDIR)/../game-data/converted/texbake.pak ]; then cp -f $(CURDIR)/../game-data/converted/texbake.pak $(OUTPUT_DIR)/data/game-data/; fi
+	# Pre-rasterized DXT5 textures (runtime021 CC_TEX_BAKE), optional;
+	# TEXPACK=<file> picks another pack (e.g. texbake_ordered.pak).
+	if [ -f $(TEXPACK) ]; then cp -f $(TEXPACK) $(OUTPUT_DIR)/data/game-data/texbake.pak; fi
 
 $(GEN_XISO): discdata

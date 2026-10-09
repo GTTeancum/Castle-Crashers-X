@@ -33,8 +33,8 @@ extern "C" __declspec(dllimport) void* __stdcall AddVectoredExceptionHandler(
 
 namespace cc_win {
 uint32_t guest_of(uintptr_t window_offset) {
-  return window_offset >= kImageOffset ? uint32_t(window_offset) + (kImageGuest - kImageOffset)
-                                       : uint32_t(window_offset);
+  if (window_offset >= kWindowBytes) return uint32_t(window_offset);  // guard below the window
+  return window_offset >= kHalf ? uint32_t(window_offset) + (kImageGuest - kImageOffset) : uint32_t(window_offset);
 }
 #ifndef CC_XBOX_DRIVER
 uint8_t* g_base = nullptr;
@@ -44,7 +44,7 @@ static long __stdcall fault_report(CcExceptionPointers* ep) {
   const CcExceptionRecord* r = ep->record;
   if (r->code != 0xC0000005ul || r->count < 2) return 0;  // EXCEPTION_CONTINUE_SEARCH
   const uintptr_t off = r->info[1] - uintptr_t(g_base);
-  if (off >= kSpan) return 0;
+  if (!fault_in_window(off)) return 0;
   cc_elog("FAIL flat window: guest %08x not mapped (%s)\n", guest_of(off), r->info[0] ? "write" : "read");
   std::fflush(nullptr);
   std::exit(1);
@@ -91,12 +91,15 @@ struct Group {
 };
 
 uint32_t g_committed = 0;  // bytes committed as 4 KiB pages
+bool g_ring_shared = false;
 
 #ifdef CC_XBOX_DRIVER
 // Retail consoles have 64 MiB: keep the contiguous blocks below it so a
 // development console (128 MiB) measures the retail layout.
 constexpr ULONG_PTR kRetailTop = 0x03FFFFFFu;
 
+// Committed pages come back zero-filled (NtAllocateVirtualMemory's contract,
+// as for VirtualAlloc), so they are not cleared again.
 bool commit(uint32_t lo, uint32_t hi) {
   PVOID b = reinterpret_cast<PVOID>(kBase + lo);
   SIZE_T s = hi - lo;
@@ -106,7 +109,6 @@ bool commit(uint32_t lo, uint32_t hi) {
              unsigned(st));
     return false;
   }
-  __builtin_memset(b, 0, hi - lo);
   g_committed += hi - lo;
   return true;
 }
@@ -162,7 +164,12 @@ uint32_t pte_template(uintptr_t va, const char** why) {
 //   owns; both mappings are write-back, so the caches stay consistent;
 // - nothing in the window is ever decommitted or freed, so the kernel never
 //   walks these entries (a quick reboot re-initialises memory management;
-//   only memory marked persistent survives it).
+//   only memory marked persistent survives it);
+// - nothing hands these addresses to kernel I/O: never read a file
+//   (NtReadFile) or DMA straight into a 4 MiB-page region. The kernel would
+//   look up the buffer's 4 KiB page-table entries at 0xC0000000 + (va >>
+//   12) * 4, which under a 4 MiB page is the page's own memory (game data).
+//   File data reaches the window through copies (fread's buffer).
 // 4 MiB pages must be enabled (CR4.PSE, checked). CR3 is reloaded after the
 // writes.
 bool map_large(Group& g, uint32_t tmpl) {
@@ -259,13 +266,13 @@ bool commit(uint32_t lo, uint32_t hi) {
 // page tables. A failed step undoes the others.
 bool reserve_aliased(uint32_t lo, uint32_t hi, uint32_t period) {
   constexpr unsigned long kReserve = 0x2000u, kRelease = 0x8000u, kNoAccess = 0x01u;
-  uint8_t* b = static_cast<uint8_t*>(VirtualAlloc(nullptr, kSpan, kReserve, kNoAccess));
+  uint8_t* b = static_cast<uint8_t*>(VirtualAlloc(nullptr, kWindowBytes, kReserve, kNoAccess));
   if (!b) return false;
   VirtualFree(b, 0, kRelease);  // keep the address, place the pieces there
   void* h = CreateFileMappingA(reinterpret_cast<void*>(intptr_t(-1)), nullptr, 0x04u /*PAGE_READWRITE*/, 0, period,
                                nullptr);
   const bool below = h && VirtualAlloc(b, lo, kReserve, kNoAccess) == b;
-  const bool above = below && VirtualAlloc(b + hi, kSpan - hi, kReserve, kNoAccess) == b + hi;
+  const bool above = below && VirtualAlloc(b + hi, kWindowBytes - hi, kReserve, kNoAccess) == b + hi;
   void* views[16];
   unsigned nv = 0;
   bool ok = above && (hi - lo) / period < 16u;
@@ -341,34 +348,54 @@ bool open(const Layout& L) {
     const uint32_t c0 = uint32_t(offset(g.lo)) >> 22, c1 = uint32_t(offset(g.hi - 1u)) >> 22;
     groups[ng++] = Group{c0, c1 - c0 + 1u, nullptr, 0, false, "not tried"};
   }
-  // Chunks may end past the window (the image's): reserve up to the last.
-  uint32_t tail = kSpan;
-  for (unsigned i = 0; i < ng; ++i)
-    if ((groups[i].c0 + groups[i].n) * kChunk > tail) tail = (groups[i].c0 + groups[i].n) * kChunk;
-  uint32_t large_bytes = 0, ring_bytes = 0;
-  bool ring_on = false;
+  uint32_t large_bytes = 0, ring_bytes = 0, reserved = 0;
+  bool ring_on = false, guard = false;
   const char* ring_why = alo < ahi ? "not tried" : "off";
   List excl;
 #ifdef CC_XBOX_DRIVER
-  PVOID base = reinterpret_cast<PVOID>(kBase);
-  SIZE_T size = kSpan;
-  NTSTATUS st = NtAllocateVirtualMemory(&base, 0, &size, MEM_RESERVE, PAGE_READWRITE);
-  if (!NT_SUCCESS(st) || base != reinterpret_cast<PVOID>(kBase)) {
-    DbgPrint("MEM flat window: reserve %08x+%08x failed status=%08x\n", unsigned(kBase), unsigned(kSpan), unsigned(st));
-    return false;
+  // Reserve the whole 1 GiB the offset mask reaches (0x40000000..0x7FFFFFFF)
+  // or as much of it as the kernel lets a title reserve: its highest
+  // reservable address is just below 0x7FFE0000, and nothing is mapped above
+  // that in user space, so a stray there faults as well. Last resort (if
+  // something already sat in the upper window): the span the layout uses,
+  // with a warning; the mask still keeps strays below the kernel.
+  {
+    static const uint32_t sizes[] = {kWindowBytes, kWindowBytes - 0x10000u, kWindowBytes - 0x20000u, kSpan};
+    NTSTATUS st = 0;
+    for (const uint32_t s : sizes) {
+      PVOID base = reinterpret_cast<PVOID>(kBase);
+      SIZE_T size = s;
+      st = NtAllocateVirtualMemory(&base, 0, &size, MEM_RESERVE, PAGE_READWRITE);
+      if (NT_SUCCESS(st) && base == reinterpret_cast<PVOID>(kBase)) { reserved = s; break; }
+    }
+    if (!reserved) {
+      DbgPrint("MEM flat window: reserve %08x+%08x failed status=%08x\n", unsigned(kBase), unsigned(kSpan), unsigned(st));
+      return false;
+    }
+    if (reserved == kSpan)
+      DbgPrint("MEM flat window: WARNING only %08x bytes reserved, a stray may hit title memory\n", unsigned(kSpan));
+    PVOID gb = reinterpret_cast<PVOID>(kBase - kGuardBelow);
+    SIZE_T gs = kGuardBelow;
+    guard = NT_SUCCESS(NtAllocateVirtualMemory(&gb, 0, &gs, MEM_RESERVE, PAGE_READWRITE)) &&
+            gb == reinterpret_cast<PVOID>(kBase - kGuardBelow);
   }
-  bool tail_ok = tail == kSpan;
+  // 4 MiB chunks may end past a short reservation (the image's): reserve up
+  // to the last.
+  uint32_t tail = reserved;
+  for (unsigned i = 0; i < ng; ++i)
+    if ((groups[i].c0 + groups[i].n) * kChunk > tail) tail = (groups[i].c0 + groups[i].n) * kChunk;
+  bool tail_ok = tail == reserved;
   if (!tail_ok) {
-    PVOID tb = reinterpret_cast<PVOID>(kBase + kSpan);
-    SIZE_T ts = tail - kSpan;
+    PVOID tb = reinterpret_cast<PVOID>(kBase + reserved);
+    SIZE_T ts = tail - reserved;
     tail_ok = NT_SUCCESS(NtAllocateVirtualMemory(&tb, 0, &ts, MEM_RESERVE, PAGE_READWRITE)) &&
-              tb == reinterpret_cast<PVOID>(kBase + kSpan);
+              tb == reinterpret_cast<PVOID>(kBase + reserved);
   }
   // Contiguous memory first, before the 4 KiB commits scatter free memory:
   // one block per group (compact), else one per chunk.
   for (unsigned i = 0; i < ng; ++i) {
     Group& g = groups[i];
-    if ((g.c0 + g.n) * kChunk > kSpan && !tail_ok) { g.why = "past the window"; continue; }
+    if ((g.c0 + g.n) * kChunk > reserved && !tail_ok) { g.why = "past the window"; continue; }
     g.block = MmAllocateContiguousMemoryEx(size_t(g.n) * kChunk, 0, kRetailTop, kChunk, PAGE_READWRITE);
     if (!g.block && g.n > 1u && ng + g.n - 1u <= kMaxGroups) {
       for (uint32_t k = 1; k < g.n; ++k) groups[ng++] = Group{g.c0 + k, 1u, nullptr, 0, false, "not tried"};
@@ -437,20 +464,17 @@ bool open(const Layout& L) {
     }
   }
   if (!ring_on) {
-    g_base = static_cast<uint8_t*>(VirtualAlloc(nullptr, kSpan, 0x2000u /*MEM_RESERVE*/, 0x01u /*PAGE_NOACCESS*/));
+    g_base = static_cast<uint8_t*>(VirtualAlloc(nullptr, kWindowBytes, 0x2000u /*MEM_RESERVE*/, 0x01u /*PAGE_NOACCESS*/));
     if (!g_base) return false;
   }
+  reserved = kWindowBytes;
+  guard = VirtualAlloc(g_base - kGuardBelow, kGuardBelow, 0x2000u, 0x01u) == g_base - kGuardBelow;
   AddVectoredExceptionHandler(1, fault_report);
   // 4 MiB chunks: committed whole, the layout the Xbox maps with large pages.
-  const bool tail_ok = tail == kSpan || VirtualAlloc(g_base + kSpan, tail - kSpan, 0x2000u, 0x01u) == g_base + kSpan;
   for (unsigned i = 0; i < ng; ++i) {
     Group& g = groups[i];
     const uint32_t lo = g.c0 * kChunk, hi = (g.c0 + g.n) * kChunk;
-    if (hi > kSpan && !tail_ok) { g.why = "past the window"; continue; }
-    // A reservation boundary splits the commit (the tail is its own region).
-    const uint32_t mid = lo < kSpan && hi > kSpan ? kSpan : hi;
-    if (!VirtualAlloc(g_base + lo, mid - lo, 0x1000u, 0x04u) ||
-        (mid < hi && !VirtualAlloc(g_base + mid, hi - mid, 0x1000u, 0x04u))) {
+    if (!VirtualAlloc(g_base + lo, hi - lo, 0x1000u, 0x04u)) {
       g.why = "commit failed";
       continue;
     }
@@ -461,6 +485,7 @@ bool open(const Layout& L) {
   excl.merge();
   if (!commit_pages(pages, 0, kNone, excl)) return false;
 #endif
+  g_ring_shared = ring_on;
   const unsigned total_k = unsigned((g_committed + large_bytes + ring_bytes) >> 10);
 #ifdef CC_XBOX_DRIVER
 #define CC_WIN_LOG DbgPrint
@@ -476,8 +501,9 @@ bool open(const Layout& L) {
     CC_WIN_LOG("MEM ring alias window %08x..%08x on one %uK block: %s\n", unsigned(alo), unsigned(ahi),
                unsigned(period >> 10), ring_on ? "on" : ring_why);
   }
-  CC_WIN_LOG("MEM flat window base=%08llx span=%08x committed=%uK (4K pages %uK, 4M pages %uK, ring block %uK) ranges=%u\n",
-             (unsigned long long)CC_WINDOW_BASE, unsigned(kSpan), total_k, unsigned(g_committed >> 10),
+  CC_WIN_LOG("MEM flat window base=%08llx span=%08x reserved=%08x guard=%s committed=%uK (4K pages %uK, 4M pages %uK, ring block %uK) ranges=%u\n",
+             (unsigned long long)CC_WINDOW_BASE, unsigned(kSpan), unsigned(reserved), guard ? "on" : "off", total_k,
+             unsigned(g_committed >> 10),
              unsigned(large_bytes >> 10), unsigned(ring_bytes >> 10), pages.n);
 #undef CC_WIN_LOG
 #ifdef CC_XBOX_DRIVER
@@ -485,5 +511,6 @@ bool open(const Layout& L) {
 #endif
   return true;
 }
+bool ring_shared() { return g_ring_shared; }
 }  // namespace cc_win
 #endif
