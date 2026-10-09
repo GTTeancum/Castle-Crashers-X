@@ -722,7 +722,7 @@ static uint32_t g_dl_dirty[1024];
 static uint32_t g_dl_ndirty = 0u;
 static bool g_dl_walk_always = false;
 #ifndef CC_XBOX_DRIVER
-static struct { uint64_t refreshes, checked, kept_max, sorts, sorts_changed, sort_nodes; } g_dl_rst;
+static struct { uint64_t refreshes, checked, kept_max, sorts, sorts_changed, sort_nodes, sort_moves, sort_moves_max, sort_nodes_max, sort_merges; } g_dl_rst;
 #endif
 static void cc_dl_mark(uint32_t node) {
   for (uint32_t i = 0; i < g_dl_ndirty; ++i)
@@ -3277,6 +3277,11 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
            g_frame_delay_calls + 1u, (unsigned long long)g_dl_rst.refreshes, (unsigned long long)g_dl_rst.checked,
            (unsigned long long)g_dl_rst.kept_max, (unsigned long long)g_dl_rst.sorts, (unsigned long long)g_dl_rst.sorts_changed,
            (unsigned long long)g_dl_rst.sort_nodes, int(g_dl_walk_always));
+    cc_log("DLSORT frame=%u sorts=%llu reordered=%llu nodes=%llu nodes_max=%llu moves=%llu moves_max=%llu merges=%llu\n",
+           g_frame_delay_calls + 1u, (unsigned long long)g_dl_rst.sorts, (unsigned long long)g_dl_rst.sorts_changed,
+           (unsigned long long)g_dl_rst.sort_nodes, (unsigned long long)g_dl_rst.sort_nodes_max,
+           (unsigned long long)g_dl_rst.sort_moves, (unsigned long long)g_dl_rst.sort_moves_max,
+           (unsigned long long)g_dl_rst.sort_merges);
     g_dl_st = {};
     g_dl_rst = {};
   }
@@ -6152,16 +6157,61 @@ static void sub_82134FAC(Context& ctx, Machine& base) {
 // insertion sort runs and only the links that change are written. The
 // name cache sees a change of order only. Lists longer than the buffer
 // take the exact body.
+// The insertion sort is quadratic at worst: past 4 element moves per node
+// (4P level 13 fight: ~0.4 sorts a frame of ~560 nodes, ~150 moves a sort,
+// at most 1,824 seen) the rest is done by merging the ascending runs. A
+// stable sort's result is unique, and the partly sorted prefix followed by
+// the untouched suffix keeps every tie in list order, so the merge ends in
+// the same order. Host CC_SORT_MERGE=1 merges every reordered list and
+// CC_SORT_BUDGET=<moves per node> changes the limit (to check those paths
+// against the hashes and the CC_ORACLE comparison).
 struct CcDlSortEnt { uint32_t node; int32_t depth; uint32_t next; };
 static CcDlSortEnt g_dl_sort_buf[2048];
+static CcDlSortEnt g_dl_sort_tmp[2048];
+// Stable merge sort of a[0..n) by depth over its ascending runs (a tie
+// takes the left run's entry first), pass by pass until one run is left.
+static void cc_dl_merge_runs(CcDlSortEnt* a, uint32_t n) {
+  CcDlSortEnt* src = a;
+  CcDlSortEnt* dst = g_dl_sort_tmp;
+  for (;;) {
+    uint32_t m = 1u;
+    while (m < n && src[m - 1u].depth <= src[m].depth) ++m;
+    if (m >= n) break;
+    for (uint32_t i = 0; i < n;) {
+      m = i + 1u;
+      while (m < n && src[m - 1u].depth <= src[m].depth) ++m;
+      uint32_t e = m;
+      if (e < n) {
+        ++e;
+        while (e < n && src[e - 1u].depth <= src[e].depth) ++e;
+      }
+      uint32_t l = i, r = m, o = i;
+      while (l < m && r < e) dst[o++] = src[r].depth < src[l].depth ? src[r++] : src[l++];
+      while (l < m) dst[o++] = src[l++];
+      while (r < e) dst[o++] = src[r++];
+      i = e;
+    }
+    CcDlSortEnt* const t = src;
+    src = dst;
+    dst = t;
+  }
+  if (src != a)
+    for (uint32_t i = 0; i < n; ++i) a[i] = src[i];
+}
 static CC_HOT_FN void sub_82084EE0(Context& ctx, Machine& base) {
 #ifndef CC_XBOX_DRIVER
   static const bool exact = std::getenv("CC_SORT_EXACT") != nullptr;  // host A/B switch
   static const bool oracle = std::getenv("CC_ORACLE") != nullptr || std::getenv("CC_REFRESH_ORACLE") != nullptr;
+  static const bool merge_always = std::getenv("CC_SORT_MERGE") != nullptr;
+  static const uint32_t per_node = [] { const char* e = std::getenv("CC_SORT_BUDGET"); return e ? uint32_t(std::atoi(e)) : 4u; }();
 #elif defined(CC_SORT_EXACT_BUILD)
   constexpr bool exact = true;  // Xbox bisect build
+  constexpr bool merge_always = false;
+  constexpr uint32_t per_node = 4u;
 #else
   constexpr bool exact = false;
+  constexpr bool merge_always = false;
+  constexpr uint32_t per_node = 4u;
 #endif
   const uint32_t list = ctx.r3.u32;
   if (exact) { sub_82084EE0_exact(ctx, base); cc_dl_list_changed(list); return; }
@@ -6194,13 +6244,31 @@ static CC_HOT_FN void sub_82084EE0(Context& ctx, Machine& base) {
 #endif
     return;
   }
-  for (uint32_t i = 1; i < cnt; ++i) {
-    const CcDlSortEnt x = a[i];
-    uint32_t j = i;
-    for (; j > 0u && a[j - 1u].depth > x.depth; --j) a[j] = a[j - 1u];
-    a[j] = x;
+  uint32_t moves = 0u;
+  bool merged = merge_always;
+  if (merged) {
+    cc_dl_merge_runs(a, cnt);
+  } else {
+    const uint32_t budget = per_node * cnt;
+    for (uint32_t i = 1; i < cnt; ++i) {
+      const CcDlSortEnt x = a[i];
+      uint32_t j = i;
+      for (; j > 0u && a[j - 1u].depth > x.depth; --j) a[j] = a[j - 1u];
+      a[j] = x;
+      moves += i - j;
+      if (moves > budget) {
+        cc_dl_merge_runs(a, cnt);
+        merged = true;
+        break;
+      }
+    }
   }
+  static_cast<void>(merged);
 #ifndef CC_XBOX_DRIVER
+  if (merged) ++g_dl_rst.sort_merges;
+  g_dl_rst.sort_moves += moves;
+  if (moves > g_dl_rst.sort_moves_max) g_dl_rst.sort_moves_max = moves;
+  if (cnt > g_dl_rst.sort_nodes_max) g_dl_rst.sort_nodes_max = cnt;
   ++g_dl_rst.sorts_changed;
   if (oracle) {
     sub_82084EE0_exact(ctx, base);
