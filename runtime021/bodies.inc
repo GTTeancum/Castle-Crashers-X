@@ -7729,7 +7729,14 @@ static void sub_820878E0(Context& ctx, Machine& base) {
 #undef sub_82082700
 #endif
 #include "generated/sub_82087358.inc"
+#ifdef CC_FAST
+#define sub_82087F70 sub_82087F70_exact
+#endif
 #include "generated/sub_82087F70.inc"
+#ifdef CC_FAST
+#undef sub_82087F70
+#include "seek.inc"
+#endif
 #include "generated/sub_82071280.inc"
 #include "generated/sub_82086FF0.inc"
 #ifdef CC_FAST
