@@ -1932,8 +1932,11 @@ struct CcView {
 // Addresses written as "ctx.r1.u32 + <constant>" (stack accesses) are
 // recognised from the argument's spelling at compile time and use the stack
 // hot entry (r1 plus a register index takes the general path).
+// (Index 13 is clamped so short spellings index in bounds even where the
+// length test already rules them out: clang checks constant indexes anyway.)
+#define CC_R1_AT13(a) ((#a)[sizeof(#a) > 14 ? 13 : 0])
 #define CC_R1_ADDR(a) (sizeof(#a) > 14 && (#a)[4] == 'r' && (#a)[5] == '1' && (#a)[6] == '.' && \
-                       ((#a)[13] == '-' || ((#a)[13] >= '0' && (#a)[13] <= '9')))
+                       (CC_R1_AT13(a) == '-' || (CC_R1_AT13(a) >= '0' && CC_R1_AT13(a) <= '9')))
 #define CC_GLOAD(a, n) (CC_R1_ADDR(a) ? base.load_stack(uint32_t(a), n) : base.load(uint32_t(a), n))
 #define CC_GSTORE(a, n, v) (CC_R1_ADDR(a) ? base.store_stack(uint32_t(a), n, v) : base.store(uint32_t(a), n, v))
 #define REX_LOAD_U8(a) uint8_t(CC_GLOAD(a, 1))
@@ -1944,7 +1947,7 @@ struct CcView {
 // it reloads it from the stack's back chain ("ctx.r1.u32 + 0", masked here;
 // a valid back chain is below 0x20000000, so the value is unchanged) and in
 // the context restore sub_82134FAC (masked in its wrapper, bodies.inc).
-#define CC_R1_CHAIN(a) (sizeof(#a) == sizeof("ctx.r1.u32 + 0") && CC_R1_ADDR(a) && (#a)[13] == '0')
+#define CC_R1_CHAIN(a) (sizeof(#a) == sizeof("ctx.r1.u32 + 0") && CC_R1_ADDR(a) && CC_R1_AT13(a) == '0')
 #define REX_LOAD_U32(a) uint32_t(CC_R1_CHAIN(a) ? CC_GLOAD(a, 4) & ::cc_win::kLowMask : CC_GLOAD(a, 4))
 static_assert(CC_R1_CHAIN(ctx.r1.u32 + 0) && !CC_R1_CHAIN(ctx.r1.u32 + 8) && !CC_R1_CHAIN(ctx.r1.u32 + 0x0) &&
                   !CC_R1_CHAIN(ctx.r11.u32 + 0) && CC_R1_ADDR(ctx.r1.u32 + -8) && CC_R1_ADDR(ctx.r1.u32 + 80u) &&

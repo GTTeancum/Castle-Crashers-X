@@ -711,8 +711,9 @@ struct CcDlMutate {
 // depth setters name and the nodes inserted with the bit set. Each refresh
 // handles the candidates that still have the bit and are reached (walking
 // up through [n+96] finds n in each parent's list, and every node below
-// the root answers slot 44), drops those without the bit or whose class
-// never answers slot 44, and keeps the rest for later. Sorting one list
+// the root answers slot 44) and drops those without the bit or whose class
+// never answers slot 44; any other candidate (active but not reached now)
+// switches the refresh to the walk from then on. Sorting one list
 // does not change any other list or bit, so the order of the sorts does
 // not matter. Should a class with a slot 44 that is not a constant leaf be
 // inserted, a depth setter run on a class whose slot 156 is not
@@ -1329,7 +1330,11 @@ static CC_HOT_FN void sub_8208AE78(Context& ctx, Machine& base) {
     bool known = true;
     if (cc_dl_active(base, d, known) == 0u && known) continue;
     if (cc_dl_reached(base, d, root, known)) { sort_children(d, flags); continue; }
-    if (!known) {  // a class the table cannot judge: walk instead
+    // A class the table cannot judge, or an active node the walk does not
+    // reach now (detached, or inserted before the advance walk set its +96):
+    // walk instead, from then on. Keeping such a node for later could read
+    // it after its memory is reused, or sort a list a frame late.
+    {
       g_dl_walk_always = true;
       for (uint32_t k = i; k < g_dl_ndirty; ++k) g_dl_dirty[kept++] = g_dl_dirty[k];
       g_dl_ndirty = kept;
@@ -1337,7 +1342,6 @@ static CC_HOT_FN void sub_8208AE78(Context& ctx, Machine& base) {
       cc_dl_refresh_walk(ctx, base);
       return;
     }
-    g_dl_dirty[kept++] = d;
   }
   g_dl_ndirty = kept;
 #ifndef CC_XBOX_DRIVER
@@ -5926,7 +5930,18 @@ static void sub_82134FAC(Context& ctx, Machine& base) {
 #include "generated/sub_82136280.inc"
 #include "generated/sub_82136720.inc"
 #include "generated/sub_82136738.inc"
+#if defined(CC_FLAT_WINDOW) && !defined(CC_WINDOW_NOMASK)
+// stwux r1,r1,r12 moves r1 by a register amount in this function, so its
+// stack accesses take the masked path (a bad amount must not carry r1 out of
+// the window, see CC_R1_CHAIN in bridge.cpp).
+#pragma push_macro("CC_R1_ADDR")
+#undef CC_R1_ADDR
+#define CC_R1_ADDR(a) false
+#endif
 #include "generated/sub_821367A0.inc"
+#if defined(CC_FLAT_WINDOW) && !defined(CC_WINDOW_NOMASK)
+#pragma pop_macro("CC_R1_ADDR")
+#endif
 #include "generated/sub_821368F0.inc"
 #include "generated/sub_82136A00.inc"
 #include "generated/sub_82136BD0.inc"
@@ -6830,7 +6845,18 @@ static void sub_82084C78(Context& ctx, Machine& base) {
 #include "generated/sub_820DA458.inc"
 #include "generated/sub_8212B374.inc"
 #include "generated/sub_820DA200.inc"
+#if defined(CC_FLAT_WINDOW) && !defined(CC_WINDOW_NOMASK)
+// stwux r1,r1,r12 moves r1 by a register amount in this function, so its
+// stack accesses take the masked path (a bad amount must not carry r1 out of
+// the window, see CC_R1_CHAIN in bridge.cpp).
+#pragma push_macro("CC_R1_ADDR")
+#undef CC_R1_ADDR
+#define CC_R1_ADDR(a) false
+#endif
 #include "generated/sub_820E87E0.inc"
+#if defined(CC_FLAT_WINDOW) && !defined(CC_WINDOW_NOMASK)
+#pragma pop_macro("CC_R1_ADDR")
+#endif
 #include "generated/sub_820EBC10.inc"
 #include "generated/sub_820EBCD0.inc"
 #include "generated/sub_820E7168.inc"
@@ -6877,13 +6903,45 @@ static void sub_82084C78(Context& ctx, Machine& base) {
 #include "generated/sub_8207E5C8.inc"
 #include "generated/sub_82081CD8.inc"
 #include "generated/sub_82099C68.inc"
+#ifdef CC_FAST
+#define sub_82094D28 sub_82094D28_exact
+#define sub_820834D0 sub_820834D0_exact
+#endif
 #include "generated/sub_82094D28.inc"
 #include "generated/sub_820834D0.inc"
+#ifdef CC_FAST
+#undef sub_82094D28
+#undef sub_820834D0
+// Slot 4 (reset) of the text field (sub_82094D28) and of the base and
+// shape classes (sub_820834D0, sub_8208C6E0, sub_8208C5E8) clears link +88:
+// a node reset while still linked cuts its list short, and its +96 does not
+// always name that list (text fields answer slot 156 with 0), so the name
+// cache is flushed rather than one list bumped. The list primitives reset
+// nodes while they hold the list (g_dl_busy), which bumps it anyway.
+static void sub_82094D28(Context& ctx, Machine& base) {
+  sub_82094D28_exact(ctx, base);
+  if (g_dl_busy == 0u) cc_dl_flush();
+}
+static void sub_820834D0(Context& ctx, Machine& base) {
+  sub_820834D0_exact(ctx, base);
+  if (g_dl_busy == 0u) cc_dl_flush();
+}
+#endif
 #include "generated/sub_8208C4A8.inc"
 #include "generated/sub_8208C590.inc"
 #include "generated/sub_8208CCA8.inc"
 #include "generated/sub_82096E50.inc"
+#ifdef CC_FAST
+#define sub_8208C6E0 sub_8208C6E0_exact
+#endif
 #include "generated/sub_8208C6E0.inc"
+#ifdef CC_FAST
+#undef sub_8208C6E0
+static void sub_8208C6E0(Context& ctx, Machine& base) {  // reset, see sub_82094D28
+  sub_8208C6E0_exact(ctx, base);
+  if (g_dl_busy == 0u) cc_dl_flush();
+}
+#endif
 #include "generated/sub_82096778.inc"
 #include "generated/sub_82099730.inc"
 #include "generated/sub_8207A1E0.inc"
@@ -7837,7 +7895,17 @@ static CC_HOT_FN void sub_82082488(Context& ctx, Machine& base) {
 #include "generated/sub_8208C670.inc"
 #include "generated/sub_82086818.inc"
 #include "generated/sub_820B02B0.inc"
+#ifdef CC_FAST
+#define sub_8208C5E8 sub_8208C5E8_exact
+#endif
 #include "generated/sub_8208C5E8.inc"
+#ifdef CC_FAST
+#undef sub_8208C5E8
+static void sub_8208C5E8(Context& ctx, Machine& base) {  // reset, see sub_82094D28
+  sub_8208C5E8_exact(ctx, base);
+  if (g_dl_busy == 0u) cc_dl_flush();
+}
+#endif
 #include "generated/sub_820B20F0.inc"
 #include "generated/sub_820B2180.inc"
 #include "generated/sub_820B20C8.inc"
@@ -8707,7 +8775,7 @@ static bool cc_bake_fetch(size_t i, uint8_t* q, uint32_t bytes, bool& first, boo
       const CcBakeEntry& n = g_bake_index[k];
       const uint32_t ne = n.offset + n.w * n.h;
       if (ne - o > g_bake_buf_size) break;
-      end = ne;
+      if (ne > end) end = ne;  // a pack sharing blocks must not shrink the fill
     }
     g_bake_filled = true;
     g_bake_buf_hits = 0;
