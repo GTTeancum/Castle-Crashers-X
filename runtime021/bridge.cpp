@@ -407,7 +407,10 @@ struct Machine {
   // fixture became a bounded 8-slot handle table.
   // Open game files are read from disk on demand (the original Xbox cannot
   // afford whole-file copies next to the game's own buffers).
-  struct FileSlot { bool open{}; uint32_t handle{}; uint32_t pos{}; uint32_t size{}; std::FILE* fp{}; };
+  // The Xbox play build also opens each file with CreateFileA (xh) and reads
+  // it with NtReadFile straight into guest memory (nxdk's fread copies byte
+  // by byte through its buffer).
+  struct FileSlot { bool open{}; uint32_t handle{}; uint32_t pos{}; uint32_t size{}; std::FILE* fp{}; void* xh{}; };
   std::array<FileSlot,8> files{};
   FileSlot* find_file(uint32_t h) {
     for (auto &f : files) if (f.open && f.handle==h) return &f;
@@ -2451,6 +2454,12 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     }
     slot->fp=f;
     slot->size=uint32_t(sz);
+#if defined(CC_XBOX_DRIVER) && defined(CC_FAST)
+    {
+      const HANDLE h=CreateFileA(host,GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+      slot->xh=h==INVALID_HANDLE_VALUE?nullptr:h;
+    }
+#endif
     if (pak_open_shape) cc_log("pak_open %s bytes=%ld\n",fname,sz);
     slot->open=true;
     slot->pos=0;
@@ -2531,6 +2540,32 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     const uint32_t take=len<avail?len:avail;
     if (take && std::fseek(fsl->fp,long(fsl->pos),SEEK_SET)!=0)
       base.fail(Error::unsupported, address);
+#ifdef CC_FAST
+    // Play build: the whole read lands in guest memory in one call when the
+    // buffer is directly mapped (game buffers lie in one region), instead of
+    // one guest store per byte from a 64 KiB bounce buffer. Same bytes.
+    if (take) {
+      if (uint8_t* dst=base.memory.contiguous(buf,take,3)) {
+        bool ok=false;
+#ifdef CC_XBOX_DRIVER
+        if (fsl->xh) {
+          IO_STATUS_BLOCK io{};
+          LARGE_INTEGER at;
+          at.QuadPart=fsl->pos;
+          NTSTATUS st=NtReadFile(fsl->xh,nullptr,nullptr,nullptr,&io,dst,take,&at);
+          if (st==STATUS_PENDING) { st=NtWaitForSingleObject(fsl->xh,FALSE,nullptr); if (NT_SUCCESS(st)) st=io.Status; }
+          ok=NT_SUCCESS(st) && io.Information==take;
+        }
+#endif
+        if (!ok && std::fread(dst,1,take,fsl->fp)!=take) base.fail(Error::unsupported, address);
+        fsl->pos+=take;
+        base.store(iosb+0,4,0u);
+        base.store(iosb+4,4,take);
+        ctx.r3.u64=0u;
+        return;
+      }
+    }
+#endif
     static uint8_t chunk[65536];
     for (uint32_t done=0; done<take; ) {
       const uint32_t n=(take-done)<uint32_t(sizeof(chunk))?(take-done):uint32_t(sizeof(chunk));
@@ -2562,6 +2597,9 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     fsl->pos=0;
     fsl->size=0;
     if (fsl->fp) { std::fclose(fsl->fp); fsl->fp=nullptr; }
+#ifdef CC_XBOX_DRIVER
+    if (fsl->xh) { CloseHandle(fsl->xh); fsl->xh=nullptr; }
+#endif
     ctx.r3.u64=0;
     return;
   }

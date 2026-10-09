@@ -37,7 +37,8 @@ struct Texture {
   uint32_t sig = 0;         // converted copies: sample hash of the source
   uint32_t checked = 0xFFFFFFFFu;  // frame of the last signature check
   uint32_t slice_sig[8] = {};      // per-slice sample hashes (rows split in 8)
-  uint32_t slice_next = 0;         // slice checked next frame
+  uint32_t slice_next = 0;         // slice checked next
+  uint32_t stable = 0;             // slice checks in a row that found no change
 };
 
 bool g_init = false, g_failed = false, g_in_frame = false, g_shown = false;
@@ -251,9 +252,14 @@ const Texture* converted(uint32_t key, const uint8_t* src, uint32_t w, uint32_t 
       // frame, and glyphs added mid-frame show from the next frame on.
       // One eighth of the rows is sampled per frame (round robin) and only
       // a changed slice is converted again: sampling the whole 2 MB atlas
-      // every frame was ~34K cache misses per frame on the console. Glyphs
-      // the game adds show within 8 frames.
-      if (t.checked != g_frames) {
+      // every frame was ~34K cache misses per frame on the console. After
+      // 64 slice checks in a row without a change (the font block never
+      // changed after load in host runs through menus, two levels and the
+      // map), a slice is checked only every 8th frame; a change found goes
+      // back to every frame. Glyphs the game adds show within 8 frames, or
+      // 64 after a long quiet stretch. (Even one slice a frame was ~3% of
+      // the CPU in the four-player marsh fight.)
+      if (t.checked != g_frames && (t.stable < 64u || (g_frames & 7u) == (t.key & 7u))) {
         t.checked = g_frames;
         const uint32_t k = t.slice_next++ & 7u;
         const uint32_t row0 = h * k / 8u, row1 = h * (k + 1u) / 8u;
@@ -262,6 +268,9 @@ const Texture* converted(uint32_t key, const uint8_t* src, uint32_t w, uint32_t 
         if (t.slice_sig[k] != sig) {
           convert_into(static_cast<uint8_t*>(const_cast<void*>(t.gpu)) + off, src + off, w, row1 - row0, kind);
           t.slice_sig[k] = sig;
+          t.stable = 0;
+        } else if (t.stable < 64u) {
+          ++t.stable;
         }
       }
       return &t;
