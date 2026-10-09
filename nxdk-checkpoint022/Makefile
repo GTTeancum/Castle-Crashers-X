@@ -152,6 +152,10 @@ endif
 ifneq ($(TEXTEXACT),)
 CXXFLAGS += -DCC_TEXT_EXACT_BUILD
 endif
+# Depth set bisect: DEPTHEXACT=1 (recompiled sub_820878E0)
+ifneq ($(DEPTHEXACT),)
+CXXFLAGS += -DCC_DEPTH_EXACT_BUILD
+endif
 # Timeline seek bisect: SEEKEXACT=1 (recompiled sub_82087F70, runtime021/seek.inc)
 ifneq ($(SEEKEXACT),)
 CXXFLAGS += -DCC_SEEK_EXACT_BUILD

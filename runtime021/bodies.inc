@@ -7783,9 +7783,96 @@ static void cc_dl_mark_parent(Machine& base, uint32_t node) {
   const uint32_t p = REX_LOAD_U32(node + 96u);
   if (p != 0u && (REX_LOAD_U8(p + 140u) & 0x20u) != 0u) cc_dl_mark(p);
 }
+// Depth set (exact sub_820878E0, f_Depth's last step): a depth below 0 or
+// the node's own depth +28 does nothing; else the parent (slot 156; none:
+// the log call sub_8208C5D8) and its child list (slot 100, the clip
+// classes' "addi r3,r3,104" taken inline) are found, the first child at
+// that depth gets the node's old depth, the node gets the new one and the
+// parent's +140 bit 5 is set. The list walk (up to ~560 children in the
+// 4P fight) is the cost; native, with the original's frame, return
+// addresses and the volatile registers it leaves. Switches: CC_DEPTH_EXACT
+// =1 (host) / make DEPTHEXACT=1 (Xbox, CC_DEPTH_EXACT_BUILD) run the
+// original; CC_ORACLE=1 or CC_DEPTH_ORACLE=1 run the original and compare
+// it with the native's answer (found child and the three stores).
+static CC_HOT_FN void cc_depth_set(Context& ctx, Machine& base) {
+  const uint32_t node = ctx.r3.u32, d = ctx.r4.u32;
+  ctx.r12.u64 = ctx.lr;
+  ctx.lr = 0x820878E8u;  // the register-save call
+  CcFrame frame(ctx, base, 128u);
+  const uint32_t old = REX_LOAD_U32(node + 28u);
+  if (int32_t(d) < 0 || d == old) return;
+  const uint32_t parent = cc_vcall(ctx, base, node, 156u, 0x82087918u);
+  if (parent == 0u) {
+    ctx.r11.u64 = 0xFFFFFFFF82040000ull;
+    ctx.r3.u64 = 0xFFFFFFFF8203E600ull;
+    ctx.lr = 0x82087994u;
+    sub_8208C5D8(ctx, base);
+    return;
+  }
+  uint32_t list;
+  {
+    const uint32_t vt = REX_LOAD_U32(parent + 0u), fn = REX_LOAD_U32(vt + 100u);
+    if (fn == 0x82086810u) {
+      list = parent + 104u;
+      ctx.r3.u64 = list;
+      ctx.r11.u64 = vt;
+      ctx.r10.u64 = fn;
+      ctx.ctr.u64 = fn;
+      ctx.lr = 0x82087930u;
+    } else {
+      list = cc_vcall(ctx, base, parent, 100u, 0x82087930u);
+    }
+  }
+  for (uint32_t n = REX_LOAD_U32(list + 0u); n != 0u; n = REX_LOAD_U32(n + 88u))
+    if (REX_LOAD_U32(n + 28u) == d) {
+      REX_STORE_U32(n + 28u, old);
+      break;
+    }
+  const uint32_t vt = REX_LOAD_U32(node + 0u);
+  REX_STORE_U32(node + 28u, d);
+  const uint32_t p = cc_vcall(ctx, base, node, 156u, 0x82087974u);
+  const uint32_t b = REX_LOAD_U8(p + 140u);
+  REX_STORE_U8(p + 140u, uint8_t(b | 0x20u));
+  ctx.r11.u64 = vt;
+  ctx.r10.u64 = REX_LOAD_U32(vt + 156u);
+  ctx.ctr.u64 = ctx.r10.u64;
+  ctx.r9.u64 = b;
+  ctx.r8.u64 = b | 0x20u;
+}
 static void sub_820878E0(Context& ctx, Machine& base) {
+  CC_FPROF_SCOPE(sub_820878E0_native);
   const uint32_t node = ctx.r3.u32;
-  sub_820878E0_exact(ctx, base);
+#ifndef CC_XBOX_DRIVER
+  static const bool exact = std::getenv("CC_DEPTH_EXACT") != nullptr;
+  static const bool oracle = std::getenv("CC_ORACLE") != nullptr || std::getenv("CC_DEPTH_ORACLE") != nullptr;
+  if (oracle && !exact) {
+    // The native's answer, read before the original runs: the child it
+    // would swap with and the stores it would make.
+    const uint32_t d = ctx.r4.u32, old = REX_LOAD_U32(node + 28u);
+    const bool acts = int32_t(d) >= 0 && d != old && REX_LOAD_U32(node + 96u) != 0u;
+    uint32_t hit = 0u;
+    if (acts)
+      for (uint32_t n = REX_LOAD_U32(REX_LOAD_U32(node + 96u) + 104u); n != 0u; n = REX_LOAD_U32(n + 88u))
+        if (REX_LOAD_U32(n + 28u) == d) { hit = n; break; }
+    const CcLeaf& up = cc_leaf_info(base, REX_LOAD_U32(REX_LOAD_U32(node) + 156u));
+    const uint32_t par = REX_LOAD_U32(node + 96u);
+    const bool known = up.kind == 3 && up.imm == 96 && par != 0u && REX_LOAD_U32(REX_LOAD_U32(par) + 100u) == 0x82086810u;
+    sub_820878E0_exact(ctx, base);
+    if (acts && known) {
+      if (REX_LOAD_U32(node + 28u) != d) cc_oracle_mismatch("sub_820878E0 depth", 0, REX_LOAD_U32(node + 28u), d);
+      if (hit != 0u && REX_LOAD_U32(hit + 28u) != old) cc_oracle_mismatch("sub_820878E0 swap", 1, REX_LOAD_U32(hit + 28u), old);
+      if ((REX_LOAD_U8(REX_LOAD_U32(node + 96u) + 140u) & 0x20u) == 0u) cc_oracle_mismatch("sub_820878E0 mark", 2, 0u, 0x20u);
+    }
+    cc_dl_mark_parent(base, node);
+    return;
+  }
+#elif defined(CC_DEPTH_EXACT_BUILD)
+  constexpr bool exact = true;
+#else
+  constexpr bool exact = false;
+#endif
+  if (exact) sub_820878E0_exact(ctx, base);
+  else cc_depth_set(ctx, base);
   cc_dl_mark_parent(base, node);
 }
 #endif
