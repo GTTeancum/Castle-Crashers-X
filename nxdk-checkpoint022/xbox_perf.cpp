@@ -19,6 +19,7 @@
 #include <windows.h>
 #include <xboxkrnl/xboxkrnl.h>
 #include <cstdint>
+#include "../runtime021/guest_window.h"
 
 // MEM line from the kernel's memory statistics, in KiB:
 //   MEM <when> free=<free> retail_free=<estimate> total=<physical>
@@ -104,6 +105,17 @@ void cc_xbox_perf_second([[maybe_unused]] unsigned frames) {
     __builtin_snprintf(when, sizeof(when), "t=%us", seconds + 1u);
     cc_xbox_mem_line(when);
   }
+  // Guest memory high-water marks every 10 s: game heap (0x71000) and main
+  // pool (0x10000000) against their backing (runtime021/guest_window.h).
+#ifdef CC_FLAT_WINDOW
+  if (seconds % 10u == 0u) {
+    static uint32_t heap_peak = 0, pool_peak = 0;
+    const uint32_t h = cc_win::used_top(0x71000u, 0x71000u + CC_GAME_HEAP_BYTES, &heap_peak);
+    const uint32_t p = cc_win::used_top(0x10000000u, 0x10000000u + CC_MAIN_POOL_BYTES, &pool_peak);
+    DbgPrint("HWM t=%us heap=%uK/%uK pool=%uK/%uK\n", seconds + 1u, unsigned(h >> 10), unsigned(CC_GAME_HEAP_BYTES >> 10),
+             unsigned(p >> 10), unsigned(CC_MAIN_POOL_BYTES >> 10));
+  }
+#endif
   ++seconds;
 #ifdef CC_PMC
   const unsigned n = frames ? frames : 1u;

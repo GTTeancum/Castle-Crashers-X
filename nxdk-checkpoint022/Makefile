@@ -40,8 +40,11 @@ CXXFLAGS += -DCC_CULL_EXACT_BUILD
 endif
 # Benchmark build: make BENCH=1 (fixed game clock, no frame pacing,
 # per-window averages on screen; see runtime021/bodies.inc CC_BENCH)
-# Direct level load after character select (diagnostic): make LEVEL=13
-ifneq ($(LEVEL),)
+# Direct level load after character select (diagnostic): make LEVEL=13;
+# make LEVEL=file reads the number from D:\level.txt beside the XBE at boot.
+ifeq ($(LEVEL),file)
+CXXFLAGS += -DCC_DIRECT_LEVEL=0 -DCC_DIRECT_LEVEL_FILE
+else ifneq ($(LEVEL),)
 CXXFLAGS += -DCC_DIRECT_LEVEL=$(LEVEL)
 endif
 # Four scripted players (join, pick knights, fight in a loop): make FOURP=1

@@ -2151,9 +2151,24 @@ static void __imp__RtlLeaveCriticalSection(Context& ctx, Machine& base) {
 #if defined(CC_FAST)
 #undef sub_8209A728
 // Direct level load (diagnostic; Xbox: make LEVEL=<n>, host: CC_LEVEL=<n>):
-// see the sub_82076758 wrapper.
+// see the sub_82076758 wrapper. Xbox make LEVEL=file: the number is read at
+// boot from D:\level.txt beside the XBE (one build tests every level); a
+// missing or unreadable file stops the game.
 static uint32_t cc_direct_level() {
-#if defined(CC_DIRECT_LEVEL)
+#if defined(CC_DIRECT_LEVEL_FILE)
+  static const uint32_t n = [] {
+    unsigned v = 0;
+    std::FILE* f = std::fopen("D:\\level.txt", "rb");
+    if (!f || std::fscanf(f, "%u", &v) != 1 || !v) {
+      ::DbgPrint("FAIL direct level: D:\\level.txt missing or not a level number\n");
+      for (;;) {}
+    }
+    std::fclose(f);
+    ::DbgPrint("LEVEL direct level %u (D:\\level.txt)\n", v);
+    return uint32_t(v);
+  }();
+  return n;
+#elif defined(CC_DIRECT_LEVEL)
   return uint32_t(CC_DIRECT_LEVEL);
 #elif !defined(CC_XBOX_DRIVER)
   static const uint32_t n = [] { const char* e = std::getenv("CC_LEVEL"); return e ? uint32_t(std::strtoul(e, nullptr, 10)) : 0u; }();
@@ -6765,6 +6780,9 @@ static void sub_82077BC0(Context& ctx, Machine& base) {
       base.store(obj, 4, uint32_t(n));
       for (int k = 0; k <= n; ++k) base.store(obj + 4u + uint32_t(k), 1, uint8_t(repl[k]));
       cc_log("direct_level %s -> %s\n", name, repl);
+#ifdef CC_XBOX_DRIVER
+      ::DbgPrint("LEVEL load %s -> %s\n", name, repl);
+#endif
       ctx.r4.u64 = obj;
       // The level that normally leads into level 13 also queues the movies
       // level 13 uses (its horses, chickens and sky); queue them here too.
@@ -9890,7 +9908,11 @@ static void cc_combat_loop(uint32_t user, uint32_t frame, uint32_t start, uint32
   else if (t < 290u) { if ((t % 28u) < 5u) buttons |= 0x8000u;                       // Y heavy
                        else if ((t % 28u) >= 14u && (t % 28u) < 18u) buttons |= 0x4000u; }
   else if (t < 380u) { lx = 26000; if (t >= 320u + user * 2u && t < 324u + user * 2u) buttons |= 0x1000u; }  // walk right, jump
-  else { if ((t % 8u) < 3u) buttons |= 0x4000u; }
+  else if (t < 392u) { if ((t % 8u) < 3u) buttons |= 0x4000u; }
+  // B: a magic attack in the fight, and the way out of the level-up page
+  // (stats book) that opens when a player gains a level; without it the
+  // run sits on that page for the rest of the level.
+  else if (t < 396u) buttons |= 0x2000u;
   if (lx || ly) thumbs = (uint32_t(uint16_t(lx)) << 16) | uint16_t(ly);
 }
 // Scripted pads 1-3: A to join at character select (on screen from about

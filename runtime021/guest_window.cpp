@@ -38,6 +38,15 @@ uint32_t guest_of(uintptr_t window_offset) {
   if (window_offset >= kWindowBytes) return uint32_t(window_offset);  // guard below the window
   return window_offset >= kHalf ? uint32_t(window_offset) + (kImageGuest - kImageOffset) : uint32_t(window_offset);
 }
+uint32_t used_top(uint32_t lo, uint32_t hi, uint32_t* peak) {
+  for (uint32_t pg = hi; pg > lo + *peak; pg -= 4096u) {
+    const uint32_t* w = reinterpret_cast<const uint32_t*>(ptr(pg - 4096u));
+    uint32_t any = 0;
+    for (uint32_t i = 0; i < 1024u; ++i) any |= w[i];
+    if (any) { *peak = pg - lo; break; }
+  }
+  return *peak;
+}
 #ifndef CC_XBOX_DRIVER
 uint8_t* g_base = nullptr;
 // Host: a guest access outside the committed window faults; report the

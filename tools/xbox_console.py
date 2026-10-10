@@ -126,16 +126,23 @@ def shot(path, width=640, height=480):
     """Screenshot from the scanout buffer: the GPU's display start
     (PCRTC_START, 0xFD600800) gives the framebuffer's physical address;
     pbkit's 32-bit X8R8G8B8 framebuffer is read through the 0x80000000
-    physical mapping. (xbcapture only finds framebuffers of XDK D3D titles.)"""
+    physical mapping. (xbcapture only finds framebuffers of XDK D3D titles.)
+    The title is paused for the capture."""
     from PIL import Image
     x = Xbdm(XBOX)
-    phys = int.from_bytes(getmem(x, 0xFD600800, 4), "little") & 0x0FFFFFFF
-    raw = bytearray()
-    total = width * height * 4
-    base = 0x80000000 | phys
-    while len(raw) < total:
-        n = min(0x10000, total - len(raw))
-        raw += getmem(x, base + len(raw), n)
+    # The title is stopped while the frame is read (~0.7 s): left running,
+    # it redraws the buffer partway through and the capture mixes frames.
+    x.cmd("stop")
+    try:
+        phys = int.from_bytes(getmem(x, 0xFD600800, 4), "little") & 0x0FFFFFFF
+        raw = bytearray()
+        total = width * height * 4
+        base = 0x80000000 | phys
+        while len(raw) < total:
+            n = min(0x10000, total - len(raw))
+            raw += getmem(x, base + len(raw), n)
+    finally:
+        x.cmd("go")
     Image.frombytes("RGB", (width, height), bytes(raw), "raw", "BGRX").save(path)
 
 
