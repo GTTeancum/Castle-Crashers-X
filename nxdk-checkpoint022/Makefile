@@ -116,8 +116,11 @@ ifneq ($(BENCH),)
 CXXFLAGS += -DCC_BENCH
 endif
 # Script locals from the activation slab instead of the game heap (not
-# exact: heap placement changes; see runtime021/as_native.inc): make ASSLAB=1
-ifneq ($(ASSLAB),)
+# exact: heap placement changes; see runtime021/as_native.inc). On by
+# default: each new local cost a game-heap allocation, a member-map regrow
+# and the frees (half the PC's time in the cloud level 58, ~10 characters
+# walking). make NOASSLAB=1 for the game heap.
+ifeq ($(NOASSLAB),)
 CXXFLAGS += -DCC_AS_SLAB_BUILD
 endif
 ifneq ($(SPRITEEXACT),)
