@@ -62,12 +62,12 @@
 #ifndef CC_GAME_HEAP_LIMIT
 #define CC_GAME_HEAP_LIMIT 0x1000000
 #endif
-// Main pool backing at 0x10000000 (the game reserves 16 MiB): 7 MiB. Host
-// 4P runs of every level (CC_POOL_HWM) peak at 3.6-6.3 MiB (levels 1 and 20
-// highest); 4.5 MiB stopped level 11 after level 13 and would stop levels 1,
-// 9, 19, 20.
+// Main pool backing at 0x10000000 (the game reserves 16 MiB): 7.5 MiB.
+// Four-player runs of all 58 levels (host CC_POOL_HWM, console HWM lines,
+// the same numbers) peak at 3.6-6.3 MiB, except level 35: 6.9 MiB, reached
+// as the level loads. 4.5 MiB stopped level 11 after level 13.
 #ifndef CC_MAIN_POOL_BYTES
-#define CC_MAIN_POOL_BYTES 0x700000
+#define CC_MAIN_POOL_BYTES 0x780000
 #endif
 #if defined(CC_FAST) && !defined(CC_PAGE_TABLE)
 #define CC_FLAT_WINDOW 1

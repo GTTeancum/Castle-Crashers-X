@@ -68,7 +68,8 @@ def summarize(level, logs, fight):
         except ValueError:
             return None
     stamps = [clock(l[:8]) for l in lines if clock(l[:8]) is not None]
-    alive = bool(perf) and stamps and clock(perf[-1][2]) is not None and max(stamps) - clock(perf[-1][2]) <= 30
+    # (Clock times modulo a day: a run may cross midnight.)
+    alive = bool(perf) and stamps and clock(perf[-1][2]) is not None and (stamps[-1] - clock(perf[-1][2])) % 86400 <= 30
     tail = [p for p in perf if p[0] >= perf[-1][0] - fight] if perf else []
     avg = sum(p[1] for p in tail) / len(tail) if tail else 0.0
     low = min((p[1] for p in tail), default=0)
