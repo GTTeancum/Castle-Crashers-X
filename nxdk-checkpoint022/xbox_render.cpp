@@ -637,8 +637,12 @@ void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
     window_start = now;
     window_frames = 0;
   }
-  // Numbers drawn as seven-segment digits with a few fills each (pbkit's
-  // text overlay issues ~1,000 fills a frame and slows the game down).
+  // On-screen numbers (make OVERLAY=1; always in BENCH and profiler
+  // builds): drawn as seven-segment digits with a few fills each (pbkit's
+  // text overlay issues ~1,000 fills a frame and slows the game down). The
+  // play build shows none; the same figures go out on the debug channel
+  // (PERF lines).
+#if defined(CC_OVERLAY) || defined(CC_BENCH) || defined(CC_XBOX_PROFILE)
   {
     unsigned st = 0, fed = 0, cb = 0, ur = 0, dr = 0;
     cc_xbox_audio_stats(&st, &fed, &cb, &ur, &dr);
@@ -681,6 +685,11 @@ void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
 #endif
     flush_overlay();
   }
+#endif
+  // The frame's last open sprite batch (often the text drawn on top, such
+  // as the menu's button labels); the overlay used to flush it as a side
+  // effect, so without the overlay those labels were never drawn.
+  flush_batch();
   const uint64_t w0 = now_us();
   // No wait for the GPU here: the flip is queued behind this frame's draws,
   // and the next frame's begin_frame (pb_reset jumps the push buffer back

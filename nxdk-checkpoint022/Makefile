@@ -47,6 +47,10 @@ CXXFLAGS += -DCC_DIRECT_LEVEL=0 -DCC_DIRECT_LEVEL_FILE
 else ifneq ($(LEVEL),)
 CXXFLAGS += -DCC_DIRECT_LEVEL=$(LEVEL)
 endif
+# On-screen frame-rate and timing numbers (top left): make OVERLAY=1
+ifneq ($(OVERLAY),)
+CXXFLAGS += -DCC_OVERLAY
+endif
 # Four scripted players (join, pick knights, fight in a loop): make FOURP=1
 ifneq ($(FOURP),)
 CXXFLAGS += -DCC_SCRIPT_4P
