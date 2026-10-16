@@ -895,6 +895,19 @@ static void renderer_caller_prefix_controls(const char* image_path) {
     CHECK(cr.error==Error::ok);
     CHECK(cc.r3.u32==0u);
   }
+#if defined(CC_FAST) && !defined(CC_XBOX_DRIVER)
+  // Installer texture bake (CC_TEX_REPLAY=<list>): only the rasterizer over
+  // the listed jobs, then exit (the pack is written at exit).
+  if (std::getenv("CC_TEX_REPLAY")) {
+    Context rc{};
+    rc.r1.u32=0x3f000;
+    rc.r13.u32=0x68000;
+    rc.lr=0x0c0160c0;
+    auto rr=invoke(0xCC7E0001u,rc,m,sink(),1u);
+    std::fprintf(stderr,"texreplay result=%s@%08x\n",name(rr.error),rr.address);
+    std::exit(rr.error==Error::ok?0:1);
+  }
+#endif
 
   Context c{};
   c.r1.u32=0x3f000;
