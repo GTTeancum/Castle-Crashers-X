@@ -1,0 +1,47 @@
+<Window x:Class="CastleCrashersXInstaller.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Castle Crashers X Installer" Width="820" Height="620" MinWidth="640" MinHeight="460"
+        WindowStartupLocation="CenterScreen" Background="#FAFAFA">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.ColumnSpan="3" Margin="0,0,0,14" TextWrapping="Wrap" FontSize="13"
+                   Text="Converts your Xbox LIVE copy of Castle Crashers into a folder for the original Xbox. Copy the finished folder to your Xbox and run default.xbe."/>
+
+        <TextBlock Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,6" Text="Xbox LIVE package:"/>
+        <TextBox x:Name="PackageBox" Grid.Row="1" Grid.Column="1" Margin="0,0,8,6" Padding="4,3"/>
+        <Button x:Name="PackageBrowse" Grid.Row="1" Grid.Column="2" Margin="0,0,0,6" Padding="12,3" Content="Browse…" Click="PackageBrowse_Click"/>
+
+        <TextBlock Grid.Row="2" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,6" Text="Xbox output folder:"/>
+        <TextBox x:Name="OutputBox" Grid.Row="2" Grid.Column="1" Margin="0,0,8,6" Padding="4,3"/>
+        <Button x:Name="OutputBrowse" Grid.Row="2" Grid.Column="2" Margin="0,0,0,6" Padding="12,3" Content="Browse…" Click="OutputBrowse_Click"/>
+
+        <StackPanel Grid.Row="3" Grid.ColumnSpan="3" Orientation="Horizontal" Margin="0,8,0,10">
+            <Button x:Name="StartButton" Padding="20,5" Content="Start" FontWeight="SemiBold" Click="Start_Click"/>
+            <Button x:Name="CancelButton" Padding="16,5" Margin="8,0,0,0" Content="Cancel" IsEnabled="False" Click="Cancel_Click"/>
+            <TextBlock x:Name="StatusText" Margin="14,0,0,0" VerticalAlignment="Center" Text="Ready."/>
+        </StackPanel>
+
+        <Grid Grid.Row="4" Grid.ColumnSpan="3" Margin="0,0,0,10">
+            <ProgressBar x:Name="Progress" Height="22" Minimum="0" Maximum="1"/>
+            <TextBlock x:Name="PercentText" HorizontalAlignment="Center" VerticalAlignment="Center" Text="0%"/>
+        </Grid>
+
+        <ListBox x:Name="LogList" Grid.Row="5" Grid.ColumnSpan="3" FontFamily="Consolas" FontSize="12"
+                 VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                 ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
+    </Grid>
+</Window>

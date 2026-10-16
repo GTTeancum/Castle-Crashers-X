@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Castle Crashers X installer: turns a user's Xbox LIVE Castle Crashers
+       package into the original-Xbox game folder. Windows GUI only; every
+       helper process it starts runs hidden (no console windows). -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>CastleCrashersXInstaller</AssemblyName>
+    <RootNamespace>CastleCrashersXInstaller</RootNamespace>
+    <Product>Castle Crashers X Installer</Product>
+    <Version>0.1.0</Version>
+    <!-- One self-contained exe for people without .NET installed. -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <!-- Files the installer carries next to the exe (staged by
+       installer\stage_payload.sh; never game data). -->
+  <ItemGroup>
+    <None Include="Payload\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+  </ItemGroup>
+
+</Project>
