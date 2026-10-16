@@ -2701,9 +2701,23 @@ static void execute(uint32_t entry, Context &ctx, Machine &m) {
     m.fail(Error::entry, entry);
   }
 }
+#if defined(CC_FAST) && !defined(CC_XBOX_DRIVER)
+static void cc_tex_replay_run(Context& ctx, Machine& base);  // bodies.inc
+#endif
 Result invoke(uint32_t entry, Context &ctx, AddressSpace &memory, Sink sink,
               uint32_t budget) noexcept {
   Result error;
+#if defined(CC_FAST) && !defined(CC_XBOX_DRIVER)
+  // Installer texture bake (CC_TEX_REPLAY): a pseudo entry, no game code
+  // beyond the rasterizer.
+  if (entry == 0xCC7E0001u) {
+    Machine m(memory, sink);
+    m.budget = 0xFFFFFFFFu;
+    FloatScope fp;
+    cc_tex_replay_run(ctx, m);
+    return m.result;
+  }
+#endif
   if (entry != 0x820b7730 && entry != 0x820b7650 && entry != 0x82127e48 && entry != 0x8212a630 && entry != 0x820c13b8 && entry != 0x820c2c98 && entry != 0x820befd0 && entry != 0x820a7b34 && entry != 0x820a7990 && entry != 0x82070ac8 && entry != 0x820701d0 && entry != 0x820b7880 && entry != 0x82070ba4 && entry != 0x82070434 && entry != 0x8208a7a0 && entry != 0x820a8ff8 && entry != 0x82091248 && entry != 0x8209cd08 && entry != 0x8209cc98 && entry != 0x8209de50 && entry != 0x82097720 && entry != 0x820915f0 && entry != 0x8209df48 && entry != 0x820a1ac0 && entry != 0x8209ce40 && entry != 0x8209ce48) {
     error.error = Error::entry;
     return error;

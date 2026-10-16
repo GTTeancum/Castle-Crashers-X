@@ -9236,7 +9236,99 @@ static void cc_bake_record(Machine& base, const uint8_t* snapshot, uint32_t job_
   r.e = CcBakeEntry{cc_fnv(fields, s, 64), cc_fnv(fields, s, len), len, w, h, 0};
   for (const auto& o : g_bake_writer.records) if (o.e.full == r.e.full && o.e.key0 == r.e.key0) return;
   r.pixels.assign(q, q + size_t(w) * h);
+  // CC_TEX_RECIPE=<file>: each new texture's inputs as well (the installer's
+  // texture list: u32 key0, full, len, w, h, the 596-byte job snapshot, then
+  // the shape bytes: max(len, 64), as key0 covers 64 even for a short shape).
+  static std::FILE* recipe = [] { const char* p = std::getenv("CC_TEX_RECIPE"); return p ? std::fopen(p, "wb") : nullptr; }();
+  if (recipe) {
+    const uint32_t hdr[5] = {r.e.key0, r.e.full, len, w, h};
+    std::fwrite(hdr, 4, 5, recipe);
+    std::fwrite(snapshot, 1, 596u, recipe);
+    std::fwrite(s, 1, len > 64u ? len : 64u, recipe);
+    std::fflush(recipe);
+  }
   g_bake_writer.records.push_back(std::move(r));
+}
+// Installer texture bake (CC_TEX_REPLAY=<list>, game files under
+// CC_TEX_REPLAY_ROOT, pack written to CC_TEX_BAKE): no game start, only the
+// exact rasterizer over each listed job. List "TXR2": u32 file count, per
+// file u16 name length + name (relative to the root); u32 count, per
+// texture u32 key0, full, len, w, h, file, offset, u8 patch count and per
+// patch u8 position + u8 byte (bytes the game rewrites in memory after the
+// shape, laid over the file's), then the 596-byte job.
+// The shape bytes are read from file+offset, placed in guest memory and the
+// job's stream pointer (+20) aimed at them; the pack entry's key is then
+// computed from guest memory as in a game run, and must equal the listed one.
+static void cc_tex_replay_run(Context& ctx, Machine& base) {
+  const char* list = std::getenv("CC_TEX_REPLAY");
+  const char* root = std::getenv("CC_TEX_REPLAY_ROOT");
+  base.budget = 0xFFFFFFFFu;
+  std::FILE* f = list ? std::fopen(list, "rb") : nullptr;
+  if (!f || !root) { std::fprintf(stderr, "FAIL texreplay: list or root missing\n"); base.fail(Error::unsupported, 0); return; }
+  auto u32 = [&]() { uint32_t v = 0; if (std::fread(&v, 4, 1, f) != 1) v = 0xFFFFFFFFu; return v; };
+  char magic[4] = {};
+  if (std::fread(magic, 1, 4, f) != 4 || std::memcmp(magic, "TXR2", 4) != 0) { std::fprintf(stderr, "FAIL texreplay: not a TXR2 list\n"); base.fail(Error::unsupported, 0); return; }
+  const uint32_t nfiles = u32();
+  std::vector<std::vector<uint8_t>> files(nfiles);
+  for (uint32_t i = 0; i < nfiles; ++i) {
+    uint16_t n = 0;
+    std::fread(&n, 2, 1, f);
+    std::string name(n, '\0');
+    std::fread(name.data(), 1, n, f);
+    const std::string path = std::string(root) + "/" + name;
+    std::FILE* g = std::fopen(path.c_str(), "rb");
+    if (!g) { std::fprintf(stderr, "FAIL texreplay: cannot open %s\n", path.c_str()); base.fail(Error::unsupported, 0); return; }
+    std::fseek(g, 0, SEEK_END);
+    files[i].resize(size_t(std::ftell(g)));
+    std::fseek(g, 0, SEEK_SET);
+    std::fread(files[i].data(), 1, files[i].size(), g);
+    std::fclose(g);
+  }
+  const uint32_t count = u32();
+  uint32_t done = 0, bad = 0;
+  std::vector<uint8_t> job(596u);
+  for (uint32_t k = 0; k < count; ++k) {
+    const uint32_t key0 = u32(), full = u32(), len = u32(), w = u32(), h = u32(), file = u32(), offset = u32();
+    uint8_t np = 0, patch[2 * 255];
+    std::fread(&np, 1, 1, f);
+    std::fread(patch, 2, np, f);
+    if (std::fread(job.data(), 1, 596u, f) != 596u) { std::fprintf(stderr, "FAIL texreplay: list cut short at %u\n", k); base.fail(Error::unsupported, 0); return; }
+    if (file >= nfiles || uint64_t(offset) + len > files[file].size()) {
+      std::fprintf(stderr, "TEXREPLAY skip %u: shape bytes outside file %u\n", k, file); ++bad; continue;
+    }
+    // Shape bytes (at least 64: key0 reads that many) in a guest block.
+    const uint32_t span = len > 64u ? len : 64u;
+    const uint32_t sp = cc_phys_alloc(base, span + 16u, 16u);
+    uint8_t* sq = base.memory.contiguous(sp, span, 3);
+    if (!sq) base.fail(Error::memory, sp);
+    std::memset(sq, 0, span);
+    const size_t avail = files[file].size() - offset;
+    std::memcpy(sq, files[file].data() + offset, avail < span ? avail : span);
+    for (uint32_t p = 0; p < np; ++p)
+      if (patch[2 * p] < span) sq[patch[2 * p]] = patch[2 * p + 1];
+    job[20] = uint8_t(sp >> 24); job[21] = uint8_t(sp >> 16); job[22] = uint8_t(sp >> 8); job[23] = uint8_t(sp);
+    const uint32_t jb = cc_phys_alloc(base, 596u, 16u);
+    uint8_t* jq = base.memory.contiguous(jb, 596u, 3);
+    if (!jq) base.fail(Error::memory, jb);
+    std::memcpy(jq, job.data(), 596u);
+    uint32_t hash = 0;
+    const uint32_t cache = cc_tex_rasterize(ctx, base, jb, w, h, hash);
+    const size_t before = g_bake_writer.records.size();
+    cc_bake_record(base, job.data(), jb, cache, w, h);
+    bool ok = cache != 0u;
+    if (ok && g_bake_writer.records.size() > before) {
+      const CcBakeEntry& e = g_bake_writer.records.back().e;
+      ok = e.key0 == key0 && e.full == full && e.len == len;
+    }
+    if (!ok) { ++bad; std::fprintf(stderr, "TEXREPLAY mismatch %u: %ux%u key0=%08x\n", k, w, h, key0); }
+    if (cache) { cc_texzone_free(cache); g_tex_cache_bytes -= uint64_t(w) * h; }
+    cc_phys_free(base, jb);
+    cc_phys_free(base, sp);
+    ++done;
+    if (done % 250u == 0u || done == count) std::fprintf(stderr, "TEXREPLAY progress %u/%u bad=%u\n", done, count, bad);
+  }
+  std::fclose(f);
+  std::fprintf(stderr, "TEXREPLAY done %u textures, %u bad\n", done, bad);
 }
 #endif
 // Make a streamed texture (pixel pointer `data`) resident at its bind.
