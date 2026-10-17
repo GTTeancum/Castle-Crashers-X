@@ -9,6 +9,14 @@ var tmp = Path.Combine(repo, "game-data", "installer-check"); Directory.CreateDi
 string H(string p) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(p)));
 var sw = Stopwatch.StartNew();
 var what = args.Length > 0 ? args[0] : "all";
+if (what == "patchxbe") {
+  // patchxbe <play default.xbe> <out default.xbe>: the installer's identity
+  // step only (title, title ID, 360 icon), for quick console test builds.
+  File.Copy(args[1], args[2], true);
+  XbeTitle.Patch(args[2], XbeTitle.TitleImageXpr(Path.Combine(repo, "game-data", "extracted", "TitleIcon.png")));
+  Console.WriteLine($"patched {args[2]}");
+  return;
+}
 if (what == "install") {
   var outDir = args[1];
   var last = "";

@@ -8779,15 +8779,19 @@ static uint32_t cc_tex_swap_in(Machine& base, CcDxtTexture& t) {
   return cache;
 }
 // Evict least recently bound textures until the cache fits (never `keep`).
-// Least recently bound resident texture other than `keep`. On the Xbox a
-// texture bound this frame is still referenced by queued draws (the GPU
-// samples the zone directly), so those are evicted only when nothing else
-// is resident, and then only after the GPU has finished the queued work.
+// Least recently bound resident texture other than `keep`. On the Xbox the
+// GPU samples the zone directly and runs behind the CPU: the previous
+// frame's draws may still be queued (no GPU wait at frame end; the next
+// frame's first draw waits) and this frame's certainly are. So a texture
+// bound this frame or the last one is evicted only when nothing older is
+// resident, and then only after the GPU has finished the queued work.
+// Evicting last-frame textures without that wait drew the book menu's
+// pictures with other textures' pixels for one frame (the "giant B").
 static CcDxtTexture* cc_tex_pick_victim(uint32_t keep) {
   CcDxtTexture* victim = nullptr;
 #ifdef CC_XBOX_DRIVER
   for (auto& t : g_dxt_textures)
-    if (t.cache && t.data != keep && t.last_use != g_frame_delay_calls &&
+    if (t.cache && t.data != keep && t.last_use + 1u < g_frame_delay_calls &&
         (!victim || t.last_use < victim->last_use)) victim = &t;
   if (victim) return victim;
   for (auto& t : g_dxt_textures)
