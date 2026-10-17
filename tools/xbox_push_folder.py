@@ -10,6 +10,7 @@ import sys
 import time
 
 XBCP = r"C:\XDK\Xbox\Bin\xbcp.exe"
+XBMKDIR = r"C:\XDK\Xbox\Bin\xbmkdir.exe"
 
 
 def main(argv):
@@ -19,6 +20,9 @@ def main(argv):
     for dp, _, fs in os.walk(root):
         rel = os.path.relpath(dp, root)
         dest = target if rel == "." else target + "\\" + rel
+        # The folder first: copying a file to a folder that does not exist
+        # yet makes a file of that name.
+        subprocess.run([XBMKDIR, dest], capture_output=True, text=True)
         for f in fs:
             r = subprocess.run([XBCP, "/y", "/t", "/f", "/q", f, dest], cwd=dp, capture_output=True, text=True, input="A\n")
             n += 1
