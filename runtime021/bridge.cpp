@@ -2778,6 +2778,14 @@ const char *name(Error e) noexcept {
 // plays as 1.3 ms of silence; runtime021/music_stream.inc), for the PERF
 // line (nxdk-checkpoint022/xbox_render.cpp).
 uint32_t cc_audio_music_starved() { return cc::tree::ccaudio::g_music.starved; }
+// Sound effects read from disk at play time since the last call, and the
+// longest such read in microseconds (reset by the call).
+void cc_audio_sfx_reads(uint32_t* reads, uint32_t* max_us) {
+  *reads = cc::tree::ccaudio::g_sfx_disk_reads;
+  *max_us = cc::tree::ccaudio::g_sfx_disk_max_us;
+  cc::tree::ccaudio::g_sfx_disk_reads = 0;
+  cc::tree::ccaudio::g_sfx_disk_max_us = 0;
+}
 // The console FRAME line's counters (nxdk-checkpoint022/xbox_perf.cpp), read
 // and reset: out = {frames, baked-texture reads, baked-texture bytes, then
 // microseconds of frame, audio, end, sleep, workers, update, render, then

@@ -129,6 +129,7 @@ static void lower_stem(char* s) {
 
 static uint64_t g_sfx_bytes = 0;
 static uint32_t g_sfx_clock = 0, g_sfx_loads = 0;
+static uint32_t g_sfx_disk_reads = 0, g_sfx_disk_max_us = 0;  // Xbox PERF line (sfl, sfx)
 static uint64_t sfx_cache_limit() {
 #ifndef CC_XBOX_DRIVER
   static uint64_t lim = 0;
@@ -184,11 +185,21 @@ static bool read_sound_data(int k, std::vector<uint8_t>& out) {
     if (!bank) return false;
   }
   out.resize(s.bytes);
+#ifdef CC_XBOX_DRIVER
+  const uint64_t t0 = ::cc_xbox_clock(1000000u);
+#endif
   if (std::fseek(bank, long(s.offset), SEEK_SET) != 0 ||
       std::fread(out.data(), 1, out.size(), bank) != out.size()) {
     out.clear();
     return false;
   }
+#ifdef CC_XBOX_DRIVER
+  // Effects read from disk at play time and the longest read (each delays
+  // that sound by its duration), for the PERF line's sfl / sfx fields.
+  const uint32_t us = uint32_t(::cc_xbox_clock(1000000u) - t0);
+  ++g_sfx_disk_reads;
+  if (us > g_sfx_disk_max_us) g_sfx_disk_max_us = us;
+#endif
   return true;
 }
 // Make an effect's data resident (from `preloaded` when it holds it),

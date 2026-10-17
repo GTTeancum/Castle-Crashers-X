@@ -673,11 +673,16 @@ void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
       // mst: music blocks that reached the mixer late (runtime021/music_stream.inc).
       uint32_t cc_audio_music_starved();
       const unsigned ms_now = cc_audio_music_starved();
-      DbgPrint("PERF t=%u fps=%u ms=%u max=%u upd=%u ren=%u draw=%u wait=%u dbg=%u und=%u mst=%u gpi=%u gpb=%u\n", unsigned(now), window_frames * 1000u / el,
+      // sfl / sfx: sound effects read from disk at play time this second and
+      // the longest read (0.1 ms; that sound started that much late).
+      void cc_audio_sfx_reads(uint32_t* reads, uint32_t* max_us);
+      uint32_t sfl = 0, sfx_us = 0;
+      cc_audio_sfx_reads(&sfl, &sfx_us);
+      DbgPrint("PERF t=%u fps=%u ms=%u max=%u upd=%u ren=%u draw=%u wait=%u dbg=%u und=%u mst=%u gpi=%u gpb=%u sfl=%u sfx=%u\n", unsigned(now), window_frames * 1000u / el,
                el * 10u / window_frames, unsigned(max_frame_us / 100u), unsigned(sum_update / window_frames / 100u),
                unsigned(sum_render / window_frames / 100u), unsigned(sum_draw / window_frames / 100u),
                unsigned(sum_wait / window_frames / 100u), unsigned(dbg_us / 100u), aur - last_ur, ms_now - last_ms,
-               g_gpu_premature - last_gpi, g_gpu_busy_at_begin - last_gpb);
+               g_gpu_premature - last_gpi, g_gpu_busy_at_begin - last_gpb, sfl, sfx_us / 100u);
       last_gpi = g_gpu_premature;
       last_gpb = g_gpu_busy_at_begin;
       last_ur = aur;
