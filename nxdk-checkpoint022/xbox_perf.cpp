@@ -107,7 +107,9 @@ void cc_xbox_perf_second([[maybe_unused]] unsigned frames) {
   }
   // Guest memory high-water marks every 10 s: game heap (0x71000) and main
   // pool (0x10000000) against their backing (runtime021/guest_window.h).
-#ifdef CC_FLAT_WINDOW
+  // Test builds only (make FOURP=1 / LEVEL=...): the play build skips the
+  // scan.
+#if defined(CC_FLAT_WINDOW) && (defined(CC_SCRIPT_4P) || defined(CC_DIRECT_LEVEL))
   if (seconds % 10u == 0u) {
     static uint32_t heap_peak = 0, pool_peak = 0;
     const uint32_t h = cc_win::used_top(0x71000u, 0x71000u + CC_GAME_HEAP_BYTES, &heap_peak);

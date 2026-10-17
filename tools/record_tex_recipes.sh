@@ -1,11 +1,12 @@
 #!/bin/bash
-# Output: <scratchpad>/rec58/<run>.rcp, then tools/texrecipe_locate.py game-data/extracted <out.txr> rec58/*.rcp
+# Output: game-data/texrecipes/<run>.rcp (git-ignored: they hold shape bytes), then
+# tools/texrecipe_locate.py --order <pack> game-data/extracted installer/textures.txr game-data/texrecipes/*.rcp
 # Record texture recipes for all levels: eager 4P, play 4P, play 1P, plus the plain scripted run.
-S=/c/Users/smmel/AppData/Local/Temp/claude/D--Programming-GitHub-Castle-Crashers-X/22b1fb86-3b98-4ef2-a0ac-c7b4dcf45f81/scratchpad
 cd /d/Programming/GitHub/Castle-Crashers-X
 EXE=.claude/worktrees/integ/renderer021/build-bake/cc_update_boundary_tests.exe
-ARGS="$S/base/startup.cct castle-crashers-port/reference/default.image.bin game-data/extracted"
-O=$S/rec58; mkdir -p $O; rm -f $O/*
+# (the startup capture argument is not opened by these builds)
+ARGS="game-data/none.cct castle-crashers-port/reference/default.image.bin game-data/extracted"
+O=game-data/texrecipes; mkdir -p $O; rm -f $O/*
 jobs_list=()
 for L in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 40 41 42 43 44 45 46 47 48 49 50 51 53 54 55 56 57 58 59 60; do
   jobs_list+=("e$L:CC_TEX_EAGER=1 CC_4P=1 CC_LEVEL=$L CC_FRAME_BUDGET=9000")

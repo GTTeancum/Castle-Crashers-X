@@ -29,9 +29,12 @@ void cc_xr_gpu_idle();
 // nxdk-checkpoint022/xbox_audio.cpp: real clock for the play build.
 uint64_t cc_xbox_clock(uint64_t hz);
 void cc_xbox_sleep_100ns(uint64_t interval);
-// nxdk-checkpoint022/xbox_input.cpp: first connected controller, XINPUT terms.
+// nxdk-checkpoint022/xbox_input.cpp: controllers in XINPUT terms, slot 0-3
+// (cc_xbox_pad: slot 0).
 bool cc_xbox_pad(uint32_t* buttons, int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry,
                  uint8_t* lt, uint8_t* rt);
+bool cc_xbox_pad_port(uint32_t port, uint32_t* buttons, int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry,
+                      uint8_t* lt, uint8_t* rt);
 // nxdk-checkpoint022/xbox_profile.cpp: on-target sampling profiler.
 extern volatile const char* g_xprof_fn;
 extern volatile uint32_t g_xprof_r1, g_xprof_lr;
@@ -43,6 +46,8 @@ void cc_xprof_frame(bool (*read32)(uint32_t, uint32_t*));
 #include "guest_window.h"
 #ifndef CC_XBOX_DRIVER
 #include <atomic>
+#include <filesystem>
+#include <system_error>
 #include <unordered_map>
 #include <chrono>
 #include <thread>

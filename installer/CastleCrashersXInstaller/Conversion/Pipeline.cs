@@ -60,7 +60,9 @@ public sealed class Pipeline
         var hashes = PayloadFile("gamefiles.sha256");
         var xbe = PayloadFile("default.xbe");
 
-        var work = Path.Combine(Path.GetTempPath(), "CastleCrashersXInstall-" + Environment.ProcessId);
+        // Scratch files go in the output folder (removed at the end), not the
+        // system temp folder.
+        var work = Path.Combine(outDir, ".ccx-work");
         var extracted = Path.Combine(work, "extracted");
         var data = Path.Combine(outDir, "data");
         var gameData = Path.Combine(data, "game-data");
@@ -153,8 +155,15 @@ public sealed class Pipeline
 
             // 9. The game program.
             Begin(8);
-            File.Copy(xbe, Path.Combine(outDir, "default.xbe"), true);
-            _log("wrote default.xbe");
+            var outXbe = Path.Combine(outDir, "default.xbe");
+            File.Copy(xbe, outXbe, true);
+            // Dashboard identity: title "Castle Crashers", title ID 584108B7
+            // (the 360 game's), and the 360 icon as the title image; the
+            // same image goes next to the game data for its saved-game folder.
+            var titleImage = XbeTitle.TitleImageXpr(Path.Combine(extracted, "TitleIcon.png"));
+            XbeTitle.Patch(outXbe, titleImage);
+            await File.WriteAllBytesAsync(Path.Combine(data, "TitleImage.xbx"), titleImage, ct);
+            _log($"wrote default.xbe (\"{XbeTitle.TitleName}\", title ID {XbeTitle.TitleId:X8}, 360 icon as the title image)");
             _step = Steps.Length - 1;
             Report(1);
         }

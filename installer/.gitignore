@@ -2,3 +2,8 @@ CastleCrashersXInstaller/bin/
 CastleCrashersXInstaller/obj/
 CastleCrashersXInstaller/Payload/
 publish/
+tools/ConversionCheck/bin/
+tools/ConversionCheck/obj/
+# Built by tools/build_ffmpeg_xma.sh
+third_party/ffmpeg/ffmpeg.exe
+third_party/ffmpeg/build/

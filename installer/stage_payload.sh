@@ -5,17 +5,20 @@
 # game data: the play build of the game, the port's PC texture tool and its
 # C++ runtime, ffmpeg, the texture list and the game-file checksums.
 #
-# usage: installer/stage_payload.sh <play default.xbe> <texture tool exe> <ffmpeg.exe> <textures.txr>
+# usage: installer/stage_payload.sh <play default.xbe> <texture tool exe> [ffmpeg.exe] [textures.txr]
+# (defaults: installer/third_party/ffmpeg/ffmpeg.exe from tools/build_ffmpeg_xma.sh,
+# installer/textures.txr)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/.." && pwd)
 P="$here/CastleCrashersXInstaller/Payload"
-xbe=$1; tool=$2; ffmpeg=$3; txr=$4
+xbe=$1; tool=$2; ffmpeg=${3:-$here/third_party/ffmpeg/ffmpeg.exe}; txr=${4:-$here/textures.txr}
 rm -rf "$P"; mkdir -p "$P/texbake" "$P/ffmpeg"
 cp "$xbe" "$P/default.xbe"
 cp "$tool" "$P/texbake/ccx-texbake.exe"
 for d in msvcp140.dll vcruntime140.dll vcruntime140_1.dll; do cp "/c/Windows/System32/$d" "$P/texbake/"; done
 cp "$ffmpeg" "$P/ffmpeg/ffmpeg.exe"
+cp "$here/third_party/ffmpeg/LICENSE.txt" "$P/ffmpeg/LICENSE.txt"
 cp "$txr" "$P/textures.txr"
 # Checksums of the package files the installer depends on: the code image
 # source and every file the texture list points into.

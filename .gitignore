@@ -79,3 +79,8 @@ tools/xbox_power/*.d
 tools/xbox_power/*.xbe
 tools/xbox_power/main.exe*
 tools/xbox_power/main.lib
+
+# Installer runs and checks, texture recipe recordings (game data)
+game-data/installer-check/
+game-data/installer-out/
+game-data/texrecipes/

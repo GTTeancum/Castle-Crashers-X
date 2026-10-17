@@ -1,4 +1,4 @@
-XBE_TITLE = CastleCrashersX Checkpoint 022
+XBE_TITLE = "Castle Crashers"
 GEN_XISO = CastleCrashersX-Checkpoint022.iso
 SRCS = \
   $(CURDIR)/xbox_shims.cpp \

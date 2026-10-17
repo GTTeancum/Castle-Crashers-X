@@ -9924,26 +9924,18 @@ static void __imp__RtlTimeFieldsToTime([[maybe_unused]] Context& ctx, Machine& b
 static void __imp__RtlUnicodeToMultiByteN([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A604u); }
 static void __imp__XamShowGamerCardUIForXUID([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A2E4u); }
 static void __imp__XamShowMarketplaceUI([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A304u); }
-// PORT POLICY (nobody signs in): every controller slot reports "not
-// signed in" (ERROR_NOT_LOGGED_ON 0x4DD) with an empty name / zero XUID,
-// exactly as a real console answers for an empty slot.
+// Local profiles ("Player N", one per controller) and saved progress.
 static bool cc_four_players();
+#include "profiles.inc"
 static void __imp__XamUserGetName(Context& ctx, Machine& base) {
   if (ctx.r4.u32 == 0u && ctx.r5.u32 != 0u)
     base.fail(Error::unsupported, 0x8214A234u);
   if (ctx.r4.u32 && ctx.r5.u32) base.store(ctx.r4.u32, 1, 0u);
   // An index past the four slots (the world map after level 3 asks for
-  // 0xFFFFFFFF in a four-player game) is no signed-in user either.
-  if (ctx.r3.u32 > 3u) { ctx.r3.u64 = 0x4DDu; return; }
-  if (cc_four_players() && ctx.r3.u32 >= 1u && ctx.r3.u32 <= 3u && ctx.r4.u32 && ctx.r5.u32 >= 9u) {
-    const char name[] = "Player ";
-    for (uint32_t k = 0; k < 7u; ++k) base.store(ctx.r4.u32 + k, 1, uint8_t(name[k]));
-    base.store(ctx.r4.u32 + 7, 1, uint8_t('1' + ctx.r3.u32));
-    base.store(ctx.r4.u32 + 8, 1, 0u);
-    ctx.r3.u64 = 0u;
-    return;
-  }
-  ctx.r3.u64 = 0x4DDu;
+  // 0xFFFFFFFF in a four-player game) is no signed-in user.
+  if (ctx.r3.u32 > 3u || !cc_signed_in(ctx.r3.u32)) { ctx.r3.u64 = 0x4DDu; return; }
+  if (ctx.r4.u32 && ctx.r5.u32) cc_profile_name(base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+  ctx.r3.u64 = 0u;
 }
 // NtWriteFile(handle r3, event r4, apc r5, ctx r6, iosb r7, buffer r8, length
 // r9, offset r10). The port opens no writable files; the play build reports
@@ -9961,6 +9953,13 @@ static void __imp__NtWriteFile([[maybe_unused]] Context& ctx, Machine& base) {
 // ERROR_DEVICE_NOT_CONNECTED (0x48F), matching a console with one pad.
 // The original-Xbox driver maps real pads through this same boundary.
 static uint32_t g_input_packet_number = 0;
+// The built-in input script (an autopilot that presses START, walks the menus
+// and plays into level 1 until a real pad is used) exists on the Xbox only in
+// test builds: make FOURP=1, LEVEL=..., BENCH=1 or SCRIPT=quit. The play
+// build answers to real pads only. Host harness runs always have it.
+#if !defined(CC_XBOX_DRIVER) || defined(CC_SCRIPT_4P) || defined(CC_DIRECT_LEVEL) || defined(CC_BENCH) || defined(CC_SCRIPT_QUIT)
+#define CC_SCRIPTED_INPUT 1
+#endif
 // Four-player diagnostic (Xbox: make FOURP=1, host: CC_4P=1): ports 1-3 are
 // connected too and follow their own scripts - join at character select,
 // pick a knight - and from the first fight on all four players walk and
@@ -10021,7 +10020,7 @@ static void cc_extra_pad(uint32_t user, uint32_t frame, uint32_t& buttons, uint3
 }
 static void __imp__XamInputGetCapabilities(Context& ctx, Machine& base) {
   const uint32_t user = ctx.r3.u32, caps = ctx.r5.u32;
-  if (user != 0u && !(user <= 3u && cc_four_players())) { ctx.r3.u64 = 0x48Fu; return; }
+  if (user != 0u && !(user <= 3u && (cc_four_players() || cc_real_pad(user)))) { ctx.r3.u64 = 0x48Fu; return; }
   base.store(caps + 0, 1, 0x01u);      // Type    = XINPUT_DEVTYPE_GAMEPAD
   base.store(caps + 1, 1, 0x01u);      // SubType = XINPUT_DEVSUBTYPE_GAMEPAD
   base.store(caps + 2, 2, 0u);         // Flags
@@ -10038,6 +10037,22 @@ static void __imp__XamInputGetCapabilities(Context& ctx, Machine& base) {
 }
 static void __imp__XamInputGetState(Context& ctx, Machine& base) {
   const uint32_t user = ctx.r3.u32, state = ctx.r5.u32;
+#ifdef CC_XBOX_DRIVER
+  // Controllers 2-4 (play build): the pad in that slot; it signs its player
+  // in the first time it is seen.
+  if (user >= 1u && user <= 3u && !cc_four_players()) {
+    uint32_t pb = 0; int16_t lx = 0, ly = 0, rx = 0, ry = 0; uint8_t lt = 0, rt = 0;
+    if (!::cc_xbox_pad_port(user, &pb, &lx, &ly, &rx, &ry, &lt, &rt)) { ctx.r3.u64 = 0x48Fu; return; }
+    cc_sign_in(user);
+    static uint32_t packets[4];
+    base.store(state + 0, 4, ++packets[user]);
+    base.store(state + 4, 4, pb << 16 | uint32_t(lt) << 8 | rt);
+    base.store(state + 8, 4, (uint32_t(uint16_t(lx)) << 16) | uint16_t(ly));
+    base.store(state + 12, 4, (uint32_t(uint16_t(rx)) << 16) | uint16_t(ry));
+    ctx.r3.u64 = 0u;
+    return;
+  }
+#endif
   if (user != 0u) {
     if (!(user <= 3u && cc_four_players())) { ctx.r3.u64 = 0x48Fu; return; }
     static uint32_t packets[4];
@@ -10055,6 +10070,9 @@ static void __imp__XamInputGetState(Context& ctx, Machine& base) {
     return;
   }
   ++g_input_packet_number;
+  uint32_t buttons = 0u;
+  uint32_t thumbs = 0u;
+#ifdef CC_SCRIPTED_INPUT
   // WIP 023 labeled diagnostic input script, keyed to the frame counter
   // (g_frame_delay_calls). This is injected input for the diagnostic, never faked game state; the
   // original code reads it through the same boundary a real pad would use.
@@ -10079,8 +10097,6 @@ static void __imp__XamInputGetState(Context& ctx, Machine& base) {
     {8900,9199,0,30000,20000},{9300,9304,0x4000,0,0},{9330,9334,0x4000,0,0},
     {9360,9364,0x4000,0,0},{9400,9899,0,30000,0},
   };
-  uint32_t buttons = 0u;
-  uint32_t thumbs = 0u;
   for (const InputRow &row : k_script) {
     if (g_frame_delay_calls < row.first || g_frame_delay_calls > row.last) continue;
     if (cc_direct_level() && row.first >= 6500u) continue;  // level-1 walk-through rows
@@ -10093,6 +10109,7 @@ static void __imp__XamInputGetState(Context& ctx, Machine& base) {
   }
   if (cc_four_players() || cc_direct_level())
     cc_combat_loop(0u, g_frame_delay_calls, cc_direct_level() ? 6500u : 9900u, buttons, thumbs);
+#endif  // CC_SCRIPTED_INPUT
 #ifndef CC_XBOX_DRIVER
   // Host diagnostic override: CC_INPUT_SCRIPT="first-last:buttons[:lx,ly];..."
   // (hex buttons, signed decimal stick) replaces the built-in script above.
@@ -10129,8 +10146,13 @@ static void __imp__XamInputGetState(Context& ctx, Machine& base) {
 #ifdef CC_XBOX_DRIVER
   // A real pad takes over from the script at its first press (or a stick
   // or trigger pushed well past centre) and keeps control from then on.
+  // The play build has no script: the pad has control from the start.
   {
+#ifdef CC_SCRIPTED_INPUT
     static bool pad_live = false;
+#else
+    static bool pad_live = true;
+#endif
     uint32_t pb = 0; int16_t lx = 0, ly = 0, rx = 0, ry = 0; uint8_t lt = 0, rt = 0;
     if (::cc_xbox_pad(&pb, &lx, &ly, &rx, &ry, &lt, &rt)) {
       auto pushed = [](int16_t v) { return v > 16000 || v < -16000; };
@@ -10168,11 +10190,9 @@ static void __imp__XMsgInProcessCall(Context& ctx, Machine& base) {
   }
   base.fail(Error::unsupported, 0x8214AA84u);
 }
-// PORT POLICY (user directive 2026-09-27): the original Xbox has no
-// profile / sign-in system, so no user is ever signed in. The sign-in
-// state reports eXUserSigninState_NotSignedIn for every pad and the notify
-// poll never reports a sign-in change. The Xbox 360 sign-in blade behaves
-// exactly as on a real console when the player backs out of it: the call
+// The Xbox 360 sign-in blade: the original Xbox has no profile system;
+// players are signed in by their controllers (profiles.inc), so the blade
+// behaves as on a real console when the player backs out of it: the call
 // succeeds and nothing changes. Menu scripts (sub_82071280) request it
 // unconditionally; the menu's profile gate (sub_82053C70 wrapper) drops its
 // requirement separately.
@@ -10189,10 +10209,10 @@ static void __imp__XamShowSigninUI(Context& ctx, Machine& base) {
 }
 static bool cc_four_players();
 static void __imp__XamUserGetSigninState(Context& ctx, [[maybe_unused]] Machine& base) {
-  // Four-player diagnostic: the game asks extra players to sign in before
-  // they can join; pads 1-3 report a local profile so they join directly.
-  if (cc_four_players() && ctx.r3.u32 >= 1u && ctx.r3.u32 <= 3u) { ctx.r3.u64 = 1u; return; }
-  ctx.r3.u64 = 0u;  // eXUserSigninState_NotSignedIn
+  // Local profiles (profiles.inc): signed in locally (1), never Live (2).
+  const bool in = cc_signed_in(ctx.r3.u32);
+  g_cc_signin_read = true;
+  ctx.r3.u64 = in ? 1u : 0u;
 }
 static void __imp__XNotifyGetNext(Context& ctx, Machine& base) {
   const uint32_t id_out = ctx.r5.u32, param_out = ctx.r6.u32;
@@ -10200,6 +10220,17 @@ static void __imp__XNotifyGetNext(Context& ctx, Machine& base) {
     base.fail(Error::unsupported, 0x8214A204u);  // not a listener we issued
   if (id_out) base.store(id_out, 4, 0u);
   if (param_out) base.store(param_out, 4, 0u);
+  // A player signed in after boot: XN_SYS_SIGNINCHANGED (0x0A, parameter =
+  // signed-in mask) to each listener for system notifications (area bit 0),
+  // once.
+  const uint32_t li = ctx.r3.u32 - 0x0F110001u, filter = ctx.r4.u32;
+  if ((g_cc_notify_pending & (1u << li)) && (g_xam_listener_area[li] & 1u) && (filter == 0u || filter == 0x0Au)) {
+    g_cc_notify_pending &= ~(1u << li);
+    if (id_out) base.store(id_out, 4, 0x0Au);
+    if (param_out) base.store(param_out, 4, g_cc_signed);
+    ctx.r3.u64 = 1u;
+    return;
+  }
   ctx.r3.u64 = 0u;  // nothing pending
 }
 static void __imp__XamAlloc([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AAA4u); }
@@ -10297,7 +10328,7 @@ static void __imp__XMsgStartIORequest(Context& ctx, Machine& base) {
 // request); NtClose accepts it like any other handle in the play build.
 static void __imp__XamContentCreateEnumerator(Context& ctx, Machine& base) {
   const uint32_t pcb = ctx.r8.u32, phenum = ctx.r9.u32;
-  if (!cc_four_players() || !phenum) base.fail(Error::unsupported, 0x8214A344u);
+  if (!phenum) base.fail(Error::unsupported, 0x8214A344u);
   if (pcb) base.store(pcb, 4, (ctx.r7.u32 ? ctx.r7.u32 : 1u) * 0x134u);  // XCONTENT_DATA per item
   base.store(phenum, 4, 0x0E000001u);
   ctx.r3.u64 = 0u;
@@ -10314,7 +10345,7 @@ static void __imp__XamContentGetLicenseMask(Context& ctx, Machine& base) {
   ctx.r3.u64 = 0u;  // ERROR_SUCCESS
 }
 static void __imp__XamEnumerate(Context& ctx, Machine& base) {
-  if (!cc_four_players() || (ctx.r3.u32 != 0x0E000001u && ctx.r3.u32 != 0x0E000002u)) base.fail(Error::unsupported, 0x8214A364u);
+  if (ctx.r3.u32 != 0x0E000001u && ctx.r3.u32 != 0x0E000002u) base.fail(Error::unsupported, 0x8214A364u);
   if (ctx.r7.u32) base.store(ctx.r7.u32, 4, 0u);
   if (const uint32_t ov = ctx.r8.u32) {   // XOVERLAPPED: completed, no items
     base.store(ov + 0, 4, 0x12u);          // InternalLow = ERROR_NO_MORE_FILES
@@ -10353,23 +10384,28 @@ static void __imp__XamNotifyCreateListener(Context& ctx, Machine& base) {
   if (ctx.r3.u32==0u || ctx.r3.u32>0xFFu || g_xam_listener_count>=8u)
     base.fail(Error::unsupported, 0x8214A3B4u);
   g_xam_listener_created=true;
+  g_xam_listener_area[g_xam_listener_count]=ctx.r3.u32;
   ctx.r3.u64=0x0F110001u + g_xam_listener_count++;
 }
 static void __imp__XamSessionRefObjByHandle([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214AD74u); }
 static void __imp__XamUserAreUsersFriends([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A254u); }
-static void __imp__XamUserCheckPrivilege([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214A264u); }
+// Local profiles have no Live privileges: FALSE, ERROR_NOT_LOGGED_ON.
+static void __imp__XamUserCheckPrivilege(Context& ctx, Machine& base) {
+  if (ctx.r5.u32) base.store(ctx.r5.u32, 4, 0u);
+  ctx.r3.u64 = 0x4DDu;
+}
 // Four-player diagnostic: the local profiles have no achievements either;
 // the enumerator is answered by XamEnumerate with "no more items".
 static void __imp__XamUserCreateAchievementEnumerator(Context& ctx, Machine& base) {
   const uint32_t pcb = ctx.r9.u32, phenum = ctx.r10.u32;
-  if (!cc_four_players() || !phenum) base.fail(Error::unsupported, 0x8214A2A4u);
+  if (!phenum) base.fail(Error::unsupported, 0x8214A2A4u);
   if (pcb) base.store(pcb, 4, (ctx.r8.u32 ? ctx.r8.u32 : 1u) * 0x24u);  // XACHIEVEMENT_DETAILS per item
   base.store(phenum, 4, 0x0E000002u);
   ctx.r3.u64 = 0u;
 }
 // Four-player diagnostic: pads 1-3 report a local (offline) profile named
 // "Player 2".."Player 4" with an offline XUID; everyone else stays signed out.
-static bool cc_local_profile(uint32_t user) { return cc_four_players() && user >= 1u && user <= 3u; }
+static bool cc_local_profile(uint32_t user) { return cc_signed_in(user); }
 static void __imp__XamUserGetSigninInfo(Context& ctx, Machine& base) {
   // XUSER_SIGNIN_INFO: xuid u64, dwInfoFlags, UserSigninState, dwGuestNumber,
   // dwSponsorUserIndex, szUserName[16] (40 bytes).
@@ -10377,34 +10413,34 @@ static void __imp__XamUserGetSigninInfo(Context& ctx, Machine& base) {
   if (user > 3u || !info) base.fail(Error::unsupported, 0x8214A3A4u);
   for (uint32_t k = 0; k < 40u; k += 4u) base.store(info + k, 4, 0u);
   if (!cc_local_profile(user)) { ctx.r3.u64 = 0x525u; return; }  // ERROR_NO_SUCH_USER
-  base.store(info + 0, 8, 0xE000000000000000ull | (user + 1u));
+  base.store(info + 0, 8, cc_profile_xuid(user));
   base.store(info + 12, 4, 1u);                                    // signed in locally
-  const char name[] = "Player ";
-  for (uint32_t k = 0; k < 7u; ++k) base.store(info + 24 + k, 1, uint8_t(name[k]));
-  base.store(info + 31, 1, uint8_t('1' + user));
+  cc_profile_name(base, user, info + 24, 16u);
   ctx.r3.u64 = 0u;
 }
 static void __imp__XamUserGetXUID(Context& ctx, Machine& base) {
   if (ctx.r3.u32 > 3u) base.fail(Error::unsupported, 0x8214A2B4u);
   if (ctx.r5.u32) base.store(ctx.r5.u32, 8, 0u);
-  if (cc_four_players() && ctx.r3.u32 >= 1u && ctx.r3.u32 <= 3u) {
-    if (ctx.r5.u32) base.store(ctx.r5.u32, 8, 0xE000000000000000ull | (ctx.r3.u32 + 1u));
+  if (cc_signed_in(ctx.r3.u32)) {
+    if (ctx.r5.u32) base.store(ctx.r5.u32, 8, cc_profile_xuid(ctx.r3.u32));
     ctx.r3.u64 = 0u;
     return;
   }
   ctx.r3.u64 = 0x800704DDu;  // HRESULT_FROM_WIN32(ERROR_NOT_LOGGED_ON)
 }
-// Profile settings with no signed-in profile (port policy: nobody signs in):
-// the console answers every requested setting with its default. Standard
-// two-step protocol: without a big enough buffer, report the size needed
-// and return ERROR_INSUFFICIENT_BUFFER (122); then fill
-// XUSER_READ_PROFILE_SETTING_RESULT {count, pSettings} followed by one
-// 40-byte XUSER_PROFILE_SETTING per id (source XSOURCE_DEFAULT, data type
-// taken from bits 28-31 of the setting id, value zero). Reads naming
-// specific XUIDs, or asynchronous (overlapped) reads, fail closed until
-// observed.
+// Profile settings (local profiles, profiles.inc). Standard two-step
+// protocol: without a big enough buffer, report the size needed and return
+// ERROR_INSUFFICIENT_BUFFER (122); then fill XUSER_READ_PROFILE_SETTING_RESULT
+// {count, pSettings} followed by one 40-byte XUSER_PROFILE_SETTING per id
+// and, after them, the data of binary settings. The game's progress (title
+// setting 0x63E83FFF of a signed-in player who has saved) comes back as
+// source 2 (title), type 6 (binary) with its bytes; every other setting is
+// the default (source 1, type from bits 28-31 of the id, value zero), and a
+// player who never saved gets an empty progress setting (the game then
+// starts a new save). Reads naming specific XUIDs, or asynchronous
+// (overlapped) reads, fail closed until observed.
 static void __imp__XamUserReadProfileSettings(Context& ctx, Machine& base) {
-  const uint32_t n = ctx.r7.u32, ids = ctx.r8.u32, pcb = ctx.r9.u32, out = ctx.r10.u32;
+  const uint32_t user = ctx.r4.u32, n = ctx.r7.u32, ids = ctx.r8.u32, pcb = ctx.r9.u32, out = ctx.r10.u32;
   const uint32_t overlapped = uint32_t(base.load(ctx.r1.u32 + 0x54u, 4));
   if (ctx.r5.u32 != 0u || ctx.r6.u32 != 0u || n == 0u || n > 64u || !ids || !pcb ||
       overlapped != 0u) {
@@ -10412,7 +10448,11 @@ static void __imp__XamUserReadProfileSettings(Context& ctx, Machine& base) {
             ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, n, overlapped);
     base.fail(Error::unsupported, 0x8214AAB4u);
   }
-  const uint32_t need = 8u + n * 40u;
+  const CcProgress* prog = nullptr;
+  if (user <= 3u && cc_signed_in(user)) { cc_progress_load(user); prog = &g_cc_progress[user]; }
+  uint32_t need = 8u + n * 40u;
+  for (uint32_t i = 0; i < n; ++i)
+    if (uint32_t(base.load(ids + i * 4u, 4)) == kCcProgressId && prog) need += prog->len;
   if (out == 0u || uint32_t(base.load(pcb, 4)) < need) {
     base.store(pcb, 4, need);
     ctx.r3.u64 = 122u;  // ERROR_INSUFFICIENT_BUFFER
@@ -10420,36 +10460,60 @@ static void __imp__XamUserReadProfileSettings(Context& ctx, Machine& base) {
   }
   base.store(out + 0, 4, n);
   base.store(out + 4, 4, out + 8u);
+  uint32_t data = out + 8u + n * 40u;
   for (uint32_t i = 0; i < n; ++i) {
     const uint32_t e = out + 8u + i * 40u;
     const uint32_t id = uint32_t(base.load(ids + i * 4u, 4));
     for (uint32_t k = 0; k < 40u; k += 4u) base.store(e + k, 4, 0u);
-    base.store(e + 0, 4, 1u);                 // XSOURCE_DEFAULT
-    base.store(e + 8, 4, ctx.r4.u32);          // user index
+    base.store(e + 8, 4, user);                // user index
     base.store(e + 16, 4, id);                 // dwSettingId
+    if (id == kCcProgressId && prog) {
+      base.store(e + 0, 4, 2u);                // XSOURCE_TITLE
+      base.store(e + 24, 1, 6u);               // XUSER_DATA_TYPE_BINARY
+      base.store(e + 32, 4, prog->len);        // cbData
+      base.store(e + 36, 4, prog->len ? data : 0u);  // pbData
+      for (uint32_t k = 0; k < prog->len; ++k) base.store(data + k, 1, prog->data[k]);
+      data += prog->len;
+      continue;
+    }
+    base.store(e + 0, 4, 1u);                  // XSOURCE_DEFAULT
     base.store(e + 24, 1, (id >> 28) & 0xFu);  // XUSER_DATA.type
   }
   base.store(pcb, 4, need);
   ctx.r3.u64 = 0u;
 }
+// The game writes its progress (title setting 0x63E83FFF, 768 bytes; the
+// setting's type byte is left unset by the game, so it is not checked) for
+// a signed-in player: kept and written to the player's saved-game folder
+// before returning (the game calls synchronously). A failed disk write
+// returns ERROR_FUNCTION_FAILED so the game reports it; other settings are
+// accepted and dropped. Completed at once when overlapped.
 static void __imp__XamUserWriteProfileSettings(Context& ctx, Machine& base) {
-  // Four-player diagnostic: settings written for the local profiles of pads
-  // 1-3 are accepted and dropped (completed at once when overlapped).
-  if (!cc_four_players() || ctx.r4.u32 < 1u || ctx.r4.u32 > 3u) base.fail(Error::unsupported, 0x8214AAC4u);
+  const uint32_t user = ctx.r4.u32, n = ctx.r5.u32, settings = ctx.r6.u32;
+  if (user > 3u || !cc_signed_in(user) || n > 64u || (n && !settings)) base.fail(Error::unsupported, 0x8214AAC4u);
+  uint32_t result = 0u;
+  for (uint32_t i = 0; i < n; ++i) {
+    const uint32_t e = settings + i * 40u;
+    if (uint32_t(base.load(e + 16, 4)) != kCcProgressId) continue;
+    const uint32_t len = uint32_t(base.load(e + 32, 4)), src = uint32_t(base.load(e + 36, 4));
+    if (len > kCcProgressMax || (len && !src)) base.fail(Error::unsupported, 0x8214AAC4u);
+    uint8_t buf[kCcProgressMax];
+    for (uint32_t k = 0; k < len; ++k) buf[k] = uint8_t(base.load(src + k, 1));
+    if (!cc_progress_store(user, buf, len)) result = 31u;  // ERROR_GEN_FAILURE
+  }
   if (const uint32_t ov = ctx.r7.u32) {
-    base.store(ov + 0, 4, 0u);   // InternalLow = ERROR_SUCCESS
+    base.store(ov + 0, 4, result);  // InternalLow
     base.store(ov + 4, 4, 0u);
-    base.store(ov + 24, 4, 0u);
-    ctx.r3.u64 = 997u;           // ERROR_IO_PENDING (already complete)
+    base.store(ov + 24, 4, result);
+    ctx.r3.u64 = 997u;              // ERROR_IO_PENDING (already complete)
     return;
   }
-  ctx.r3.u64 = 0u;
+  ctx.r3.u64 = result;
 }
 static void __imp__XamVoiceClose([[maybe_unused]] Context& ctx, Machine& base) { base.fail(Error::unsupported, 0x8214ADA4u); }
-static void __imp__XamWriteGamerTile(Context& ctx, Machine& base) {
-  // Four-player diagnostic: gamer-picture awards for the local profiles are
-  // accepted and dropped (the original Xbox has no gamer pictures).
-  if (!cc_four_players()) base.fail(Error::unsupported, 0x8214A294u);
+static void __imp__XamWriteGamerTile(Context& ctx, [[maybe_unused]] Machine& base) {
+  // Gamer-picture awards for the local profiles are accepted and dropped
+  // (the original Xbox has no gamer pictures).
   ctx.r3.u64 = 0u;
 }
 static void __imp__XexGetModuleHandle(Context& ctx, Machine& base) {

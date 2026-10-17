@@ -1,35 +1,59 @@
 // SPDX-License-Identifier: MIT
-// Original-Xbox controller input for the port: the first connected pad, read
-// through nxdk's SDL game-controller layer and returned in Xbox 360 XINPUT
-// terms (the game reads it through XamInputGetState). The Duke/S pad's white
-// and black buttons arrive as the left and right shoulder buttons.
+// Original-Xbox controller input for the port: up to four pads, read through
+// nxdk's SDL game-controller layer and returned in Xbox 360 XINPUT terms
+// (the game reads them through XamInputGetState, one user index per pad).
+// A pad keeps its slot while it stays connected; a newly attached pad takes
+// the first free slot, so a lone pad is always player 1 whatever port it is
+// plugged into. The
+// Duke/S pad's white and black buttons arrive as the shoulder buttons.
 #include <SDL.h>
 #include <cstdint>
 
 namespace {
 bool g_init = false, g_ok = false;
-SDL_GameController* g_pad = nullptr;
+SDL_GameController* g_pad[4] = {};
+uint32_t g_scanned = 0xFFFFFFFFu;  // input poll count at the last attach scan
 
-int16_t stick(SDL_GameControllerAxis a, bool invert) {
-  int v = SDL_GameControllerGetAxis(g_pad, a);
+int16_t stick(SDL_GameController* pad, SDL_GameControllerAxis a, bool invert) {
+  int v = SDL_GameControllerGetAxis(pad, a);
   if (invert) v = -v - 1;  // SDL: down is positive; XINPUT: up is positive
   if (v < -32768) v = -32768;
   if (v > 32767) v = 32767;
   return static_cast<int16_t>(v);
 }
-uint8_t trigger(SDL_GameControllerAxis a) {
-  const int v = SDL_GameControllerGetAxis(g_pad, a);
+uint8_t trigger(SDL_GameController* pad, SDL_GameControllerAxis a) {
+  const int v = SDL_GameControllerGetAxis(pad, a);
   return static_cast<uint8_t>(v <= 0 ? 0 : v >> 7);
+}
+
+// Drops pads that were unplugged and opens newly attached ones (once per
+// poll of slot 0, i.e. once per game input read).
+void scan() {
+  for (auto& p : g_pad)
+    if (p && !SDL_GameControllerGetAttached(p)) { SDL_GameControllerClose(p); p = nullptr; }
+  for (int i = 0; i < SDL_NumJoysticks(); ++i) {
+    if (!SDL_IsGameController(i)) continue;
+    SDL_JoystickID id = SDL_JoystickGetDeviceInstanceID(i);
+    bool open = false;
+    for (auto* p : g_pad)
+      if (p && SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(p)) == id) open = true;
+    if (open) continue;
+    int slot = -1;
+    for (int s = 0; s < 4 && slot < 0; ++s) if (!g_pad[s]) slot = s;
+    if (slot >= 0) g_pad[slot] = SDL_GameControllerOpen(i);
+  }
 }
 }  // namespace
 
-// Poll the pad once per game input read. Returns false when no pad is
-// connected. Buttons use the XINPUT_GAMEPAD_* bit values.
-bool cc_xbox_pad(uint32_t* buttons, int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry,
-                 uint8_t* lt, uint8_t* rt) {
+// Poll the pad in slot `port` (0-3). Returns false when no pad is there.
+// Buttons use the XINPUT_GAMEPAD_* bit values. Slot 0's poll refreshes the
+// controller state for all four (the game reads user 0 first each frame).
+bool cc_xbox_pad_port(uint32_t port, uint32_t* buttons, int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry,
+                      uint8_t* lt, uint8_t* rt) {
 #ifdef CC_NO_PAD
   return false;
 #endif
+  if (port > 3u) return false;
   if (!g_init) {
     g_init = true;
     g_ok = SDL_Init(SDL_INIT_GAMECONTROLLER) == 0;
@@ -38,16 +62,11 @@ bool cc_xbox_pad(uint32_t* buttons, int16_t* lx, int16_t* ly, int16_t* rx, int16
     if (g_ok) { SDL_JoystickEventState(SDL_IGNORE); SDL_GameControllerEventState(SDL_IGNORE); }
   }
   if (!g_ok) return false;
-  SDL_GameControllerUpdate();
-  if (g_pad && !SDL_GameControllerGetAttached(g_pad)) {
-    SDL_GameControllerClose(g_pad);
-    g_pad = nullptr;
-  }
-  if (!g_pad) {
-    for (int i = 0; i < SDL_NumJoysticks() && !g_pad; ++i)
-      if (SDL_IsGameController(i)) g_pad = SDL_GameControllerOpen(i);
-    if (!g_pad) return false;
-  }
+  static uint32_t polls = 0;
+  if (port == 0u) { SDL_GameControllerUpdate(); ++polls; }
+  if (g_scanned != polls) { g_scanned = polls; scan(); }
+  SDL_GameController* pad = g_pad[port];
+  if (!pad) return false;
   struct Map { SDL_GameControllerButton b; uint32_t bit; };
   static const Map kMap[] = {
     {SDL_CONTROLLER_BUTTON_DPAD_UP, 0x0001}, {SDL_CONTROLLER_BUTTON_DPAD_DOWN, 0x0002},
@@ -60,13 +79,17 @@ bool cc_xbox_pad(uint32_t* buttons, int16_t* lx, int16_t* ly, int16_t* rx, int16
   };
   uint32_t b = 0;
   for (const Map& m : kMap)
-    if (SDL_GameControllerGetButton(g_pad, m.b)) b |= m.bit;
+    if (SDL_GameControllerGetButton(pad, m.b)) b |= m.bit;
   *buttons = b;
-  *lx = stick(SDL_CONTROLLER_AXIS_LEFTX, false);
-  *ly = stick(SDL_CONTROLLER_AXIS_LEFTY, true);
-  *rx = stick(SDL_CONTROLLER_AXIS_RIGHTX, false);
-  *ry = stick(SDL_CONTROLLER_AXIS_RIGHTY, true);
-  *lt = trigger(SDL_CONTROLLER_AXIS_TRIGGERLEFT);
-  *rt = trigger(SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+  *lx = stick(pad, SDL_CONTROLLER_AXIS_LEFTX, false);
+  *ly = stick(pad, SDL_CONTROLLER_AXIS_LEFTY, true);
+  *rx = stick(pad, SDL_CONTROLLER_AXIS_RIGHTX, false);
+  *ry = stick(pad, SDL_CONTROLLER_AXIS_RIGHTY, true);
+  *lt = trigger(pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+  *rt = trigger(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
   return true;
+}
+
+bool cc_xbox_pad(uint32_t* buttons, int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry, uint8_t* lt, uint8_t* rt) {
+  return cc_xbox_pad_port(0u, buttons, lx, ly, rx, ry, lt, rt);
 }
