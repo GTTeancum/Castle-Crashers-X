@@ -394,9 +394,19 @@ static Voice* port_voice(uint32_t handle) {
 
 }  // namespace ccaudio
 
+// The Xbox mixes on its own thread (xbox_audio.cpp): every entry point that
+// touches voices, sounds or songs holds the mixer's lock.
+struct CcAudioLock {
+#ifdef CC_XBOX_DRIVER
+  CcAudioLock() { ::cc_xbox_audio_lock(); }
+  ~CcAudioLock() { ::cc_xbox_audio_unlock(); }
+#endif
+};
+
 // RegisterSound(out r3, table r4, slot r5, name r6)
 static void sub_8209EFF0(Context& ctx, Machine& base);
 static void sub_8209EA18(Context& ctx, Machine& base) {
+  CcAudioLock audio_lock;
   const uint32_t out = ctx.r3.u32, table = ctx.r4.u32, slot = ctx.r5.u32 & 0xFFFFu;
   if (slot >= 512u) { ccaudio::result(base, out, 1u); return; }
   if (base.load(table + slot * 4u, 4)) {
@@ -420,6 +430,7 @@ static void sub_8209EA18(Context& ctx, Machine& base) {
 
 // RegisterMusic(out r3, table r4, id r5, path r6)
 static void sub_8209ED28(Context& ctx, Machine& base) {
+  CcAudioLock audio_lock;
   const uint32_t out = ctx.r3.u32, table = ctx.r4.u32, id = ctx.r5.u32 & 0xFFFFu;
   ctx.r3.u64 = out;
   if (id >= 64u || base.load(table + (512u + id) * 4u, 4)) { ccaudio::result(base, out, 1u); return; }
@@ -439,6 +450,7 @@ static void sub_8209ED28(Context& ctx, Machine& base) {
 
 // ClearSound(out r3, table r4, slot r5)
 static void sub_8209EFF0(Context& ctx, Machine& base) {
+  CcAudioLock audio_lock;
   const uint32_t out = ctx.r3.u32, table = ctx.r4.u32, slot = ctx.r5.u32 & 0xFFFFu;
   ctx.r3.u64 = out;
   const uint32_t obj = slot < 512u ? uint32_t(base.load(table + slot * 4u, 4)) : 0u;
@@ -460,6 +472,7 @@ static void sub_8209EFF0(Context& ctx, Machine& base) {
 
 // PlaySound(table r3, slot r4, vol f1, pan f2, loop r7) -> s16 entry or -1
 static void sub_8209F118(Context& ctx, Machine& base) {
+  CcAudioLock audio_lock;
   const uint32_t table = ctx.r3.u32, slot = ctx.r4.u32 & 0xFFFFu;
   const uint32_t obj = slot < 512u ? uint32_t(base.load(table + slot * 4u, 4)) : 0u;
   const int entry = ccaudio::free_entry(base, table);
@@ -483,6 +496,7 @@ static void sub_8209F118(Context& ctx, Machine& base) {
 
 // PlayMusic(out r3, table r4, id r5, vol f1, loop r7)
 static void sub_8209F518(Context& ctx, Machine& base) {
+  CcAudioLock audio_lock;
   const uint32_t out = ctx.r3.u32, table = ctx.r4.u32, id = ctx.r5.u32 & 0xFFFFu;
   ctx.r3.u64 = out;
   const uint32_t cur = uint32_t(base.load(table + 5376u, 4));
@@ -524,6 +538,7 @@ static void sub_8209F518(Context& ctx, Machine& base) {
 // Update(table r3): release finished voices; the original Xbox has no
 // user soundtrack playing over the game, so the music is never muted.
 static void sub_8209E928(Context& ctx, Machine& base) {
+  CcAudioLock audio_lock;
   const uint32_t table = ctx.r3.u32;
   const uint32_t music = uint32_t(base.load(table + 5376u, 4));
   for (uint32_t i = 0; i < 256u; ++i) {
@@ -543,6 +558,7 @@ static void sub_8209E928(Context& ctx, Machine& base) {
 
 // SetVolumePan(out r3, table r4, entry r5 s16, vol f1, pan f2)
 static void sub_8209F400(Context& ctx, Machine& base) {
+  CcAudioLock audio_lock;
   const uint32_t out = ctx.r3.u32, table = ctx.r4.u32;
   const int idx = int16_t(ctx.r5.u16);
   ctx.r3.u64 = out;
@@ -557,23 +573,27 @@ static void sub_8209F400(Context& ctx, Machine& base) {
 
 static void cc_audio_frame() { ccaudio::mix_frame(); }
 static uint32_t cc_audio_active_voices() {
+  CcAudioLock audio_lock;
   uint32_t n = 0;
   for (const auto& v : ccaudio::g.voices) n += v.active ? 1u : 0u;
   return n;
 }
 static uint32_t cc_audio_mixed_frames() { return ccaudio::g_mixed_frames; }
 static uint32_t cc_audio_loaded_bytes() {
+  CcAudioLock audio_lock;
   uint32_t n = 0;
   for (const auto& s : ccaudio::g.sounds) n += uint32_t(s.data.size());
   return n;
 }
 static bool cc_audio_set_volume(uint32_t voice, float vol) {
+  CcAudioLock audio_lock;
   ccaudio::Voice* v = ccaudio::port_voice(voice);
   if (!v) return false;
   v->vol = vol;
   return true;
 }
 static bool cc_audio_stop(uint32_t voice) {
+  CcAudioLock audio_lock;
   ccaudio::Voice* v = ccaudio::port_voice(voice);
   if (!v) return false;
   ccaudio::stop_voice(*v);

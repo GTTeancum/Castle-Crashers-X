@@ -11317,7 +11317,24 @@ static void sub_82077FD8(Context& ctx, Machine& base) {
 #include "generated/sub_82096530.inc"
 #include "generated/sub_820967B0.inc"
 #include "generated/sub_8206CC40.inc"
+// Pause menu (exact sub_8206C510 builds Resume Game 603, Download Content
+// 600, Help & Options 599, Leaderboards 597, Achievements 598, then the
+// exit items): the play build drops Download Content, Leaderboards and
+// Achievements at the append, as for the main menu (the original Xbox has
+// no marketplace, leaderboards or achievements); the append re-centres the
+// rest. The verification build runs the exact code unchanged.
+#ifdef CC_FAST
+#define sub_8206C510 sub_8206C510_exact
+#endif
 #include "generated/sub_8206C510.inc"
+#ifdef CC_FAST
+#undef sub_8206C510
+static void sub_8206C510(Context& ctx, Machine& base) {
+  g_menu_trim_active = true;
+  sub_8206C510_exact(ctx, base);
+  g_menu_trim_active = false;
+}
+#endif
 #include "generated/sub_8206CA60.inc"
 #include "generated/sub_82053AC0.inc"
 #include "generated/sub_820552B8.inc"
