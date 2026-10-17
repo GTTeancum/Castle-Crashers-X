@@ -166,10 +166,53 @@ uint32_t* push_white(uint32_t* p) {
   return p;
 }
 
+// Waits until the GPU has finished everything handed to it. pbkit's
+// pb_busy() only checks that the DMA engine has fetched up to the put
+// pointer and that PGRAPH is busy at that instant; fetched methods wait in
+// the PFIFO's CACHE1 in between, so between two queued draws pb_busy() can
+// read idle with draws still to run. Idle here means: fetched (pb_busy's
+// first test), the DMA pusher stopped, CACHE1 and the runout queue empty,
+// then PGRAPH idle (nv2a registers as pbkit's pb_wait_until_tiles_not_busy
+// checks them). Texture memory and the vertex buffer are reused only after
+// this; with the weaker wait, draws still queued sampled textures already
+// overwritten (the book menu's one-frame wrong pictures).
+static inline uint32_t nv_reg(uint32_t off) { return *reinterpret_cast<volatile uint32_t*>(0xFD000000u + off); }
+static inline uint8_t nv_reg8(uint32_t off) { return *reinterpret_cast<volatile uint8_t*>(0xFD000000u + off); }
+// Strict idle test (no waiting).
+static bool gpu_strict_idle() {
+  return !pb_busy() && !(nv_reg8(0x3220) & 0x10) && (nv_reg8(0x3214) & 0x10) && (nv_reg8(0x2400) & 0x10) &&
+         nv_reg(0x400700) == 0;
+}
+// Diagnostics on the PERF line: gpi = waits where pb_busy() reported idle
+// while queued work remained (WEAKIDLE builds), gpb = frames that began with
+// the previous frame's draws still queued.
+unsigned g_gpu_premature = 0, g_gpu_busy_at_begin = 0;
+void gpu_wait_idle() {
+#ifdef CC_XR_WEAK_IDLE
+  // A/B build (make WEAKIDLE=1): pbkit's pb_busy() alone, as before.
+  while (pb_busy()) {}
+  if (!gpu_strict_idle()) ++g_gpu_premature;
+  return;
+#endif
+  for (;;) {
+    if (pb_busy()) continue;
+    if (nv_reg8(0x3220) & 0x10) continue;          // NV_PFIFO_CACHE1_DMA_PUSH: pusher busy
+    if (!(nv_reg8(0x3214) & 0x10)) continue;       // NV_PFIFO_CACHE1_STATUS: not empty
+    if (!(nv_reg8(0x2400) & 0x10)) continue;       // NV_PFIFO_RUNOUT_STATUS: not empty
+    if (nv_reg(0x400700) != 0) continue;           // NV_PGRAPH_STATUS: busy
+    return;
+  }
+}
+
 void begin_frame() {
   g_ps = PushedState();
   xr_flush();
   pb_reset();
+  if (!gpu_strict_idle()) ++g_gpu_busy_at_begin;
+  // The previous frame's draws (the frame end does not wait) must be done
+  // before this frame rewrites the vertex buffer from its start. The game's
+  // update has run since, so this is normally already true.
+  gpu_wait_idle();
   pb_target_back_buffer();
   pb_erase_depth_stencil_buffer(0, 0, 640, 480);
   pb_fill(0, 0, 640, 480, 0xff000000);
@@ -558,7 +601,8 @@ void cc_xr_quad(const uint32_t* v, uint32_t blend) {
 // book menu's one-frame wrong pictures).
 void cc_xr_gpu_idle() {
   if (g_in_frame) flush_batch();
-  xr_flush(); while (pb_busy()) {}
+  xr_flush();
+  gpu_wait_idle();
 }
 
 // Harness failure on the Xbox: show the error code and guest address as
@@ -572,7 +616,7 @@ void cc_xr_show_fail(uint32_t code, uint32_t addr) {
   draw_number(16, 310, code, 0xFFFFFFFF);
   for (int k = 0; k < 8; ++k) draw_hex_digit(80 + k * 15, 310, (addr >> (28 - 4 * k)) & 15u, 0xFFFFFF40);
   flush_overlay();
-  xr_flush(); while (pb_busy()) {}
+  xr_flush(); gpu_wait_idle();
   present();
   if (!g_shown) { pb_show_front_screen(); g_shown = true; }
   g_in_frame = false;
@@ -625,12 +669,19 @@ void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
       // buffers: an audible stutter).
       unsigned ast = 0, afed = 0, acb = 0, aur = 0, adr = 0;
       cc_xbox_audio_stats(&ast, &afed, &acb, &aur, &adr);
-      static unsigned last_ur = 0;
-      DbgPrint("PERF t=%u fps=%u ms=%u max=%u upd=%u ren=%u draw=%u wait=%u dbg=%u und=%u\n", unsigned(now), window_frames * 1000u / el,
+      static unsigned last_ur = 0, last_ms = 0, last_gpi = 0, last_gpb = 0;
+      // mst: music blocks that reached the mixer late (runtime021/music_stream.inc).
+      uint32_t cc_audio_music_starved();
+      const unsigned ms_now = cc_audio_music_starved();
+      DbgPrint("PERF t=%u fps=%u ms=%u max=%u upd=%u ren=%u draw=%u wait=%u dbg=%u und=%u mst=%u gpi=%u gpb=%u\n", unsigned(now), window_frames * 1000u / el,
                el * 10u / window_frames, unsigned(max_frame_us / 100u), unsigned(sum_update / window_frames / 100u),
                unsigned(sum_render / window_frames / 100u), unsigned(sum_draw / window_frames / 100u),
-               unsigned(sum_wait / window_frames / 100u), unsigned(dbg_us / 100u), aur - last_ur);
+               unsigned(sum_wait / window_frames / 100u), unsigned(dbg_us / 100u), aur - last_ur, ms_now - last_ms,
+               g_gpu_premature - last_gpi, g_gpu_busy_at_begin - last_gpb);
+      last_gpi = g_gpu_premature;
+      last_gpb = g_gpu_busy_at_begin;
       last_ur = aur;
+      last_ms = ms_now;
       max_frame_us = 0;
       { void cc_xbox_perf_second(unsigned frames); cc_xbox_perf_second(window_frames); }  // xbox_perf.cpp
       dbg_us = now_us() - d0;
@@ -707,7 +758,7 @@ void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
   // here was ~15% of the CPU in the four-player marsh fight). XRSERIAL=1
   // waits here as before.
 #ifdef CC_XR_SERIAL
-  xr_flush(); while (pb_busy()) {}
+  xr_flush(); gpu_wait_idle();
 #else
   xr_flush();
 #endif

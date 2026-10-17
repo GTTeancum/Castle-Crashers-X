@@ -9959,9 +9959,9 @@ static void __imp__NtWriteFile([[maybe_unused]] Context& ctx, Machine& base) {
 static uint32_t g_input_packet_number = 0;
 // The built-in input script (an autopilot that presses START, walks the menus
 // and plays into level 1 until a real pad is used) exists on the Xbox only in
-// test builds: make FOURP=1, LEVEL=..., BENCH=1 or SCRIPT=quit. The play
+// test builds: make FOURP=1, LEVEL=..., BENCH=1 or SCRIPT=quit|book. The play
 // build answers to real pads only. Host harness runs always have it.
-#if !defined(CC_XBOX_DRIVER) || defined(CC_SCRIPT_4P) || defined(CC_DIRECT_LEVEL) || defined(CC_BENCH) || defined(CC_SCRIPT_QUIT)
+#if !defined(CC_XBOX_DRIVER) || defined(CC_SCRIPT_4P) || defined(CC_DIRECT_LEVEL) || defined(CC_BENCH) || defined(CC_SCRIPT_QUIT) || defined(CC_SCRIPT_BOOK)
 #define CC_SCRIPTED_INPUT 1
 #endif
 // Four-player diagnostic (Xbox: make FOURP=1, host: CC_4P=1): ports 1-3 are
@@ -10103,6 +10103,10 @@ static void __imp__XamInputGetState(Context& ctx, Machine& base) {
   };
   for (const InputRow &row : k_script) {
     if (g_frame_delay_calls < row.first || g_frame_delay_calls > row.last) continue;
+#ifdef CC_SCRIPT_BOOK
+    // Test build that stays on the mode-select book (after Local Game).
+    if (row.first >= 3000u) continue;
+#endif
     if (cc_direct_level() && row.first >= 6500u) continue;  // level-1 walk-through rows
     // The DOWN and A that landed on the notice (no effect there; on the
     // character select they would change player 1's knight and confirm it).

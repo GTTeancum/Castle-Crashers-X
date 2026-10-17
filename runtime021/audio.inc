@@ -34,7 +34,12 @@ struct Sound {
   uint32_t rate = 0, samples = 0, offset = 0, bytes = 0, last_use = 0;
   std::vector<uint8_t> data;  // empty while not resident
 };
-struct Song { bool used = false; char file[64] = {}; };
+struct Song {
+  bool used = false; char file[64] = {};
+  // From the .xad header, read at registration (starting a song then needs
+  // no disk access on the Xbox).
+  bool header_ok = false; uint32_t rate = 0, channels = 0, samples = 0;
+};
 struct Voice {
   bool active = false, loop = false, music = false;
   uint32_t object = 0;           // guest object handle
@@ -52,6 +57,10 @@ struct Voice {
   // seek only on loop).
   std::vector<uint8_t> ahead;
   uint32_t ahead_first = 0, ahead_count = 0;
+  // Xbox music: play-order sequence of block 0 of the current loop pass
+  // (music_stream.inc), and whether the song has started playing.
+  uint64_t seq_base = 0;
+  bool started = false;
 };
 
 struct State {
@@ -158,12 +167,11 @@ static bool sound_playing(int k) {
   return false;
 }
 
-// Make an effect's data resident, evicting least recently played effects
-// that are not playing until the cache fits.
-static bool make_resident(int k) {
-  Sound& s = g.sounds[size_t(k)];
-  s.last_use = ++g_sfx_clock;
-  if (!s.data.empty()) return true;
+// Effect k's ADPCM data from the bank. Only the game thread reads the bank
+// and changes effects, so PlaySound reads before taking the mixer's lock (a
+// disk read under the lock stalled the audio thread).
+static bool read_sound_data(int k, std::vector<uint8_t>& out) {
+  const Sound& s = g.sounds[size_t(k)];
   static std::FILE* bank = nullptr;
   if (!bank) {
     char root[300], path[340];
@@ -175,12 +183,23 @@ static bool make_resident(int k) {
     bank = std::fopen(path, "rb");
     if (!bank) return false;
   }
-  s.data.resize(s.bytes);
+  out.resize(s.bytes);
   if (std::fseek(bank, long(s.offset), SEEK_SET) != 0 ||
-      std::fread(s.data.data(), 1, s.data.size(), bank) != s.data.size()) {
-    s.data.clear();
+      std::fread(out.data(), 1, out.size(), bank) != out.size()) {
+    out.clear();
     return false;
   }
+  return true;
+}
+// Make an effect's data resident (from `preloaded` when it holds it),
+// evicting least recently played effects that are not playing until the
+// cache fits.
+static bool make_resident(int k, std::vector<uint8_t>* preloaded = nullptr) {
+  Sound& s = g.sounds[size_t(k)];
+  s.last_use = ++g_sfx_clock;
+  if (!s.data.empty()) return true;
+  if (preloaded && preloaded->size() == s.bytes && s.bytes) s.data.swap(*preloaded);
+  else if (!read_sound_data(k, s.data)) return false;
   g_sfx_bytes += s.bytes;
   ++g_sfx_loads;
   while (g_sfx_bytes > sfx_cache_limit()) {
@@ -224,6 +243,7 @@ static void decode_block(const uint8_t* blk, int16_t* out) {
   }
 }
 
+#include "music_stream.inc"
 // Raw bytes of block `block` (all channels), or nullptr past the data.
 static const uint8_t* block_bytes(Voice& v, uint32_t block) {
   const size_t bytes = size_t(kBlock) * v.channels;
@@ -232,6 +252,9 @@ static const uint8_t* block_bytes(Voice& v, uint32_t block) {
     if ((size_t(block) + 1) * bytes > snd.data.size()) return nullptr;
     return snd.data.data() + size_t(block) * bytes;
   }
+#ifdef CC_XBOX_DRIVER
+  return music_block(v, block);
+#endif
   if (block - v.ahead_first >= v.ahead_count) {
     constexpr uint32_t kAheadBlocks = 224;  // ~16 KB stereo, ~0.33 s
     const uint32_t total = (v.samples + kSpb - 1) / kSpb;
@@ -278,6 +301,9 @@ static int sample_at(Voice& v, uint32_t s, uint32_t c) {
 }
 
 static void stop_voice(Voice& v) {
+#ifdef CC_XBOX_DRIVER
+  if (v.active && v.music) music_stop();
+#endif
   v.active = false;
   if (v.stream) { std::fclose(v.stream); v.stream = nullptr; }
   std::vector<uint8_t>().swap(v.ahead);
@@ -320,9 +346,21 @@ static void render(int16_t* out, int n) {
     const int32_t gl = int32_t(v.vol * v.left * 4096.0f), gr = int32_t(v.vol * v.right * 4096.0f);
     const uint64_t end = uint64_t(v.samples) << 32;
     const bool stereo = v.channels == 2;
+#ifdef CC_XBOX_DRIVER
+    // A song starts once its first block has arrived from the reader.
+    if (v.music && !v.started) {
+      if (!music_ready(v)) continue;
+      v.started = true;
+    }
+#endif
     for (int i = 0; i < n; ++i) {
       if (v.pos >= end) {
-        if (v.loop && v.samples) v.pos -= end;
+        if (v.loop && v.samples) {
+          v.pos -= end;
+          // Next loop pass: its blocks have new sequence numbers in the
+          // music ring, and the decoded cache belongs to the old pass.
+          if (v.music) { v.seq_base += (v.samples + kSpb - 1) / kSpb; v.cached_block = 0xFFFFFFFFu; }
+        }
         else { stop_voice(v); break; }
       }
       const uint32_t s0 = uint32_t(v.pos >> 32);
@@ -335,10 +373,13 @@ static void render(int16_t* out, int n) {
         l0 = v.cache[0][k]; l1 = v.cache[0][k + 1];
         r0 = stereo ? v.cache[1][k] : l0; r1 = stereo ? v.cache[1][k + 1] : l1;
       } else {  // last sample: hold it, or interpolate toward the loop start
+        // (Streamed music holds it: the next pass's first block is a
+        // different ring sequence, music_stream.inc.)
+        const bool wrap = v.loop && !v.music;
         l0 = v.cache[0][k]; r0 = stereo ? v.cache[1][k] : l0;
-        l1 = v.loop ? sample_at(v, 0, 0) : l0;
-        r1 = v.loop ? (stereo ? sample_at(v, 0, 1) : l1) : r0;
-        if (v.loop) cache_blocks(v, b);
+        l1 = wrap ? sample_at(v, 0, 0) : l0;
+        r1 = wrap ? (stereo ? sample_at(v, 0, 1) : l1) : r0;
+        if (wrap) cache_blocks(v, b);
       }
       const int32_t lv = l0 + (((l1 - l0) * t) >> 15);
       const int32_t rv = r0 + (((r1 - r0) * t) >> 15);
@@ -430,7 +471,6 @@ static void sub_8209EA18(Context& ctx, Machine& base) {
 
 // RegisterMusic(out r3, table r4, id r5, path r6)
 static void sub_8209ED28(Context& ctx, Machine& base) {
-  CcAudioLock audio_lock;
   const uint32_t out = ctx.r3.u32, table = ctx.r4.u32, id = ctx.r5.u32 & 0xFFFFu;
   ctx.r3.u64 = out;
   if (id >= 64u || base.load(table + (512u + id) * 4u, 4)) { ccaudio::result(base, out, 1u); return; }
@@ -441,9 +481,28 @@ static void sub_8209ED28(Context& ctx, Machine& base) {
   char stem[64];
   std::snprintf(stem, sizeof(stem), "%s", file);
   for (char* p = stem; *p; ++p) if (*p == '.') { *p = 0; break; }
+  // The song's header (rate, channels, length), read before the mixer's
+  // lock is taken, so PlayMusic needs no disk access.
+  uint8_t h[16] = {};
+  bool header_ok = false;
+  {
+    char root[300], fpath[400];
+    ccaudio::audio_root(root, sizeof(root));
+    std::snprintf(fpath, sizeof(fpath), "%s/music/%s.xad", root, stem);
+#ifdef CC_XBOX_DRIVER
+    for (char* p = fpath; *p; ++p) if (*p == '/') *p = '\\';
+#endif
+    if (std::FILE* f = std::fopen(fpath, "rb")) {
+      header_ok = std::fread(h, 1, 16, f) == 16 && !std::memcmp(h, "XAD1", 4);
+      std::fclose(f);
+    }
+  }
+  CcAudioLock audio_lock;
   ccaudio::Song& s = ccaudio::g.songs[id];
   s.used = true;
   std::snprintf(s.file, sizeof(s.file), "%s", stem);
+  s.header_ok = header_ok;
+  if (header_ok) { s.rate = ccaudio::rd32(h + 4); s.channels = ccaudio::rd32(h + 8); s.samples = ccaudio::rd32(h + 12); }
   base.store(table + (512u + id) * 4u, 4, ccaudio::kSongTag | id);
   ccaudio::result(base, out, 0u);
 }
@@ -472,12 +531,19 @@ static void sub_8209EFF0(Context& ctx, Machine& base) {
 
 // PlaySound(table r3, slot r4, vol f1, pan f2, loop r7) -> s16 entry or -1
 static void sub_8209F118(Context& ctx, Machine& base) {
-  CcAudioLock audio_lock;
   const uint32_t table = ctx.r3.u32, slot = ctx.r4.u32 & 0xFFFFu;
   const uint32_t obj = slot < 512u ? uint32_t(base.load(table + slot * 4u, 4)) : 0u;
+  // A non-resident effect is read from disk before the mixer's lock is
+  // taken (see read_sound_data).
+  std::vector<uint8_t> preloaded;
+  if ((obj & ccaudio::kTagMask) == ccaudio::kObjTag && (obj & 0xFFFFFu) < ccaudio::g.sounds.size()) {
+    const ccaudio::Sound& snd = ccaudio::g.sounds[obj & 0xFFFFFu];
+    if (snd.used && snd.data.empty()) ccaudio::read_sound_data(int(obj & 0xFFFFFu), preloaded);
+  }
+  CcAudioLock audio_lock;
   const int entry = ccaudio::free_entry(base, table);
   if ((obj & ccaudio::kTagMask) != ccaudio::kObjTag || entry < 0) { ctx.r3.s64 = -1; return; }
-  if (!ccaudio::make_resident(int(obj & 0xFFFFFu))) { ctx.r3.s64 = -1; return; }
+  if (!ccaudio::make_resident(int(obj & 0xFFFFFu), &preloaded)) { ctx.r3.s64 = -1; return; }
   const ccaudio::Sound& s = ccaudio::g.sounds[obj & 0xFFFFFu];
   ccaudio::Voice& v = ccaudio::g.voices[entry];
   ccaudio::stop_voice(v);
@@ -509,6 +575,33 @@ static void sub_8209F518(Context& ctx, Machine& base) {
   std::snprintf(path, sizeof(path), "%s/music/%s.xad", root, ccaudio::g.songs[id].file);
 #ifdef CC_XBOX_DRIVER
   for (char* p = path; *p; ++p) if (*p == '/') *p = '\\';
+  // Streamed by the reader thread (music_stream.inc); the header was read
+  // at registration.
+  {
+    const ccaudio::Song& sg = ccaudio::g.songs[id];
+    if (!sg.header_ok || sg.channels < 1u || sg.channels > 2u) {
+      ::DbgPrint("FAIL music: song '%s' missing or not XAD1\n", path);
+      ccaudio::result(base, out, 1u);
+      return;
+    }
+    ccaudio::Voice& v = ccaudio::g.voices[entry];
+    ccaudio::stop_voice(v);
+    v = ccaudio::Voice();
+    v.active = true; v.music = true; v.data_start = 16;
+    v.rate = sg.rate; v.channels = sg.channels; v.samples = sg.samples;
+    v.loop = (ctx.r7.u32 & 0xFFu) != 0;
+    v.object = ccaudio::kSongTag | id;
+    ccaudio::music_start(path, 16u, sg.channels, sg.samples, v.loop);
+    const float vol = float(ctx.f1.f64);
+    v.vol = base.load(table + 5380u, 1) ? 0.0f : vol;
+    const uint32_t e = table + 2304u + uint32_t(entry) * 12u;
+    base.store(e, 4, ccaudio::kVoiceTag | uint32_t(entry));
+    base.store(e + 4u, 4, v.object);
+    base.store(table + 5376u, 4, e);
+    base.store(table + 5384u, 4, ccaudio::bits_of(vol));
+    ccaudio::result(base, out, 0u);
+    return;
+  }
 #endif
   std::FILE* f = std::fopen(path, "rb");
   uint8_t h[16];
@@ -572,6 +665,7 @@ static void sub_8209F400(Context& ctx, Machine& base) {
 }
 
 static void cc_audio_frame() { ccaudio::mix_frame(); }
+
 static uint32_t cc_audio_active_voices() {
   CcAudioLock audio_lock;
   uint32_t n = 0;

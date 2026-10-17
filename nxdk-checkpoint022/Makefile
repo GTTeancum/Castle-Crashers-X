@@ -30,6 +30,14 @@ CXXFLAGS += -DCC_FAST
 ifeq ($(SCRIPT),quit)
 CXXFLAGS += -DCC_SCRIPT_QUIT
 endif
+# GPU idle wait as pbkit's pb_busy() alone (A/B of the strict wait): make WEAKIDLE=1
+ifneq ($(WEAKIDLE),)
+CXXFLAGS += -DCC_XR_WEAK_IDLE
+endif
+# Input script that stops on the mode-select book (graphics checks): make SCRIPT=book
+ifeq ($(SCRIPT),book)
+CXXFLAGS += -DCC_SCRIPT_BOOK
+endif
 # Bisect switches: make BINDEXACT=1 (run the exact per-sprite bind),
 # CULLEXACT=1 (exact sprite cull), NOFMAFAST=1 (software fma only)
 ifneq ($(BINDEXACT),)

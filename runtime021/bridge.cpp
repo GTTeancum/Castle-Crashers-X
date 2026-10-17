@@ -2774,6 +2774,10 @@ const char *name(Error e) noexcept {
 }
 } // namespace cc::tree
 #ifdef CC_XBOX_DRIVER
+// Music blocks the mixer needed before the reader thread had them (each
+// plays as 1.3 ms of silence; runtime021/music_stream.inc), for the PERF
+// line (nxdk-checkpoint022/xbox_render.cpp).
+uint32_t cc_audio_music_starved() { return cc::tree::ccaudio::g_music.starved; }
 // The console FRAME line's counters (nxdk-checkpoint022/xbox_perf.cpp), read
 // and reset: out = {frames, baked-texture reads, baked-texture bytes, then
 // microseconds of frame, audio, end, sleep, workers, update, render, then
