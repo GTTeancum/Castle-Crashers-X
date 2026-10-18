@@ -981,8 +981,9 @@ struct CcAsFnScope {
     else ++g_asfn_lost;
   }
 };
-static void cc_as_spike_report(Machine& base, uint32_t update_us) {
-  if (update_us >= 150000u && g_asfn_s != 0u) {
+static void cc_as_spike_report(Machine& base, uint32_t update_us, uint32_t frame_us) {
+  if (update_us >= 150000u || frame_us >= 150000u) {
+    ::DbgPrint("SPIKE upd=%u frame=%u%c", unsigned(update_us / 1000u), unsigned(frame_us / 1000u), 10);
     uint32_t top[12], n = 0;
     for (uint32_t i = 0; i < 512u; ++i) {
       if (g_asfn[i].calls == 0u) continue;
@@ -993,8 +994,8 @@ static void cc_as_spike_report(Machine& base, uint32_t update_us) {
       top[j] = i;
       while (j > 0u && g_asfn[top[j]].cyc > g_asfn[top[j - 1u]].cyc) { const uint32_t t = top[j]; top[j] = top[j - 1u]; top[j - 1u] = t; --j; }
     }
-    const uint32_t names = REX_LOAD_U32(cc_as_vm(base, g_asfn_s) + 10316u);
-    for (uint32_t r = 0; r < n; ++r) {
+    const uint32_t names = g_asfn_s ? REX_LOAD_U32(cc_as_vm(base, g_asfn_s) + 10316u) : 0u;
+    for (uint32_t r = 0; names && r < n; ++r) {
       const CcAsFnStat& e = g_asfn[top[r]];
       const uint32_t k = e.key & 0xFFFFu;
       const uint32_t str = k ? REX_LOAD_U32(REX_LOAD_U32(names + 28u) + k * 4u) : names + 12u;

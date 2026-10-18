@@ -3074,7 +3074,7 @@ static void cc_menu_text_patch(Machine& base) {
 // Test builds: a frame whose update runs long lists the ActionScript and
 // guest functions it ran (CC_SPIKE_REPORT, bridge.cpp; as_native.inc).
 #ifdef CC_SPIKE_REPORT
-static void cc_as_spike_report(Machine& base, uint32_t update_us);
+static void cc_as_spike_report(Machine& base, uint32_t update_us, uint32_t frame_us);
 static void cc_tex_burst_report();
 #endif
 static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
@@ -3146,7 +3146,15 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
 #endif
   g_fs_us[5] += g_frame_update_us; g_fs_us[6] += g_frame_render_us;
 #ifdef CC_SPIKE_REPORT
-  cc_as_spike_report(base, g_frame_update_us);
+  {
+    // The whole frame, boundary to boundary (game loop outside update and
+    // render included), for the report's trigger.
+    static uint64_t last_boundary = 0;
+    const uint64_t now_b = ::cc_xbox_clock(1000000u);
+    const uint32_t frame_us = last_boundary ? uint32_t(now_b - last_boundary) : 0u;
+    last_boundary = now_b;
+    cc_as_spike_report(base, g_frame_update_us, frame_us);
+  }
   cc_tex_burst_report();
 #endif
   {

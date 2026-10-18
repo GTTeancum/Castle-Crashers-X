@@ -2443,6 +2443,9 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     }
     char host[360];
     std::snprintf(host,sizeof(host),"%s%s%s",g_game_root,host_dir,fname);
+#ifdef CC_SPIKE_REPORT
+    ::DbgPrint("FOPEN %s\n", host);  // test builds: the game's own file opens
+#endif
 #ifdef CC_XBOX_DRIVER
     for (char* p=host; *p; ++p) if (*p=='/') *p='\\';
 #endif
