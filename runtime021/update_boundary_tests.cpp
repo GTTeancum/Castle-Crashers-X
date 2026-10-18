@@ -23,7 +23,11 @@ using namespace cc::tree;
 static uint64_t assertions = 0;
 #ifdef CC_XBOX_DRIVER
 void cc_xr_show_fail(uint32_t code, uint32_t addr);  // nxdk-checkpoint022/xbox_render.cpp
-[[noreturn]] [[maybe_unused]] static void cc_fail_exit() { for(;;) { Sleep(1000); } } // keep failure text on screen
+void cc_xr_show_fail_where(uint32_t code, uint32_t addr, const uint32_t* where, unsigned n);
+void cc_xbox_igr_poll();  // nxdk-checkpoint022/xbox_input.cpp
+// Keep the failure text on screen; the in-game reset (LT + RT + Back +
+// Black) still returns to the dashboard.
+[[noreturn]] [[maybe_unused]] static void cc_fail_exit() { for(;;) { cc_xbox_igr_poll(); Sleep(50); } }
 #else
 [[noreturn]] [[maybe_unused]] static void cc_fail_exit() { std::exit(1); }
 #endif
@@ -485,7 +489,19 @@ static int cc_window_fault(EXCEPTION_POINTERS* ep) {
   if (!cc_win::fault_in_window(off)) return EXCEPTION_CONTINUE_SEARCH;
   const uint32_t g = cc_win::guest_of(off);
   ::DbgPrint("FAIL flat window: guest %08x not mapped (%s)\n", unsigned(g), cc_win::fault_note(g));
-  cc_xr_show_fail(cc_win::past_backed_heap(g) ? 4u : 3u, g);
+  // Where: the faulting instruction, then the first three words on the stack
+  // that point into the program image (return addresses, most likely), for
+  // the build's main.map. The image's range comes from the XBE header
+  // (base +0x104, size +0x10C) at 0x10000.
+  uint32_t where[4];
+  unsigned n = 0;
+  where[n++] = uint32_t(ep->ContextRecord->Eip);
+  const uint32_t lo = *reinterpret_cast<const volatile uint32_t*>(0x10104u);
+  const uint32_t hi = lo + *reinterpret_cast<const volatile uint32_t*>(0x1010Cu);
+  const uint32_t* sp = reinterpret_cast<const uint32_t*>(ep->ContextRecord->Esp);
+  for (unsigned k = 0; k < 128 && n < 4; ++k)
+    if (sp[k] > lo + 0x1000u && sp[k] < hi) where[n++] = sp[k];
+  cc_xr_show_fail_where(cc_win::past_backed_heap(g) ? 4u : 3u, g, where, n);
   cc_fail_exit();
 }
 #endif

@@ -637,13 +637,21 @@ uint32_t cc_xr_gpu_epoch() { return g_gpu_epoch; }
 // Harness failure on the Xbox: show the error code and guest address as
 // digits (the debug text console is hidden behind the pbkit display) and
 // present that frame, so a stopped game reports why on screen.
-void cc_xr_show_fail(uint32_t code, uint32_t addr) {
+void cc_xr_show_fail_where(uint32_t code, uint32_t addr, const uint32_t* where, unsigned n);
+void cc_xr_show_fail(uint32_t code, uint32_t addr) { cc_xr_show_fail_where(code, addr, nullptr, 0); }
+// Also `where`: up to four console code addresses (the faulting instruction
+// and return addresses found on the stack), one 8-digit row each under the
+// bar, to be looked up in the build's main.map.
+void cc_xr_show_fail_where(uint32_t code, uint32_t addr, const uint32_t* where, unsigned n) {
   DbgPrint("FAIL code=%u addr=%08x\n", unsigned(code), unsigned(addr));
+  for (unsigned i = 0; i < n; ++i) DbgPrint("FAIL where %u: %08x\n", i, unsigned(where[i]));
   if (!init()) return;
   if (!g_in_frame) begin_frame();
-  pb_fill_quad(8, 300, 400, 40, 0xFF400000);
+  pb_fill_quad(8, 300, 400, 40 + 36 * (n < 4 ? n : 4), 0xFF400000);
   draw_number(16, 310, code, 0xFFFFFFFF);
   for (int k = 0; k < 8; ++k) draw_hex_digit(80 + k * 15, 310, (addr >> (28 - 4 * k)) & 15u, 0xFFFFFF40);
+  for (unsigned i = 0; i < n && i < 4; ++i)
+    for (int k = 0; k < 8; ++k) draw_hex_digit(80 + k * 15, 346 + 36 * int(i), (where[i] >> (28 - 4 * k)) & 15u, 0xFF80FFFF);
   flush_overlay();
   xr_flush(); gpu_wait_idle();
   present();

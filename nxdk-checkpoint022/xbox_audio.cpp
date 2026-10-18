@@ -100,6 +100,17 @@ void cc_xbox_audio_pump(void (*render)(int16_t* out, int samples)) {
   if (!g_start_ok) DbgPrint("FAIL audio: output or audio thread could not start\n");
 }
 
+// Silence before leaving for the dashboard (in-game reset): the output is
+// paused and the audio thread stops refilling it.
+void cc_xbox_audio_stop() {
+  if (!g_started) return;
+  lock_init();
+  EnterCriticalSection(&g_lock);
+  g_render = nullptr;
+  XAudioPause();
+  LeaveCriticalSection(&g_lock);
+}
+
 // Diagnostics for the on-screen overlay.
 void cc_xbox_audio_stats(unsigned* started, unsigned* submitted, unsigned* callbacks,
                          unsigned* underruns, unsigned* dropped) {

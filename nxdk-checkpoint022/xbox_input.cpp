@@ -7,9 +7,11 @@
 // plugged into. The
 // Duke/S pad's white and black buttons arrive as the shoulder buttons.
 #include <SDL.h>
+#include <xboxkrnl/xboxkrnl.h>
 #include <cstdint>
 
 namespace {
+void igr_check();
 bool g_init = false, g_ok = false;
 SDL_GameController* g_pad[4] = {};
 uint32_t g_scanned = 0xFFFFFFFFu;  // input poll count at the last attach scan
@@ -64,7 +66,7 @@ bool cc_xbox_pad_port(uint32_t port, uint32_t* buttons, int16_t* lx, int16_t* ly
   if (!g_ok) return false;
   static uint32_t polls = 0;
   if (port == 0u) { SDL_GameControllerUpdate(); ++polls; }
-  if (g_scanned != polls) { g_scanned = polls; scan(); }
+  if (g_scanned != polls) { g_scanned = polls; scan(); igr_check(); }
   SDL_GameController* pad = g_pad[port];
   if (!pad) return false;
   struct Map { SDL_GameControllerButton b; uint32_t bit; };
@@ -92,4 +94,39 @@ bool cc_xbox_pad_port(uint32_t port, uint32_t* buttons, int16_t* lx, int16_t* ly
 
 bool cc_xbox_pad(uint32_t* buttons, int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry, uint8_t* lt, uint8_t* rt) {
   return cc_xbox_pad_port(0u, buttons, lx, ly, rx, ry, lt, rt);
+}
+
+// In-game reset: LT + RT + Back + Black held together on any pad returns to
+// the dashboard (the softmod convention; this port reads the pads through
+// SDL, past the XInput path softmod IGR hooks watch). Read from nxdk's fixed
+// physical joystick layout (axes 2 / 5 = LT / RT, buttons 6 / 5 = Back /
+// Black, as Perfect Dark X does), not the remappable controller view. The
+// combination must be pressed, not merely held from before (a pad still
+// held at boot does not reset again). Called with each game input read
+// (cc_xbox_pad_port, slot 0) and on the failure screen.
+void cc_xbox_audio_stop();
+[[noreturn]] void cc_xbox_return_to_dashboard();
+namespace {
+bool g_igr_held[4] = {true, true, true, true};
+void igr_check() {
+  for (int s = 0; s < 4; ++s) {
+    SDL_Joystick* joy = g_pad[s] ? SDL_GameControllerGetJoystick(g_pad[s]) : nullptr;
+    const bool all = joy && SDL_JoystickGetAxis(joy, 2) > 16384 && SDL_JoystickGetAxis(joy, 5) > 16384 &&
+                     SDL_JoystickGetButton(joy, 6) && SDL_JoystickGetButton(joy, 5);
+    if (all && !g_igr_held[s]) {
+      DbgPrint("IGR: pad %d pressed LT+RT+Back+Black; returning to the dashboard\n", s + 1);
+      cc_xbox_audio_stop();
+      cc_xbox_return_to_dashboard();
+    }
+    g_igr_held[s] = all;
+  }
+}
+}  // namespace
+// The failure screen's loop: pads refreshed and the reset combination
+// checked (the game no longer reads input there).
+void cc_xbox_igr_poll() {
+  if (!g_ok) return;
+  SDL_GameControllerUpdate();
+  scan();
+  igr_check();
 }

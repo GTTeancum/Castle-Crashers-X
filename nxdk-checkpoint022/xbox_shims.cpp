@@ -128,9 +128,23 @@ void __basic_string_common<true>::__throw_out_of_range() const {
 // path would not resolve); if that returns, reboot to it.
 #include <hal/xbox.h>
 #include <xboxkrnl/xboxkrnl.h>
+// Back to the dashboard (main menu Quit, in-game reset): a dashboard launch
+// page as nxdk's XLaunchXBEEx(NULL) writes it, then written back from the
+// CPU cache before the quick reboot (real hardware can otherwise enter the
+// firmware with stale cache lines of the page and crash; found by Perfect
+// Dark X). Without a page, a full reboot.
 [[noreturn]] void cc_xbox_return_to_dashboard() {
-  XLaunchXBEEx(nullptr, nullptr);
-  HalReturnToFirmware(HalRebootRoutine);
+  const ULONG size = 0x1000;
+  if (!LaunchDataPage) LaunchDataPage = static_cast<PLAUNCH_DATA_PAGE>(MmAllocateContiguousMemory(size));
+  if (!LaunchDataPage) HalReturnToFirmware(HalRebootRoutine);
+  MmPersistContiguousMemory(LaunchDataPage, size, TRUE);
+  __builtin_memset(LaunchDataPage, 0, size);
+  LaunchDataPage->Header.dwLaunchDataType = LDT_LAUNCH_DASHBOARD;
+  LaunchDataPage->Header.dwTitleId = CURRENT_XBE_HEADER->CertificateHeader->TitleID;
+  LaunchDataPage->Header.dwFlags = 0;
+  __asm__ __volatile__("sfence" ::: "memory");
+  __asm__ __volatile__("wbinvd" ::: "memory");
+  HalReturnToFirmware(HalQuickRebootRoutine);
   for (;;) Sleep(1000);
 }
 
