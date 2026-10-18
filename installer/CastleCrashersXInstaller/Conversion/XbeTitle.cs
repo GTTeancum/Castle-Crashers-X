@@ -108,7 +108,10 @@ public static class XbeTitle
         BinaryPrimitives.WriteUInt32LittleEndian(x.AsSpan(12), 0x00040001u);
         BinaryPrimitives.WriteUInt32LittleEndian(x.AsSpan(16), 0u);
         BinaryPrimitives.WriteUInt32LittleEndian(x.AsSpan(20), 0u);
-        BinaryPrimitives.WriteUInt32LittleEndian(x.AsSpan(24), 1u | 2u << 4 | 0x0Cu << 8 | 1u << 16 | 7u << 20 | 7u << 24);
+        // D3DFORMAT_BORDERSOURCE_COLOR (0x08): no border texels in the data. Retail
+        // title images all set it (0x07710C29); without it the GPU reads the
+        // image as if framed by border texels (garbage in the lower half).
+        BinaryPrimitives.WriteUInt32LittleEndian(x.AsSpan(24), 1u | 8u | 2u << 4 | 0x0Cu << 8 | 1u << 16 | 7u << 20 | 7u << 24);
         BinaryPrimitives.WriteUInt32LittleEndian(x.AsSpan(28), 0u);
         BinaryPrimitives.WriteUInt32LittleEndian(x.AsSpan(32), 0xFFFFFFFFu);
         for (int i = 36; i < headerSize; ++i) x[i] = 0xAD;  // padding as the XDK's bundler writes it

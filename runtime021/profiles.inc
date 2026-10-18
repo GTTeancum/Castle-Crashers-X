@@ -115,8 +115,27 @@ static bool cc_save_write_meta(const char* path, const char* text) {
   for (const char* c = text; *c; ++c) { b.push_back(uint8_t(*c)); b.push_back(0); }
   return cc_save_write_file(path, b.data(), b.size());
 }
-// Title and player folders with their dashboard files (written with the
-// first save; the title image comes from the installer's D:\data\TitleImage.xbx).
+#ifdef CC_XBOX_DRIVER
+// Copy the installed title image to dst unless dst already holds the same
+// bytes (images saved by earlier builds had a bad texture header).
+static void cc_save_sync_image(const char* src, const char* dst) {
+  auto read = [](const char* p, std::vector<uint8_t>& b) {
+    b.assign(16384, 0);
+    std::FILE* f = std::fopen(p, "rb");
+    if (!f) { b.clear(); return; }
+    b.resize(std::fread(b.data(), 1, b.size(), f));
+    std::fclose(f);
+  };
+  std::vector<uint8_t> want, have;
+  read(src, want);
+  if (want.empty()) return;
+  read(dst, have);
+  if (have != want) cc_save_write_file(dst, want.data(), want.size());
+}
+#endif
+// Title and player folders with their dashboard files (meta files written
+// with the first save; the images follow the installer's
+// D:\data\TitleImage.xbx).
 static void cc_save_prepare(uint32_t user, char* dir, size_t dn) {
   const char* root = cc_save_root();
   dir[0] = 0;
@@ -130,17 +149,11 @@ static void cc_save_prepare(uint32_t user, char* dir, size_t dn) {
   if (std::FILE* f = std::fopen(path, "rb")) std::fclose(f);
   else {
     cc_save_write_meta(path, "TitleName=Castle Crashers\r\n");
-#ifdef CC_XBOX_DRIVER
-    if (std::FILE* img = std::fopen("D:\\data\\TitleImage.xbx", "rb")) {
-      std::vector<uint8_t> b(16384);
-      const size_t n = std::fread(b.data(), 1, b.size(), img);
-      std::fclose(img);
-      b.resize(n);
-      std::snprintf(path, sizeof(path), "%s\\TitleImage.xbx", root);
-      if (n) cc_save_write_file(path, b.data(), n);
-    }
-#endif
   }
+#ifdef CC_XBOX_DRIVER
+  std::snprintf(path, sizeof(path), "%s\\TitleImage.xbx", root);
+  cc_save_sync_image("D:\\data\\TitleImage.xbx", path);
+#endif
   std::snprintf(dir, dn, "%s\\%012X", root, unsigned(user + 1u));
   cc_save_mkdir(dir);
   std::snprintf(path, sizeof(path), "%s\\SaveMeta.xbx", dir);
@@ -149,19 +162,11 @@ static void cc_save_prepare(uint32_t user, char* dir, size_t dn) {
     char meta[64];
     std::snprintf(meta, sizeof(meta), "Name=Player %u\r\n", unsigned(user + 1u));
     cc_save_write_meta(path, meta);
-#ifdef CC_XBOX_DRIVER
-    char src[300];
-    std::snprintf(src, sizeof(src), "%s\\TitleImage.xbx", root);
-    if (std::FILE* img = std::fopen(src, "rb")) {
-      std::vector<uint8_t> b(16384);
-      const size_t n = std::fread(b.data(), 1, b.size(), img);
-      std::fclose(img);
-      b.resize(n);
-      std::snprintf(path, sizeof(path), "%s\\SaveImage.xbx", dir);
-      if (n) cc_save_write_file(path, b.data(), n);
-    }
-#endif
   }
+#ifdef CC_XBOX_DRIVER
+  std::snprintf(path, sizeof(path), "%s\\SaveImage.xbx", dir);
+  cc_save_sync_image("D:\\data\\TitleImage.xbx", path);
+#endif
 }
 // progressN.bin: 'CCXP', u32 version 1, u32 sequence, u32 setting id,
 // u32 length, u32 CRC32 of the data, then the data.

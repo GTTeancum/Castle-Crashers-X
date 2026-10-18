@@ -250,9 +250,6 @@ static CC_HOT_FN void sub_8208A7A0(Context& ctx, Machine& base) {
       const uint32_t n = REX_LOAD_U32(st + 10312u) + 1u;
       REX_STORE_U32(st + 10312u, n);
       REX_STORE_U32(st + (n + 2546u) * 4u, cd);
-#ifdef CC_XBOX_DRIVER
-      ::cc_xr_mask_begin();  // the mask shape and the children it clips get a new stencil value
-#endif
       ctx.r3.u64 = r1 + 80u; ctx.r4.u64 = rnd; ctx.r5.u64 = 11u; ctx.lr = 0x8208AA68u;
       REX_CALL_INDIRECT_FUNC(REX_LOAD_U32(REX_LOAD_U32(rnd) + 32u));
       ++depth;

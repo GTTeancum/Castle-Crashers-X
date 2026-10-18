@@ -7455,9 +7455,36 @@ static void sub_820A9308(Context& ctx, Machine& base) {
 }
 #else
 #ifdef CC_FAST
+// Material 11 (a mask's shape): the exact body draws nothing; it records the
+// quad (4 entries of x, y, -, u, v, - at stride 24) at 0x8228A658 and binds
+// the mask texture on sampler 1, and later material-10 quads sample that one
+// mask through their second uv pair (the 360 multiplies by its alpha). The
+// Xbox draws the recorded quad into the stencil instead (material 11, a new
+// mask value per quad: each shape replaces the last, as on the 360), and
+// material-10 quads draw where the stencil holds it (xbox_render.cpp).
 static void sub_820A9308(Context& ctx, Machine& base) {
   if (cc_quad_native(ctx, base)) return;
+#ifdef CC_XBOX_DRIVER
+  const uint32_t rnd = ctx.r3.u32;
+  const bool mask = REX_LOAD_U8(rnd + 28715u) != 0u && int32_t(REX_LOAD_U32(0x8228A7C4u)) < 6000 &&
+                    REX_LOAD_U32(REX_LOAD_U32(rnd + (REX_LOAD_U32(rnd + 30208u) + 7544u) * 4u)) == 11u;
+  const uint32_t blend = REX_LOAD_U32(REX_LOAD_U32(rnd + 4u) + 10552u);
+#endif
   sub_820A9308_exact(ctx, base);
+#ifdef CC_XBOX_DRIVER
+  if (mask) {
+    uint32_t q[24];
+    const uint32_t z = REX_LOAD_U32(0x8201473Cu);
+    for (uint32_t i = 0; i < 4; ++i) {
+      const uint32_t t = 0x8228A658u + 24u * i;
+      q[i * 6 + 0] = REX_LOAD_U32(t); q[i * 6 + 1] = REX_LOAD_U32(t + 4u); q[i * 6 + 2] = z;
+      q[i * 6 + 3] = REX_LOAD_U32(t + 12u); q[i * 6 + 4] = REX_LOAD_U32(t + 16u); q[i * 6 + 5] = 0xFFFFFFFFu;
+    }
+    ::cc_xr_set_material(11u);
+    ::cc_xr_mask_begin();
+    ::cc_xr_quad(q, blend);
+  }
+#endif
 }
 #endif
 #endif
@@ -8846,7 +8873,7 @@ static CcDxtTexture* cc_tex_pick_victim(uint32_t keep) {
 #ifdef CC_XBOX_DRIVER
   const uint32_t epoch = ::cc_xr_gpu_epoch();
   for (auto& t : g_dxt_textures)
-    if (t.cache && t.data != keep && t.gpu_epoch != epoch &&
+    if (t.cache && t.data != keep && t.gpu_epoch != epoch && t.last_use != g_frame_delay_calls &&
         (!victim || t.last_use < victim->last_use)) victim = &t;
   if (victim) return victim;
   for (auto& t : g_dxt_textures)
@@ -11603,22 +11630,66 @@ static void sub_82077FD8(Context& ctx, Machine& base) {
 #include "generated/sub_82096530.inc"
 #include "generated/sub_820967B0.inc"
 #include "generated/sub_8206CC40.inc"
-// Pause menu (exact sub_8206C510 builds Resume Game 603, Download Content
-// 600, Help & Options 599, Leaderboards 597, Achievements 598, then the
-// exit items): the play build drops Download Content, Leaderboards and
-// Achievements at the append, as for the main menu (the original Xbox has
-// no marketplace, leaderboards or achievements); the append re-centres the
-// rest. The verification build runs the exact code unchanged.
+// Pause menu. Exact sub_8206C510 appends: Paused 392 (fixed position, no
+// handler), Resume Game 603, Unlock Full Game 600 (retexted Download Content
+// 601 for the full game), Help & Options 599, Leaderboards 597, Achievements
+// 598, Kick 445 (online host only), Exit To Map 393, Exit Game 98 (the two
+// button prompts go to the menu's second list). sub_8206C1D0, run each time
+// the pause opens, addresses slots 0, 1, 2, 6 and 7 by index, so dropping
+// items at the append left slots 6 and 7 null (a store to null + 0x15: the
+// pause crash). The play build keeps all nine slots and hides Unlock /
+// Download Content, Leaderboards, Achievements and Kick: disabled (byte +21:
+// sub_82066F38 reports them unselectable, so the cursor skips them), out of
+// the auto layout (+20), parked above the screen, the remaining rows closed
+// up exactly as a five-item append would place them. They are found by their
+// handlers (+28), which only these items carry. The verification build runs
+// the exact code unchanged.
 #ifdef CC_FAST
 #define sub_8206C510 sub_8206C510_exact
 #endif
 #include "generated/sub_8206C510.inc"
 #ifdef CC_FAST
 #undef sub_8206C510
+static bool cc_pause_item_hidden(uint32_t handler) {
+  return handler == 0x8206D0F8u     // Unlock Full Game / Download Content
+      || handler == 0x8205D448u     // Leaderboards
+      || handler == 0x82055198u     // Achievements
+      || handler == 0x8206D440u;    // Kick
+}
 static void sub_8206C510(Context& ctx, Machine& base) {
-  g_menu_trim_active = true;
+  const uint32_t menu = ctx.r4.u32;
   sub_8206C510_exact(ctx, base);
-  g_menu_trim_active = false;
+  // Main list: count u16 at +4, slot i at +20 + 4i. Item: y float at +8,
+  // auto-layout byte at +20, disabled byte at +21, handler at +28.
+  const uint32_t count = uint32_t(base.load(menu + 4u, 2));
+  uint32_t hidden = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t item = uint32_t(base.load(menu + 20u + 4u * i, 4));
+    if (cc_pause_item_hidden(uint32_t(base.load(item + 28u, 4)))) ++hidden;
+  }
+  if (count != 9u || hidden != 4u) {
+    ::DbgPrint("FAIL pause menu: %u items, %u to hide (expected 9 and 4)\n", unsigned(count), unsigned(hidden));
+    base.fail(Error::unsupported, 0x8206C510u);
+  }
+  // The append puts auto-laid item i at y = 30 i + H/2 - 15 count + 60
+  // (15.0 at 0x820425B8); a kept item that is k-th moves by
+  // 15 hidden - 30 (i - k).
+  uint32_t k = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t item = uint32_t(base.load(menu + 20u + 4u * i, 4));
+    uint32_t bits = uint32_t(base.load(item + 8u, 4));
+    float y; std::memcpy(&y, &bits, 4);
+    if (cc_pause_item_hidden(uint32_t(base.load(item + 28u, 4)))) {
+      base.store(item + 21u, 1, 1u);   // never selectable
+      base.store(item + 20u, 1, 0u);   // out of any re-layout
+      y = -1000.0f;                    // above the screen
+    } else {
+      if (base.load(item + 20u, 1) != 0) y += 15.0f * float(hidden) - 30.0f * float(i - k);
+      ++k;
+    }
+    std::memcpy(&bits, &y, 4);
+    base.store(item + 8u, 4, bits);
+  }
 }
 #endif
 #include "generated/sub_8206CA60.inc"
