@@ -716,11 +716,13 @@ static __attribute__((noinline)) uint32_t cc_vsite_rest(Context& ctx, Machine& b
     case 8: r3 = (REX_LOAD_U8(obj + 140u) >> 2) & 1u; break;
     case 9: REX_STORE_U32(a, ctx.r4.u32); r3 = obj; break;  // r3 stays the object
     case 10: REX_STORE_U16(a, ctx.r4.u16); r3 = obj; break;
-    default:
+    default: {
+      CC_GFN_SCOPE(fn);  // spike report (test builds)
       ctx.r3.u64 = obj;
       ctx.lr = lr;
       dispatch(fn, ctx, base);
       return ctx.r3.u32;
+    }
   }
   ctx.r3.u64 = r3;
   return uint32_t(r3);
@@ -740,6 +742,7 @@ static inline __attribute__((always_inline)) uint32_t cc_vcall_site(Context& ctx
   if (g_vc_on) (*g_vc_stats)[lr].kind = v.kind;
 #endif
   if (v.kind == 1 && v.fn) {
+    CC_GFN_SCOPE(fn);  // spike report (test builds)
     ctx.r3.u64 = obj;
     ctx.lr = lr;
     v.fn(ctx, base);

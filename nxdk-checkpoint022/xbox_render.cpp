@@ -74,10 +74,19 @@ void xr_end(uint32_t* p) {
 // next vertical blank as before.
 constexpr DWORD kPresentVblanks = 2;
 DWORD g_present_vbl = 0;
+uint64_t now_us();
+// The last present's two waits (PERF line, slowest frame): for the frame's
+// vertical blanks, and for pbkit to accept the frame (all three
+// framebuffers queued).
+uint64_t g_present_vbl_us = 0, g_present_queue_us = 0;
 void present() {
   // (Audio is fed by its own thread, xbox_audio.cpp.)
+  const uint64_t t0 = now_us();
   while (pb_get_vbl_counter() - g_present_vbl < kPresentVblanks) pb_wait_for_vbl();
+  const uint64_t t1 = now_us();
   while (pb_finished()) {}
+  g_present_vbl_us = t1 - t0;
+  g_present_queue_us = now_us() - t1;
   g_present_vbl = pb_get_vbl_counter();
 }
 GpuVertex* g_vb = nullptr;
@@ -187,9 +196,15 @@ static bool gpu_strict_idle() {
 // while queued work remained (WEAKIDLE builds), gpb = frames that began with
 // the previous frame's draws still queued.
 unsigned g_gpu_premature = 0, g_gpu_busy_at_begin = 0;
+// Idle epoch: bumped each time the GPU has been seen fully idle, so
+// everything queued before that point is drawn. A texture last bound at
+// epoch E is no longer sampled once the epoch has moved past E (runtime021's
+// texture eviction, cc_xr_gpu_epoch).
+uint32_t g_gpu_epoch = 1;
 void gpu_wait_idle() {
 #ifdef CC_XR_WEAK_IDLE
-  // A/B build (make WEAKIDLE=1): pbkit's pb_busy() alone, as before.
+  // A/B build (make WEAKIDLE=1): pbkit's pb_busy() alone, as before (the
+  // epoch never moves: no texture counts as finished).
   while (pb_busy()) {}
   if (!gpu_strict_idle()) ++g_gpu_premature;
   return;
@@ -200,9 +215,15 @@ void gpu_wait_idle() {
     if (!(nv_reg8(0x3214) & 0x10)) continue;       // NV_PFIFO_CACHE1_STATUS: not empty
     if (!(nv_reg8(0x2400) & 0x10)) continue;       // NV_PFIFO_RUNOUT_STATUS: not empty
     if (nv_reg(0x400700) != 0) continue;           // NV_PGRAPH_STATUS: busy
+    ++g_gpu_epoch;
     return;
   }
 }
+// This frame's GPU waits (PERF line, slowest frame): begin_frame's, and the
+// texture evictions' (count and time).
+uint64_t g_frame_begin_wait_us = 0, g_frame_tex_wait_us = 0;
+unsigned g_frame_tex_waits = 0, g_tex_waits = 0;
+uint64_t g_tex_wait_us = 0;
 
 void begin_frame() {
   g_ps = PushedState();
@@ -212,7 +233,9 @@ void begin_frame() {
   // The previous frame's draws (the frame end does not wait) must be done
   // before this frame rewrites the vertex buffer from its start. The game's
   // update has run since, so this is normally already true.
+  const uint64_t w0 = now_us();
   gpu_wait_idle();
+  g_frame_begin_wait_us += now_us() - w0;
   pb_target_back_buffer();
   pb_erase_depth_stencil_buffer(0, 0, 640, 480);
   pb_fill(0, 0, 640, 480, 0xff000000);
@@ -600,10 +623,16 @@ void cc_xr_quad(const uint32_t* v, uint32_t blend) {
 // draw be overwritten while the GPU still drew the last frame with it (the
 // book menu's one-frame wrong pictures).
 void cc_xr_gpu_idle() {
+  const uint64_t w0 = now_us();
   if (g_in_frame) flush_batch();
   xr_flush();
   gpu_wait_idle();
+  const uint64_t w = now_us() - w0;
+  g_frame_tex_wait_us += w; ++g_frame_tex_waits;
+  g_tex_wait_us += w; ++g_tex_waits;
 }
+// The GPU's idle epoch (see gpu_wait_idle).
+uint32_t cc_xr_gpu_epoch() { return g_gpu_epoch; }
 
 // Harness failure on the Xbox: show the error code and guest address as
 // digits (the debug text console is hidden behind the pbkit display) and
@@ -646,12 +675,33 @@ void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
   static unsigned shown_update = 0, shown_render = 0, shown_draw = 0, shown_wait = 0;
   sum_update += update_us; sum_render += render_us; sum_draw += draw_cycles_to_us(g_draw_cycles); sum_wait += last_wait;
   g_draw_cycles = 0;
-  // Longest frame of the window (frame end to frame end).
+  // Longest frame of the window (frame end to frame end: the previous
+  // present, then this frame's update and render) and where its time went.
   static uint64_t last_end_us = 0, max_frame_us = 0;
+  // update, render, begin wait, texture waits (time, count), vblank wait,
+  // queue wait, other, texture pack reads, their disk time, the game's file
+  // reads, their bytes and time
+  static uint64_t slow[13];
   {
     const uint64_t t = now_us();
-    if (last_end_us && t - last_end_us > max_frame_us) max_frame_us = t - last_end_us;
+    void cc_xbox_io_totals(uint32_t* bake_reads, uint32_t* disk_us, uint32_t* game_reads, uint32_t* game_bytes,
+                           uint32_t* game_us);
+    static uint32_t last_reads = 0, last_disk = 0, last_gr = 0, last_gb = 0, last_gu = 0;
+    uint32_t reads = 0, disk = 0, gr = 0, gb = 0, gu = 0;
+    cc_xbox_io_totals(&reads, &disk, &gr, &gb, &gu);
+    if (last_end_us && t - last_end_us > max_frame_us) {
+      slow[8] = reads - last_reads; slow[9] = disk - last_disk;
+      slow[10] = gr - last_gr; slow[11] = gb - last_gb; slow[12] = gu - last_gu;
+      max_frame_us = t - last_end_us;
+      const uint64_t known = uint64_t(update_us) + render_us + g_present_vbl_us + g_present_queue_us;
+      slow[0] = update_us; slow[1] = render_us; slow[2] = g_frame_begin_wait_us; slow[3] = g_frame_tex_wait_us;
+      slow[4] = g_frame_tex_waits; slow[5] = g_present_vbl_us; slow[6] = g_present_queue_us;
+      slow[7] = max_frame_us > known ? max_frame_us - known : 0;
+    }
     last_end_us = t;
+    last_reads = reads; last_disk = disk; last_gr = gr; last_gb = gb; last_gu = gu;
+    g_frame_begin_wait_us = g_frame_tex_wait_us = 0;
+    g_frame_tex_waits = 0;
   }
   const DWORD now = GetTickCount();
   if (!window_start) window_start = now;
@@ -683,6 +733,19 @@ void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
                unsigned(sum_render / window_frames / 100u), unsigned(sum_draw / window_frames / 100u),
                unsigned(sum_wait / window_frames / 100u), unsigned(dbg_us / 100u), aur - last_ur, ms_now - last_ms,
                g_gpu_premature - last_gpi, g_gpu_busy_at_begin - last_gpb, sfl, sfx_us / 100u);
+      // SLOW: the second's longest frame split up, 0.1 ms: u update, r render
+      // (includes b and t), b begin_frame's GPU wait, t texture evictions'
+      // GPU waits (n of them), v present's vertical-blank wait, q present's
+      // wait for a free framebuffer, o the rest, pk textures read from the
+      // pack in that frame and pkt their disk time, gr / gk / grt the game's
+      // own file reads in that frame, their KiB and time. tw / twt:
+      // texture-eviction GPU waits in the second and their total time.
+      DbgPrint("SLOW t=%u u=%u r=%u b=%u t=%u n=%u v=%u q=%u o=%u pk=%u pkt=%u gr=%u gk=%u grt=%u tw=%u twt=%u\n",
+               unsigned(now), unsigned(slow[0] / 100u), unsigned(slow[1] / 100u), unsigned(slow[2] / 100u),
+               unsigned(slow[3] / 100u), unsigned(slow[4]), unsigned(slow[5] / 100u), unsigned(slow[6] / 100u),
+               unsigned(slow[7] / 100u), unsigned(slow[8]), unsigned(slow[9] / 100u), unsigned(slow[10]),
+               unsigned(slow[11] >> 10), unsigned(slow[12] / 100u), g_tex_waits, unsigned(g_tex_wait_us / 100u));
+      g_tex_waits = 0; g_tex_wait_us = 0;
       last_gpi = g_gpu_premature;
       last_gpb = g_gpu_busy_at_begin;
       last_ur = aur;

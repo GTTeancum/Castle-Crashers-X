@@ -177,6 +177,9 @@ def profile(delay, seconds, out_path, period=0.02, stack_words=192):
                 ws = [int.from_bytes(words[i:i + 4], "little") for i in range(0, len(words) - 3, 4)]
                 rows.append("%s %08x %08x %s" % (t, eip, esp, " ".join("%08x" % w for w in ws)))
             x.cmd("go")
+            # Wall-clock time of the sample (the debug log's clock), on its
+            # own line (xbox_symbolize.py skips short lines).
+            out.write("# t=%s\n" % time.strftime("%H:%M:%S"))
             out.write("\n".join(rows) + "\n")
             n += 1
             time.sleep(period)

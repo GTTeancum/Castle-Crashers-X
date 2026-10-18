@@ -151,6 +151,9 @@ static CC_HOT_FN void sub_82088CF0(Context& ctx, Machine& base) {
 #endif
   CC_FPROF_SCOPE(sub_82088CF0_native);
   const uint32_t k = ctx.r5.u32 & 0xFFFFu;
+#ifdef CC_SPIKE_REPORT
+  CcAsFnScope spike_scope(k | 0x10000u);
+#endif
   if (k - 24u <= 42u) {
     if ((k == 31u || k == 30u || k == 35u || k == 37u) && !g_seek_exact) cc_as_clip_timeline(ctx, base, k);
     else sub_82088CF0_exact(ctx, base);

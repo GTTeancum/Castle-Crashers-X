@@ -628,6 +628,9 @@ static uint64_t g_fs_us[7];
 static struct { uint64_t in, out; uint32_t aud, upd, ren, end; } g_slow;
 static uint32_t g_fs_frames, g_fs_bake_reads, g_fs_bake_bytes;
 static uint32_t g_fs_disk_reads, g_fs_disk_seeks, g_fs_disk_bytes, g_fs_disk_us, g_fs_disk_max_us;
+// Running totals of the pack's texture reads and disk time (never reset;
+// the renderer's SLOW line takes per-frame differences).
+static uint32_t g_io_bake_reads, g_io_disk_us;
 #endif
 static uint32_t g_tex_swap_ins = 0, g_tex_swap_outs = 0;
 static uint32_t g_bake_hits = 0, g_bake_misses = 0;
@@ -676,6 +679,13 @@ struct CcDlEnt { uint32_t list, id, stamp, result; };
 static CcDlEnt g_dl_cache[2048];
 static uint32_t g_dl_lver[2048], g_dl_iver[2048];
 static uint32_t g_dl_tick = 1u, g_dl_busy = 0u;
+// Version of the last whole-table flush: entries stamped before it are
+// stale (a flush used to clear all 32 KB of the table; node resets flush it,
+// and unloading a level area resets thousands of nodes in one frame).
+static uint32_t g_dl_flush_ver = 0u;
+#ifdef CC_SPIKE_REPORT
+static uint32_t g_dl_flushes = 0u;  // this frame (spike report)
+#endif
 #ifndef CC_XBOX_DRIVER
 // Host census (CC_DLCACHE_STATS=1), printed every 300 frames.
 static struct { uint64_t calls, hits, fills, uncached, busy, nodes, list_bumps, name_bumps, flushes; } g_dl_st;
@@ -685,18 +695,22 @@ static struct { uint64_t calls, hits, fills, uncached, busy, nodes, list_bumps, 
 #endif
 static inline uint32_t& cc_dl_lv(uint32_t list) { return g_dl_lver[((list >> 3) ^ (list >> 14)) & 2047u]; }
 static inline uint32_t& cc_dl_iv(uint32_t id) { return g_dl_iver[id & 2047u]; }
-static __attribute__((noinline)) void cc_dl_flush() {
-  CC_DL_STAT(flushes);
-  __builtin_memset(g_dl_cache, 0, sizeof(g_dl_cache));
-}
 static inline uint32_t cc_dl_new_version() {
   if (__builtin_expect(++g_dl_tick == 0u, 0)) {  // clock wrapped: start over
-    cc_dl_flush();
+    __builtin_memset(g_dl_cache, 0, sizeof(g_dl_cache));
     __builtin_memset(g_dl_lver, 0, sizeof(g_dl_lver));
     __builtin_memset(g_dl_iver, 0, sizeof(g_dl_iver));
+    g_dl_flush_ver = 0u;
     g_dl_tick = 1u;
   }
   return g_dl_tick;
+}
+static inline void cc_dl_flush() {
+  CC_DL_STAT(flushes);
+#ifdef CC_SPIKE_REPORT
+  ++g_dl_flushes;
+#endif
+  g_dl_flush_ver = cc_dl_new_version();
 }
 static inline void cc_dl_list_changed(uint32_t list) { CC_DL_STAT(list_bumps); cc_dl_lv(list) = cc_dl_new_version(); }
 static inline void cc_dl_name_changed(uint32_t id) { CC_DL_STAT(name_bumps); cc_dl_iv(id & 0xFFFFu) = cc_dl_new_version(); }
@@ -3057,6 +3071,11 @@ static void cc_menu_text_patch(Machine& base) {
   for (unsigned i = 0; i < 5; ++i) base.memory.store_be(0x8201545Cu + 2u * i, 2, quit[i]);
 }
 #endif
+// Test builds: a frame whose update runs long lists the ActionScript and
+// guest functions it ran (CC_SPIKE_REPORT, bridge.cpp; as_native.inc).
+#ifdef CC_SPIKE_REPORT
+static void cc_as_spike_report(Machine& base, uint32_t update_us);
+#endif
 static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   cc_thread_block_point();  // a started system thread sleeping = blocked
   if (ctx.r3.u32 != 1u || ctx.r4.u32 != 0u || ctx.r5.u32 == 0u ||
@@ -3125,6 +3144,9 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   }
 #endif
   g_fs_us[5] += g_frame_update_us; g_fs_us[6] += g_frame_render_us;
+#ifdef CC_SPIKE_REPORT
+  cc_as_spike_report(base, g_frame_update_us);
+#endif
   {
     const uint64_t t = ::cc_xbox_clock(1000000u);
     ::cc_xr_frame_end(g_frame_update_us, g_frame_render_us);
@@ -3215,7 +3237,7 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
 #if defined(CC_XBOX_DRIVER) && defined(CC_SLOW_STATS)
   if ((g_frame_delay_calls + 1u) % 300u == 0u) cc_slow_dbg();
 #endif
-#if defined(CC_XBOX_DRIVER) && defined(CC_OP_STATS)
+#if defined(CC_XBOX_DRIVER) && defined(CC_OP_STATS) && !defined(CC_SPIKE_REPORT)
   { void cc_op_dbg(); if ((g_frame_delay_calls + 1u) % 300u == 0u) cc_op_dbg(); }
 #endif
 #ifndef CC_XBOX_DRIVER
@@ -7571,7 +7593,8 @@ static CC_HOT_FN void sub_82085078(Context& ctx, Machine& base) {
   CC_DL_STAT(calls);
   CcDlEnt& e = g_dl_cache[((list >> 3) * 0x9E3779B1u ^ id * 0x85EBCA6Bu) >> 21];
   const bool usable = use_cache && g_dl_busy == 0u;
-  if (usable && e.list == list && e.id == id && cc_dl_lv(list) <= e.stamp && cc_dl_iv(id) <= e.stamp) {
+  if (usable && e.list == list && e.id == id && cc_dl_lv(list) <= e.stamp && cc_dl_iv(id) <= e.stamp &&
+      g_dl_flush_ver <= e.stamp) {
     CC_DL_STAT(hits);
 #ifndef CC_XBOX_DRIVER
     if (oracle) {  // the uncached walk on every hit; its answer stays in effect
@@ -8780,18 +8803,21 @@ static uint32_t cc_tex_swap_in(Machine& base, CcDxtTexture& t) {
 }
 // Evict least recently bound textures until the cache fits (never `keep`).
 // Least recently bound resident texture other than `keep`. On the Xbox the
-// GPU samples the zone directly and runs behind the CPU: the previous
-// frame's draws may still be queued (no GPU wait at frame end; the next
-// frame's first draw waits) and this frame's certainly are. So a texture
-// bound this frame or the last one is evicted only when nothing older is
-// resident, and then only after the GPU has finished the queued work.
-// Evicting last-frame textures without that wait drew the book menu's
-// pictures with other textures' pixels for one frame (the "giant B").
+// GPU samples the zone directly and runs behind the CPU, so a texture is
+// evicted without waiting only when the GPU has been idle since its last
+// bind (its draws are done: the idle epoch moved past the one stamped at the
+// bind). Each frame's first draw waits for the previous frame's draws, so
+// that covers every texture not bound this frame. Otherwise the GPU's
+// queued work is finished first. Evicting textures the GPU still sampled
+// drew the book menu's pictures with other textures' pixels for one frame
+// (the "giant B"); excluding the previous frame's textures too (they are
+// already done) made busy scenes wait for the GPU far more often.
 static CcDxtTexture* cc_tex_pick_victim(uint32_t keep) {
   CcDxtTexture* victim = nullptr;
 #ifdef CC_XBOX_DRIVER
+  const uint32_t epoch = ::cc_xr_gpu_epoch();
   for (auto& t : g_dxt_textures)
-    if (t.cache && t.data != keep && t.last_use + 1u < g_frame_delay_calls &&
+    if (t.cache && t.data != keep && t.gpu_epoch != epoch &&
         (!victim || t.last_use < victim->last_use)) victim = &t;
   if (victim) return victim;
   for (auto& t : g_dxt_textures)
@@ -8970,6 +8996,7 @@ static bool cc_bake_disk(uint8_t* q, uint32_t offset, uint32_t bytes) {
   const uint32_t us = uint32_t((cc_monotonic_ns() - t0) / 1000u);
   ++g_fs_disk_reads; g_fs_disk_seeks += seek; g_fs_disk_bytes += bytes;
   g_fs_disk_us += us;
+  g_io_disk_us += us;
   if (us > g_fs_disk_max_us) g_fs_disk_max_us = us;
 #else
   const bool ok = cc_bake_pixels(q, offset, bytes);
@@ -9188,6 +9215,7 @@ static uint32_t cc_bake_read(Machine& base, int32_t entry, uint32_t w, uint32_t 
   ++g_bake_hits;
 #ifdef CC_XBOX_DRIVER
   ++g_fs_bake_reads; g_fs_bake_bytes += w * h;
+  ++g_io_bake_reads;
 #endif
   return cache;
 }
@@ -9345,6 +9373,9 @@ static const CcDxtTexture* cc_tex_stream_on_bind(Context& ctx, Machine& base, ui
   CcDxtTexture* t = cc_dxt_lookup(data);
   if (!t) return nullptr;
   t->last_use = g_frame_delay_calls;
+#ifdef CC_XBOX_DRIVER
+  t->gpu_epoch = ::cc_xr_gpu_epoch();
+#endif
   if (t->cache) return t;
   cc_tex_stream_fill(ctx, base, *t);
   ran = true;
@@ -9449,6 +9480,9 @@ static void sub_820B1478(Context& ctx, Machine& base) {
   t.hashed = t.cache != 0;
   base.memory.store_be(obj + 564u, 4, t.data);
   t.last_use = g_frame_delay_calls;
+#ifdef CC_XBOX_DRIVER
+  t.gpu_epoch = ::cc_xr_gpu_epoch();
+#endif
   if (t.cache) cc_dxt_add(std::move(t));
   cc_tex_cache_trim(base, key);
 }

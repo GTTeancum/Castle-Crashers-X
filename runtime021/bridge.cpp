@@ -27,6 +27,10 @@ void cc_xr_quad(const uint32_t* v, uint32_t blend);
 void cc_xr_frame_end(uint32_t update_us, uint32_t render_us);
 void cc_xr_bench(unsigned window, unsigned frames, unsigned frame_us, unsigned update_us, unsigned render_us);
 void cc_xr_gpu_idle();
+uint32_t cc_xr_gpu_epoch();
+// Running totals of the game's own file reads (NtReadFile: count, bytes,
+// microseconds), for the renderer's SLOW line (cc_xbox_io_totals).
+static uint32_t g_io_game_reads = 0, g_io_game_bytes = 0, g_io_game_us = 0;
 // nxdk-checkpoint022/xbox_shims.cpp: leave the game for the dashboard.
 [[noreturn]] void cc_xbox_return_to_dashboard();
 // nxdk-checkpoint022/xbox_audio.cpp: real clock for the play build.
@@ -178,6 +182,7 @@ static std::vector<PhysRange> g_phys_live_blocks;
 // job: snapshot of the rasterizer job that regenerates the pixels.
 struct CcDxtTexture {
   uint32_t data = 0, w = 0, h = 0, cache = 0, last_use = 0, hash = 0;
+  uint32_t gpu_epoch = 0;  // Xbox: the GPU's idle epoch at the last bind (see cc_tex_pick_victim)
   bool hashed = false;  // hash holds the first compression's hash
   int64_t swap_off = -1;  // copy of the DXT5 pixels in the scratch swap file
   // Baked pack entry: -2 not looked up yet, -1 not in the pack, else the
@@ -2148,6 +2153,32 @@ static void cc_capture_on_function(const char*, const Context&, cc::xbox::Addres
 static void cc_capture_end_frame(cc::xbox::AddressSpace&, uint32_t) {}
 #endif
 static void dispatch(uint32_t, Context &, Machine &);
+// Spike report (Xbox test builds: four-player or direct-level): a frame
+// whose update runs long prints the ActionScript functions it called
+// (as_native.inc) and the guest functions reached through indirect and
+// virtual calls, by inclusive time (cc_as_spike_report).
+#if defined(CC_XBOX_DRIVER) && defined(CC_FAST) && (defined(CC_SCRIPT_4P) || defined(CC_DIRECT_LEVEL))
+#define CC_SPIKE_REPORT 1
+struct CcGfnStat { uint32_t addr, calls; uint64_t cyc; };
+static CcGfnStat g_gfn[1024];
+static uint32_t g_gfn_lost = 0;
+struct CcGfnScope {
+  uint32_t a; uint64_t t0;
+  explicit CcGfnScope(uint32_t x) : a(x), t0(__builtin_ia32_rdtsc()) {}
+  ~CcGfnScope() {
+    uint32_t h = (a * 2654435761u) >> 22;
+    for (uint32_t k = 0; k < 1024u; ++k, h = (h + 1u) & 1023u) {
+      CcGfnStat& e = g_gfn[h];
+      if (e.calls == 0u) e.addr = a;
+      if (e.addr == a) { ++e.calls; e.cyc += __builtin_ia32_rdtsc() - t0; return; }
+    }
+    ++g_gfn_lost;
+  }
+};
+#define CC_GFN_SCOPE(a) CcGfnScope cc_gfn_scope(a)
+#else
+#define CC_GFN_SCOPE(a) ((void)0)
+#endif
 #ifdef CC_FAST
 // Play build: each indirect call site caches its last target (key 0 never
 // matches a guest address). A miss looks the address up in the sorted
@@ -2158,6 +2189,7 @@ static void cc_dispatch_cached(uint32_t a, Context &ctx, Machine &base, uint32_t
 #define REX_CALL_INDIRECT_FUNC(a) do { \
     static uint32_t cc_ic_key = 0; static CcGenFn cc_ic_fn = nullptr; \
     const uint32_t cc_ic_a = uint32_t(a); \
+    CC_GFN_SCOPE(cc_ic_a); \
     if (cc_ic_a == cc_ic_key) cc_ic_fn(ctx, base); \
     else cc_dispatch_cached(cc_ic_a, ctx, base, cc_ic_key, cc_ic_fn); \
   } while (0)
@@ -2556,6 +2588,8 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
       if (uint8_t* dst=base.memory.contiguous(buf,take,3)) {
         bool ok=false;
 #ifdef CC_XBOX_DRIVER
+        const uint64_t io_t0=cc_xbox_clock(1000000u);
+        struct IoTally { uint64_t t0; uint32_t n; ~IoTally() { ++g_io_game_reads; g_io_game_bytes+=n; g_io_game_us+=uint32_t(cc_xbox_clock(1000000u)-t0); } } io_tally{io_t0, take};
         if (fsl->xh) {
           IO_STATUS_BLOCK io{};
           LARGE_INTEGER at;
@@ -2785,6 +2819,14 @@ void cc_audio_sfx_reads(uint32_t* reads, uint32_t* max_us) {
   *max_us = cc::tree::ccaudio::g_sfx_disk_max_us;
   cc::tree::ccaudio::g_sfx_disk_reads = 0;
   cc::tree::ccaudio::g_sfx_disk_max_us = 0;
+}
+// Running totals of the texture pack's reads and disk time in microseconds,
+// and of the game's own file reads (count, bytes, microseconds), for the
+// renderer's SLOW line (nxdk-checkpoint022/xbox_render.cpp).
+void cc_xbox_io_totals(uint32_t* bake_reads, uint32_t* disk_us, uint32_t* game_reads, uint32_t* game_bytes, uint32_t* game_us) {
+  *bake_reads = cc::tree::g_io_bake_reads;
+  *disk_us = cc::tree::g_io_disk_us;
+  *game_reads = g_io_game_reads; *game_bytes = g_io_game_bytes; *game_us = g_io_game_us;
 }
 // The console FRAME line's counters (nxdk-checkpoint022/xbox_perf.cpp), read
 // and reset: out = {frames, baked-texture reads, baked-texture bytes, then

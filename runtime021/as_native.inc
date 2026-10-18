@@ -955,6 +955,89 @@ static __attribute__((noinline, cold)) void cc_as_call_error(Context& ctx, Machi
 // cleared, and both stacks popped. The body loop reads the length, the
 // stop byte and the code bytes through host views when they are mapped
 // (the length is still re-read before every instruction, as the original).
+#ifdef CC_SPIKE_REPORT
+// Spike report (test builds): per name id, this frame's calls and inclusive
+// time of custom functions (CallCustomFunction, key = id) and of clip method
+// calls (sub_82088CF0, key = id | 0x10000: built-ins and timeline methods
+// included). A frame whose update runs 150 ms or more prints its 12
+// costliest as ASFN lines (cc_as_spike_report, from the frame end).
+struct CcAsFnStat { uint32_t key, calls; uint64_t cyc; };
+static CcAsFnStat g_asfn[512];
+static uint32_t g_asfn_s = 0, g_asfn_lost = 0;
+static CcAsFnStat* cc_asfn_slot(uint32_t key) {
+  uint32_t h = (key * 2654435761u) >> 23;
+  for (uint32_t k = 0; k < 512u; ++k, h = (h + 1u) & 511u) {
+    CcAsFnStat& e = g_asfn[h];
+    if (e.calls == 0u) { e.key = key; return &e; }
+    if (e.key == key) return &e;
+  }
+  return nullptr;
+}
+struct CcAsFnScope {
+  uint32_t key; uint64_t t0;
+  explicit CcAsFnScope(uint32_t k) : key(k), t0(__builtin_ia32_rdtsc()) {}
+  ~CcAsFnScope() {
+    if (CcAsFnStat* e = cc_asfn_slot(key)) { ++e->calls; e->cyc += __builtin_ia32_rdtsc() - t0; }
+    else ++g_asfn_lost;
+  }
+};
+static void cc_as_spike_report(Machine& base, uint32_t update_us) {
+  if (update_us >= 150000u && g_asfn_s != 0u) {
+    uint32_t top[12], n = 0;
+    for (uint32_t i = 0; i < 512u; ++i) {
+      if (g_asfn[i].calls == 0u) continue;
+      uint32_t j;
+      if (n < 12u) j = n++;
+      else if (g_asfn[i].cyc <= g_asfn[top[11]].cyc) continue;
+      else j = 11u;
+      top[j] = i;
+      while (j > 0u && g_asfn[top[j]].cyc > g_asfn[top[j - 1u]].cyc) { const uint32_t t = top[j]; top[j] = top[j - 1u]; top[j - 1u] = t; --j; }
+    }
+    const uint32_t names = REX_LOAD_U32(cc_as_vm(base, g_asfn_s) + 10316u);
+    for (uint32_t r = 0; r < n; ++r) {
+      const CcAsFnStat& e = g_asfn[top[r]];
+      const uint32_t k = e.key & 0xFFFFu;
+      const uint32_t str = k ? REX_LOAD_U32(REX_LOAD_U32(names + 28u) + k * 4u) : names + 12u;
+      char nm[48];
+      uint32_t c = 0;
+      for (; c + 1u < sizeof(nm); ++c) { const uint32_t ch = REX_LOAD_U8(str + c); if (!ch) break; nm[c] = char(ch); }
+      nm[c] = 0;
+      ::DbgPrint("ASFN upd=%u %s:%s calls=%u ms=%u.%u\n", unsigned(update_us / 1000u), (e.key & 0x10000u) ? "m" : "f", nm,
+                 unsigned(e.calls), unsigned(e.cyc / 733000u), unsigned(e.cyc / 73300u % 10u));
+    }
+    if (g_asfn_lost) ::DbgPrint("ASFN lost=%u\n", unsigned(g_asfn_lost));
+#ifdef CC_OP_STATS
+    cc_op_dbg();  // this frame's opcodes by exclusive time (OPS line)
+#endif
+    // Guest functions reached through indirect and virtual calls, by
+    // inclusive time (nested ones count in their callers too).
+    uint32_t gt[16], gn = 0;
+    for (uint32_t i = 0; i < 1024u; ++i) {
+      if (g_gfn[i].calls == 0u) continue;
+      uint32_t j;
+      if (gn < 16u) j = gn++;
+      else if (g_gfn[i].cyc <= g_gfn[gt[15]].cyc) continue;
+      else j = 15u;
+      gt[j] = i;
+      while (j > 0u && g_gfn[gt[j]].cyc > g_gfn[gt[j - 1u]].cyc) { const uint32_t t = gt[j]; gt[j] = gt[j - 1u]; gt[j - 1u] = t; --j; }
+    }
+    for (uint32_t r = 0; r < gn; ++r)
+      ::DbgPrint("GFN upd=%u %08x calls=%u ms=%u.%u\n", unsigned(update_us / 1000u), unsigned(g_gfn[gt[r]].addr),
+                 unsigned(g_gfn[gt[r]].calls), unsigned(g_gfn[gt[r]].cyc / 733000u), unsigned(g_gfn[gt[r]].cyc / 73300u % 10u));
+    ::DbgPrint("GFN upd=%u dlflush=%u lost=%u\n", unsigned(update_us / 1000u), unsigned(g_dl_flushes), unsigned(g_gfn_lost));
+  }
+  __builtin_memset(g_asfn, 0, sizeof(g_asfn));
+  g_asfn_lost = 0;
+  __builtin_memset(g_gfn, 0, sizeof(g_gfn));
+  g_gfn_lost = 0;
+  g_dl_flushes = 0;
+#ifdef CC_OP_STATS
+  __builtin_memset(g_op_cyc, 0, sizeof(g_op_cyc));
+  __builtin_memset(g_op_cnt, 0, sizeof(g_op_cnt));
+  g_call_n = 0; g_call_setup = 0; g_call_teardown = 0;
+#endif
+}
+#endif
 static CC_HOT_FN void sub_8207B150(Context& ctx, Machine& base) {
   CC_AS_SWITCH(sub_8207B150);
   CC_FPROF_SCOPE(sub_8207B150_native);
@@ -964,6 +1047,10 @@ static CC_HOT_FN void sub_8207B150(Context& ctx, Machine& base) {
   cc_as_init_switches(base);
   const uint32_t s = ctx.r3.u32, id = ctx.r4.u32, argc = ctx.r5.u32, argv = ctx.r6.u32;
   const uint32_t ret = ctx.r7.u32, done = ctx.r8.u32;
+#ifdef CC_SPIKE_REPORT
+  g_asfn_s = s;
+  CcAsFnScope spike_scope(id & 0xFFFFu);
+#endif
 #ifdef CC_OP_STATS
   uint64_t cc_t0 = __builtin_ia32_rdtsc();
   ++g_call_n;
