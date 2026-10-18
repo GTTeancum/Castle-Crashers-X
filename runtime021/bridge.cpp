@@ -28,8 +28,6 @@ void cc_xr_frame_end(uint32_t update_us, uint32_t render_us);
 void cc_xr_bench(unsigned window, unsigned frames, unsigned frame_us, unsigned update_us, unsigned render_us);
 void cc_xr_gpu_idle();
 uint32_t cc_xr_gpu_epoch();
-void cc_xr_set_material(uint32_t material);
-void cc_xr_mask_begin();
 // Running totals of the game's own file reads (NtReadFile: count, bytes,
 // microseconds), for the renderer's SLOW line (cc_xbox_io_totals).
 static uint32_t g_io_game_reads = 0, g_io_game_bytes = 0, g_io_game_us = 0;

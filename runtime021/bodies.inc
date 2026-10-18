@@ -7220,19 +7220,6 @@ static void sub_82094EF0(Context& ctx, Machine& base) {
 #undef DEFINE_REX_FUNC
 #define DEFINE_REX_FUNC DEFINE_REX_FUNC_SELECT
 #endif
-#ifdef CC_XBOX_DRIVER
-// The game's renderer (the display-list walk's and the quad emitter's r5 /
-// r3; one per game) and its current material, the top of its mode stack
-// (renderer slots 32 / 36): [[R + ([R + 30208] + 7544) * 4]]. 0 before the
-// first draw, or when the draw's device (r3 of sub_820C1980) is not this
-// renderer's (+4).
-static uint32_t g_cc_renderer = 0;
-static uint32_t cc_material(Machine& base, uint32_t device) {
-  const uint32_t r = g_cc_renderer;
-  if (!r || REX_LOAD_U32(r + 4u) != device) return 0u;
-  return REX_LOAD_U32(REX_LOAD_U32(r + (REX_LOAD_U32(r + 30208u) + 7544u) * 4u));
-}
-#endif
 #define sub_820C1980 sub_820C1980_exact
 #include "generated/sub_820C1980.inc"
 #undef sub_820C1980
@@ -7259,10 +7246,8 @@ static void sub_82129A70(Context& ctx, Machine& base) {
 #endif
 static void sub_820C1980(Context& ctx, Machine& base) {
   // The game's final draw call (r3 device, r4 primitive, r5 vertex count,
-  // r6 vertices, r7 stride): the Xbox renderer draws it from here, with the
-  // renderer's current material (masks, cc_xr_set_material).
+  // r6 vertices, r7 stride): the Xbox renderer draws it from here.
 #ifdef CC_XBOX_DRIVER
-  ::cc_xr_set_material(cc_material(base, ctx.r3.u32));
   // Vertices and the device's blend word through the page table (the
   // checked lookups are the fallback for spans that cross a 64 KiB page).
   const uint32_t count = ctx.r5.u32, stride = ctx.r7.u32;
@@ -7344,9 +7329,6 @@ static bool cc_quad_native(Context& ctx, Machine& base) {
   const uint32_t ring = REX_LOAD_U32(0x82290000u - 22588u);  // vertex ring count (0x8228A7C4)
   if (int32_t(ring) >= 6000) return true;
   const uint32_t slot = REX_LOAD_U32(renderer + (REX_LOAD_U32(renderer + 30208u) + 7544u) * 4u);
-#ifdef CC_XBOX_DRIVER
-  g_cc_renderer = renderer;
-#endif
   switch (REX_LOAD_U32(slot)) {
     case 0: case 1: case 3: case 5: case 7: case 8: case 9: case 12: case 16: break;
     case 2: case 6: case 10: case 11: case 14: case 15: return false;
@@ -7384,7 +7366,6 @@ static bool cc_quad_native(Context& ctx, Machine& base) {
       q[i * 6 + 3] = REX_LOAD_U32(uvs[i] + 0u); q[i * 6 + 4] = REX_LOAD_U32(uvs[i] + 4u); q[i * 6 + 5] = colour;
     }
     REX_STORE_U32(0x82290000u - 22588u, ring + 4u);
-    ::cc_xr_set_material(REX_LOAD_U32(slot));
     ::cc_xr_quad(q, REX_LOAD_U32(REX_LOAD_U32(renderer + 4u) + 10552u));  // device blend word
   }
 #else

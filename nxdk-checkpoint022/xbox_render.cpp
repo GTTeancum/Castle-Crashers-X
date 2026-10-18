@@ -161,23 +161,8 @@ bool init() {
 }
 // Texture and blend state last sent to the GPU this frame; draws only
 // send what changed (a level frame has ~236 draws over ~82 textures).
-struct PushedState {
-  bool valid = false; const void* tex = nullptr; uint32_t format = 0, rect = 0, sf = 0, df = 0;
-  uint32_t mask = 0, mask_id = 0;  // stencil use (kMask*) and the mask's stencil value
-};
+struct PushedState { bool valid = false; const void* tex = nullptr; uint32_t format = 0, rect = 0, sf = 0, df = 0; };
 PushedState g_ps;
-// Masks. The game draws through materials, the modes its renderer keeps on
-// a stack (renderer slots 32 / 36; runtime021 passes the top one with each
-// draw, cc_xr_set_material). The display-list walk pushes material 11 for a
-// clip-depth child (the mask shape) and 10 for the children it clips; the
-// 360 draws the shape into a mask image and clips with it in a shader. Here
-// each mask (cc_xr_mask_begin) gets its own stencil value: material 11
-// writes it where the shape's pixels are opaque (alpha test, no colour),
-// material 10 draws only where the stencil holds it. Drawing the shape in
-// colour instead cut rectangles out of the loading screen's wipe. The
-// stencil is cleared with the depth buffer at each frame's start.
-constexpr uint32_t kMaskOff = 0, kMaskWrite = 1, kMaskTest = 2;
-uint32_t g_material = 0, g_mask_id = 0;
 uint32_t* push_white(uint32_t* p) {
   p = pb_push1(p, NV097_SET_TEXTURE_OFFSET, physical(g_white));
   p = pb_push1(p, NV097_SET_TEXTURE_FORMAT,
@@ -242,7 +227,6 @@ uint64_t g_tex_wait_us = 0;
 
 void begin_frame() {
   g_ps = PushedState();
-  g_mask_id = 0;
   xr_flush();
   pb_reset();
   if (!gpu_strict_idle()) ++g_gpu_busy_at_begin;
@@ -407,31 +391,6 @@ void emit_draw(uint32_t op, uint32_t first, uint32_t count, uint32_t blend) {
     p = pb_push1(p, NV097_SET_BLEND_FUNC_DFACTOR, df);
     g_ps.sf = sf; g_ps.df = df;
   }
-  const uint32_t mask = g_material == 11u ? kMaskWrite : g_material == 10u ? kMaskTest : kMaskOff;
-  if (!g_ps.valid || mask != g_ps.mask || (mask != kMaskOff && g_mask_id != g_ps.mask_id)) {
-    if (mask == kMaskOff) {
-      p = pb_push1(p, NV097_SET_STENCIL_TEST_ENABLE, 0);
-      p = pb_push1(p, NV097_SET_ALPHA_TEST_ENABLE, 0);
-      p = pb_push1(p, NV097_SET_COLOR_MASK, 0x01010101);
-    } else {
-      const bool write = mask == kMaskWrite;
-      p = pb_push1(p, NV097_SET_STENCIL_TEST_ENABLE, 1);
-      p = pb_push1(p, NV097_SET_STENCIL_MASK, 0xFF);
-      p = pb_push1(p, NV097_SET_STENCIL_FUNC, write ? NV097_SET_ALPHA_FUNC_V_ALWAYS : NV097_SET_ALPHA_FUNC_V_EQUAL);
-      p = pb_push1(p, NV097_SET_STENCIL_FUNC_REF, g_mask_id);
-      p = pb_push1(p, NV097_SET_STENCIL_FUNC_MASK, 0xFF);
-      p = pb_push1(p, NV097_SET_STENCIL_OP_FAIL, NV097_SET_STENCIL_OP_V_KEEP);
-      p = pb_push1(p, NV097_SET_STENCIL_OP_ZFAIL, NV097_SET_STENCIL_OP_V_KEEP);
-      p = pb_push1(p, NV097_SET_STENCIL_OP_ZPASS, write ? NV097_SET_STENCIL_OP_V_REPLACE : NV097_SET_STENCIL_OP_V_KEEP);
-      p = pb_push1(p, NV097_SET_ALPHA_TEST_ENABLE, write ? 1 : 0);
-      if (write) {
-        p = pb_push1(p, NV097_SET_ALPHA_FUNC, NV097_SET_ALPHA_FUNC_V_GREATER);
-        p = pb_push1(p, NV097_SET_ALPHA_REF, 0x7F);
-      }
-      p = pb_push1(p, NV097_SET_COLOR_MASK, write ? 0u : 0x01010101u);
-    }
-    g_ps.mask = mask; g_ps.mask_id = g_mask_id;
-  }
   g_ps.valid = true;
   p = pb_push1(p, NV097_SET_BEGIN_END, op);
   for (uint32_t k = 0; k < count; k += 256) {
@@ -488,9 +447,6 @@ void flush_overlay() {
   }
   auto* p = xr_begin();
   g_ps = PushedState();
-  p = pb_push1(p, NV097_SET_STENCIL_TEST_ENABLE, 0);
-  p = pb_push1(p, NV097_SET_ALPHA_TEST_ENABLE, 0);
-  p = pb_push1(p, NV097_SET_COLOR_MASK, 0x01010101);
   p = push_white(p);
   p = pb_push1(p, NV097_SET_BLEND_FUNC_SFACTOR, NV097_SET_BLEND_FUNC_SFACTOR_V_ONE);
   p = pb_push1(p, NV097_SET_BLEND_FUNC_DFACTOR, NV097_SET_BLEND_FUNC_SFACTOR_V_ZERO);
@@ -677,23 +633,6 @@ void cc_xr_gpu_idle() {
 }
 // The GPU's idle epoch (see gpu_wait_idle).
 uint32_t cc_xr_gpu_epoch() { return g_gpu_epoch; }
-// The material of the draws that follow (see g_material): an open quad
-// batch is drawn with the one it was built under first.
-void cc_xr_set_material(uint32_t material) {
-  if (material == g_material) return;
-  flush_batch();
-  g_material = material;
-}
-// A new mask: its shape and the children it clips use the next stencil
-// value (the stencil is cleared again when 255 masks have been drawn).
-void cc_xr_mask_begin() {
-  flush_batch();
-  if (++g_mask_id > 255u) {
-    xr_flush();
-    pb_erase_depth_stencil_buffer(0, 0, 640, 480);
-    g_mask_id = 1;
-  }
-}
 
 // Harness failure on the Xbox: show the error code and guest address as
 // digits (the debug text console is hidden behind the pbkit display) and

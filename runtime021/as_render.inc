@@ -250,9 +250,6 @@ static CC_HOT_FN void sub_8208A7A0(Context& ctx, Machine& base) {
       const uint32_t n = REX_LOAD_U32(st + 10312u) + 1u;
       REX_STORE_U32(st + 10312u, n);
       REX_STORE_U32(st + (n + 2546u) * 4u, cd);
-#ifdef CC_XBOX_DRIVER
-      ::cc_xr_mask_begin();  // the mask shape and the children it clips get a new stencil value
-#endif
       ctx.r3.u64 = r1 + 80u; ctx.r4.u64 = rnd; ctx.r5.u64 = 11u; ctx.lr = 0x8208AA68u;
       REX_CALL_INDIRECT_FUNC(REX_LOAD_U32(REX_LOAD_U32(rnd) + 32u));
       ++depth;
@@ -536,11 +533,7 @@ static CC_HOT_FN bool cc_sprite_fused(Context& ctx, Machine& base, uint32_t spr,
   if (REX_LOAD_U8(rnd + 28715u) == 0u) return true;
   const uint32_t ring = REX_LOAD_U32(0x82290000u - 22588u);  // vertex ring count (0x8228A7C4)
   if (int32_t(ring) >= 6000) return true;
-  const uint32_t material = REX_LOAD_U32(REX_LOAD_U32(rnd + (REX_LOAD_U32(rnd + 30208u) + 7544u) * 4u));
-#ifdef CC_XBOX_DRIVER
-  g_cc_renderer = rnd;
-#endif
-  switch (material) {
+  switch (REX_LOAD_U32(REX_LOAD_U32(rnd + (REX_LOAD_U32(rnd + 30208u) + 7544u) * 4u))) {
     case 0: case 1: case 3: case 5: case 7: case 8: case 9: case 12: case 16: break;
     case 2: case 6: case 10: case 11: case 14: case 15: cc_sprite_quad_guest(ctx, base, rnd); return true;
     default: return true;
@@ -550,7 +543,6 @@ static CC_HOT_FN bool cc_sprite_fused(Context& ctx, Machine& base, uint32_t spr,
                           c[2][0], c[2][1], z, u, v, colour, c[3][0], c[3][1], z, zero, v, colour};
   REX_STORE_U32(0x82290000u - 22588u, ring + 4u);
 #if defined(CC_XBOX_DRIVER) && !defined(CC_SPRITE_RING_BUILD)
-  ::cc_xr_set_material(material);
   ::cc_xr_quad(q, REX_LOAD_U32(REX_LOAD_U32(rnd + 4u) + 10552u));  // device blend word
 #else
   const uint32_t verts = 0x822673D8u + ring * 24u;
