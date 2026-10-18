@@ -5,9 +5,10 @@
 // holds the drawing job; the texture tool (Payload\texbake\ccx-texbake.exe,
 // the port's PC build in its CC_TEX_REPLAY mode) runs only the game's
 // rasterizer over those jobs. The list is split over several hidden tool
-// processes; their packs are merged into one "TXB1" pack whose index is
-// sorted by key (the console's binary search) and whose pixels are laid out
-// in list order (the order the console first reads them).
+// processes; their packs are merged into one compressed "TXB2" pack
+// (TexPack.cs) whose index is sorted by key (the console's binary search) and
+// whose textures are laid out in list order (the order the console first
+// reads them).
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
@@ -147,19 +148,7 @@ public static partial class Textures
         var missing = order.Count(o => !pixels.ContainsKey((o.Key0, o.Full)));
         if (missing != 0) throw new InvalidDataException($"{missing} textures are missing after the texture tool ran.");
         var keys = order.Select(o => (o.Key0, o.Full)).Distinct().ToList();
-        uint offset = (uint)(8 + 24 * keys.Count);
-        var offsets = new Dictionary<(uint, uint), uint>();
-        foreach (var k in keys) { offsets[k] = offset; var e = pixels[k]; offset += e.w * e.h; }
-        var index = keys.OrderBy(k => k.Item1).ToList();
-        using var outFile = new FileStream(outPack, FileMode.Create);
-        using var bw = new BinaryWriter(outFile);
-        bw.Write(0x31425854u);
-        bw.Write((uint)keys.Count);
-        foreach (var k in index)
-        {
-            var e = pixels[k];
-            bw.Write(k.Item1); bw.Write(k.Item2); bw.Write(e.len); bw.Write(e.w); bw.Write(e.h); bw.Write(offsets[k]);
-        }
+        var stored = new List<TexPack.Entry>(keys.Count);
         var open = new Dictionary<string, FileStream>();
         try
         {
@@ -170,12 +159,17 @@ public static partial class Textures
                 var buf = new byte[e.w * e.h];
                 src.Position = e.offset;
                 src.ReadExactly(buf);
-                bw.Write(buf);
+                var packed = TexPack.Encode(buf);
+                var check = new byte[buf.Length];
+                if (!TexPack.Decode(packed, check) || !buf.AsSpan().SequenceEqual(check))
+                    throw new InvalidDataException("Texture compression check failed.");
+                stored.Add(new TexPack.Entry(k.Item1, k.Item2, e.len, e.w, e.h, packed));
             }
         }
         finally
         {
             foreach (var s in open.Values) s.Dispose();
         }
+        TexPack.Write(outPack, stored);
     }
 }

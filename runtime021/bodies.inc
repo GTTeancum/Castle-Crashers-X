@@ -3075,6 +3075,7 @@ static void cc_menu_text_patch(Machine& base) {
 // guest functions it ran (CC_SPIKE_REPORT, bridge.cpp; as_native.inc).
 #ifdef CC_SPIKE_REPORT
 static void cc_as_spike_report(Machine& base, uint32_t update_us);
+static void cc_tex_burst_report();
 #endif
 static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   cc_thread_block_point();  // a started system thread sleeping = blocked
@@ -3146,6 +3147,7 @@ static void __imp__KeDelayExecutionThread(Context& ctx, Machine& base) {
   g_fs_us[5] += g_frame_update_us; g_fs_us[6] += g_frame_render_us;
 #ifdef CC_SPIKE_REPORT
   cc_as_spike_report(base, g_frame_update_us);
+  cc_tex_burst_report();
 #endif
   {
     const uint64_t t = ::cc_xbox_clock(1000000u);
@@ -8934,9 +8936,22 @@ static void cc_xr_on_bind([[maybe_unused]] Machine& base, [[maybe_unused]] const
 // Keys: key0 over the job inputs and the first 64 shape bytes (lookup),
 // full over the job inputs and all `len` shape bytes the rasterizer read
 // (confirmation). A texture not in the pack is rasterized as before.
-struct CcBakeEntry { uint32_t key0, full, len, w, h, offset; };
+// A "TXB2" pack (the installer's, TexPack.cs) stores each texture
+// compressed in csize bytes (cc_bake_decode); a "TXB1" pack stores the raw
+// pixels (csize = w * h).
+struct CcBakeEntry { uint32_t key0, full, len, w, h, offset, csize; };
 static std::vector<CcBakeEntry> g_bake_index;   // sorted by key0
-static bool g_bake_loaded = false, g_bake_ready = false;
+static bool g_bake_loaded = false, g_bake_ready = false, g_bake_packed = false;
+// The pack's open result goes to the debug channel on the Xbox (cc_log is
+// silent in the play build): without the pack every texture is rasterized
+// on first use, which shows as a slowdown, not as an error.
+#ifdef CC_XBOX_DRIVER
+#define CC_BAKE_NOTE DbgPrint
+#define CC_BAKE_FAIL DbgPrint
+#else
+#define CC_BAKE_NOTE cc_log
+#define CC_BAKE_FAIL cc_elog
+#endif
 #ifdef CC_XBOX_DRIVER
 // The Xbox reads the pack with NtReadFile at each entry's offset, straight
 // into the texture's cache block or the read-ahead buffer (nxdk's fread
@@ -8960,6 +8975,50 @@ static bool cc_bake_pixels(uint8_t* q, uint32_t offset, uint32_t bytes) {
   return std::fseek(g_bake_file, long(offset), SEEK_SET) == 0 && std::fread(q, 1, bytes, g_bake_file) == bytes;
 #endif
 }
+// A TXB2 texture: runs of DXT5 block kinds (token kind << 5 | run - 1, run
+// 1..32 blocks, then each block's payload; kinds: 0 the previous block, 1
+// zero, 2 opaque alpha FF FF 00.. + 8 colour bytes, 3 the previous alpha + 8
+// colour bytes, 4 8 alpha bytes + the previous colour, 5 16 literal bytes;
+// the block before the first is zero). One pass writing each 16-byte block
+// once, in order: q is write-combined graphics memory and is never read.
+// False unless the n bytes at src make exactly `bytes`.
+static bool cc_bake_decode(const uint8_t* src, uint32_t n, uint8_t* q, uint32_t bytes) {
+  if (bytes % 16u) return false;
+  uint32_t a0 = 0, a1 = 0, c0 = 0, c1 = 0;  // the previous block
+  const uint8_t* s = src;
+  const uint8_t* const end = src + n;
+  uint32_t* d = reinterpret_cast<uint32_t*>(q);
+  uint32_t left = bytes / 16u;
+  auto rd = [](const uint8_t* p) { uint32_t v; __builtin_memcpy(&v, p, 4); return v; };
+  while (left) {
+    if (s >= end) return false;
+    const uint32_t t = *s++, kind = t >> 5;
+    uint32_t run = (t & 31u) + 1u;
+    if (run > left) return false;
+    left -= run;
+    const uint32_t pay = kind == 5u ? 16u : (kind >= 2u ? 8u : 0u);
+    if (uint32_t(end - s) < pay * run) return false;
+    for (; run; --run, d += 4) {
+      switch (kind) {
+        case 0: break;
+        case 1: a0 = a1 = c0 = c1 = 0; break;
+        case 2: a0 = 0x0000FFFFu; a1 = 0; c0 = rd(s); c1 = rd(s + 4); s += 8; break;
+        case 3: c0 = rd(s); c1 = rd(s + 4); s += 8; break;
+        case 4: a0 = rd(s); a1 = rd(s + 4); s += 8; break;
+        case 5: a0 = rd(s); a1 = rd(s + 4); c0 = rd(s + 8); c1 = rd(s + 12); s += 16; break;
+        default: return false;
+      }
+      d[0] = a0; d[1] = a1; d[2] = c0; d[3] = c1;
+    }
+  }
+  return s == end;
+}
+// A pack entry that does not decode: reported, and the texture is then
+// rasterized on the console (TEXBAKE miss).
+static bool cc_bake_bad(size_t i) {
+  CC_BAKE_FAIL("FAIL texbake: entry %u does not decode (damaged pack)%c", unsigned(i), 10);
+  return false;
+}
 // Read-ahead. On the console a pack read in key order is a disk seek each
 // (36 reads of 1.5 MB took one 370 ms frame when new enemies appeared).
 // With the pack laid out in first-use order (tools/texbake_order.py) the
@@ -8971,10 +9030,24 @@ static bool cc_bake_pixels(uint8_t* q, uint32_t offset, uint32_t bytes) {
 // gains nothing from reading ahead); re-reads of evicted textures go
 // straight to their cache block. Bytes are the pack's either way. Size:
 // host CC_BAKE_READAHEAD_KB=<KiB> (0: off), Xbox make BAKERA=<KiB> (0: off);
-// default 512 KiB (MEM shows ~7.5 MB free in a 4P fight). Larger buffers
-// mean fewer disk reads but more bytes read during the frame that misses.
+// default 512 KiB for a raw pack. Larger buffers mean fewer disk reads but
+// more bytes read during the frame that misses. A TXB2 pack reads ahead
+// compressed bytes: 128 KiB (at least its largest entry) holds about as
+// many textures as 768 KiB of raw pixels.
+//
+// TXB2 packs also keep compressed copies of the textures read lately in a
+// ring (512 KiB, host CC_BAKE_RAM_KB=<KiB>, oldest dropped first): a
+// texture evicted from the cache zone and drawn again is decoded from its
+// copy instead of read back from the disk (each such read is a seek, 5-14
+// ms; a group of new enemies needs ~30 at once).
 #ifndef CC_BAKE_READAHEAD_KB
 #define CC_BAKE_READAHEAD_KB 512
+#endif
+#ifndef CC_BAKE_PACKED_READAHEAD_KB
+#define CC_BAKE_PACKED_READAHEAD_KB 128
+#endif
+#ifndef CC_BAKE_RAM_KB
+#define CC_BAKE_RAM_KB 512
 #endif
 constexpr uint32_t kBakeNone = 0xFFFFFFFFu;
 static std::vector<uint32_t> g_bake_next;  // entry -> the entry stored after it
@@ -8985,6 +9058,45 @@ static uint32_t g_bake_disk_end = kBakeNone;  // pack offset where the last disk
 static bool g_bake_filled = false;
 static uint32_t g_bake_disk_reads = 0, g_bake_disk_seeks = 0, g_bake_from_buf = 0;
 static uint64_t g_bake_disk_bytes = 0;
+// RAM copies (TXB2): the ring, its records in insertion order (oldest at
+// g_bake_ram_qh) and each entry's copy position + 1 (0: none).
+struct CcBakeRamRec { uint32_t entry, pos, size; };
+static uint8_t* g_bake_ram = nullptr;
+static uint32_t g_bake_ram_size = 0, g_bake_ram_head = 0, g_bake_ram_qh = 0, g_bake_ram_qn = 0, g_bake_ram_hits = 0;
+static std::vector<CcBakeRamRec> g_bake_ram_q;
+static std::vector<uint32_t> g_bake_ram_at;
+static void cc_bake_ram_pop() {
+  const CcBakeRamRec& r = g_bake_ram_q[g_bake_ram_qh];
+  if (g_bake_ram_at[r.entry] == r.pos + 1u) g_bake_ram_at[r.entry] = 0;
+  g_bake_ram_qh = (g_bake_ram_qh + 1u) % uint32_t(g_bake_ram_q.size());
+  --g_bake_ram_qn;
+}
+static void cc_bake_ram_forget(uint32_t entry) {
+  if (!g_bake_ram_at.empty()) g_bake_ram_at[entry] = 0;
+}
+// Room for entry's n compressed bytes at the ring's head, dropping the
+// oldest copies it overlaps; nullptr without a ring or for an entry over a
+// quarter of it. The records past the head are the oldest (the head sweeps
+// forward), so a wrap first drops those after it.
+static uint8_t* cc_bake_ram_alloc(uint32_t entry, uint32_t n) {
+  if (!g_bake_ram || n == 0 || n > g_bake_ram_size / 4u) return nullptr;
+  if (g_bake_ram_head + n > g_bake_ram_size) {
+    while (g_bake_ram_qn && g_bake_ram_q[g_bake_ram_qh].pos >= g_bake_ram_head) cc_bake_ram_pop();
+    g_bake_ram_head = 0;
+  }
+  while (g_bake_ram_qn) {
+    const CcBakeRamRec& r = g_bake_ram_q[g_bake_ram_qh];
+    if (r.pos >= g_bake_ram_head + n || r.pos + r.size <= g_bake_ram_head) break;
+    cc_bake_ram_pop();
+  }
+  if (g_bake_ram_qn == g_bake_ram_q.size()) cc_bake_ram_pop();
+  const uint32_t pos = g_bake_ram_head;
+  g_bake_ram_q[(g_bake_ram_qh + g_bake_ram_qn) % uint32_t(g_bake_ram_q.size())] = {entry, pos, n};
+  ++g_bake_ram_qn;
+  g_bake_ram_at[entry] = pos + 1u;
+  g_bake_ram_head = pos + n;
+  return g_bake_ram + pos;
+}
 // One disk read of the pack, counted (reads, seeks: reads not starting where
 // the previous one ended, bytes; on the Xbox also its time for FRAME).
 static bool cc_bake_disk(uint8_t* q, uint32_t offset, uint32_t bytes) {
@@ -9012,9 +9124,70 @@ static void cc_bake_oracle([[maybe_unused]] size_t i, [[maybe_unused]] const uin
   static const bool oracle = std::getenv("CC_ORACLE") != nullptr;
   if (!oracle) return;
   std::vector<uint8_t> direct(bytes);
-  if (!cc_bake_pixels(direct.data(), g_bake_index[i].offset, bytes) || std::memcmp(direct.data(), q, bytes) != 0)
+  bool ok;
+  if (g_bake_packed) {
+    std::vector<uint8_t> z(g_bake_index[i].csize);
+    ok = cc_bake_pixels(z.data(), g_bake_index[i].offset, uint32_t(z.size())) &&
+         cc_bake_decode(z.data(), uint32_t(z.size()), direct.data(), bytes);
+  } else {
+    ok = cc_bake_pixels(direct.data(), g_bake_index[i].offset, bytes);
+  }
+  if (!ok || std::memcmp(direct.data(), q, bytes) != 0)
     cc_oracle_mismatch("cc_bake_fetch", int(i), cc_hash_bytes(direct.data(), bytes), cc_hash_bytes(q, bytes));
 #endif
+}
+// TXB2: entry i's compressed bytes come from its RAM copy, the read-ahead
+// buffer (filled as for a raw pack, in compressed bytes) or the disk (into
+// a new RAM copy, or the read-ahead buffer without one), and are decoded
+// into q.
+static bool cc_bake_fetch_packed(size_t i, uint8_t* q, uint32_t bytes, bool first, bool& buffered) {
+  const uint32_t o = g_bake_index[i].offset, n = g_bake_index[i].csize;
+  if (const uint32_t at = g_bake_ram_at[i]) {
+    ++g_bake_ram_hits;
+    buffered = true;
+    if (!cc_bake_decode(g_bake_ram + (at - 1u), n, q, bytes)) return cc_bake_bad(i);
+    cc_bake_oracle(i, q, bytes);
+    return true;
+  }
+  const uint8_t* src = nullptr;
+  if (g_bake_buf && o >= g_bake_buf_lo && o <= g_bake_buf_hi && g_bake_buf_hi - o >= n) {
+    src = g_bake_buf + (o - g_bake_buf_lo);
+    ++g_bake_buf_hits; ++g_bake_from_buf;
+    buffered = true;
+  } else if (g_bake_buf && first && n <= g_bake_buf_size &&
+             (!g_bake_filled || g_bake_buf_hits || o == g_bake_disk_end)) {
+    uint32_t end = o + n;
+    for (uint32_t k = g_bake_next[i]; k != kBakeNone; k = g_bake_next[k]) {
+      const CcBakeEntry& e = g_bake_index[k];
+      const uint32_t ne = e.offset + e.csize;
+      if (ne - o > g_bake_buf_size) break;
+      if (ne > end) end = ne;
+    }
+    g_bake_filled = true;
+    g_bake_buf_hits = 0;
+    g_bake_buf_lo = g_bake_buf_hi = 0;
+    if (cc_bake_disk(g_bake_buf, o, end - o)) {
+      g_bake_buf_lo = o;
+      g_bake_buf_hi = end;
+      src = g_bake_buf;
+    }
+  }
+  if (src) {
+    if (uint8_t* r = cc_bake_ram_alloc(uint32_t(i), n)) std::memcpy(r, src, n);
+    if (!cc_bake_decode(src, n, q, bytes)) { cc_bake_ram_forget(uint32_t(i)); return cc_bake_bad(i); }
+    cc_bake_oracle(i, q, bytes);
+    return true;
+  }
+  uint8_t* dst = cc_bake_ram_alloc(uint32_t(i), n);
+  if (!dst) {
+    if (!g_bake_buf || n > g_bake_buf_size) return false;
+    g_bake_buf_lo = g_bake_buf_hi = 0;  // its read-ahead is overwritten
+    dst = g_bake_buf;
+  }
+  if (!cc_bake_disk(dst, o, n)) { cc_bake_ram_forget(uint32_t(i)); return false; }
+  if (!cc_bake_decode(dst, n, q, bytes)) { cc_bake_ram_forget(uint32_t(i)); return cc_bake_bad(i); }
+  cc_bake_oracle(i, q, bytes);
+  return true;
 }
 // Copy pack entry i's pixels (bytes) to q: from the read-ahead buffer, by
 // filling it, or straight from the disk. first: the entry's first read;
@@ -9024,6 +9197,7 @@ static bool cc_bake_fetch(size_t i, uint8_t* q, uint32_t bytes, bool& first, boo
   first = !g_bake_seen[i];
   g_bake_seen[i] = 1;
   buffered = false;
+  if (g_bake_packed) return cc_bake_fetch_packed(i, q, bytes, first, buffered);
   if (g_bake_buf && o >= g_bake_buf_lo && o <= g_bake_buf_hi && g_bake_buf_hi - o >= bytes) {
     std::memcpy(q, g_bake_buf + (o - g_bake_buf_lo), bytes);
     ++g_bake_buf_hits; ++g_bake_from_buf;
@@ -9070,9 +9244,9 @@ static void cc_bake_note_read(size_t i, bool first, bool buffered) {
 static struct CcBakeTotals {
   ~CcBakeTotals() {
     if (!g_bake_ready) return;
-    cc_log("TEXBAKE totals reads=%u from_buffer=%u disk_reads=%u seeks=%u disk_kb=%llu readahead=%uK%c",
-           g_bake_hits, g_bake_from_buf, g_bake_disk_reads, g_bake_disk_seeks,
-           (unsigned long long)(g_bake_disk_bytes >> 10), unsigned(g_bake_buf_size >> 10), 10);
+    cc_log("TEXBAKE totals reads=%u from_buffer=%u from_ram=%u disk_reads=%u seeks=%u disk_kb=%llu readahead=%uK ram=%uK%c",
+           g_bake_hits, g_bake_from_buf, g_bake_ram_hits, g_bake_disk_reads, g_bake_disk_seeks,
+           (unsigned long long)(g_bake_disk_bytes >> 10), unsigned(g_bake_buf_size >> 10), unsigned(g_bake_ram_size >> 10), 10);
   }
 } g_bake_totals;
 #endif
@@ -9090,16 +9264,6 @@ static uint32_t cc_bake_fields(const uint8_t* job) {
 static uint32_t cc_bake_stream_ptr(const uint8_t* job) {
   return uint32_t(job[20]) << 24 | uint32_t(job[21]) << 16 | uint32_t(job[22]) << 8 | job[23];
 }
-// The pack's open result goes to the debug channel on the Xbox (cc_log is
-// silent in the play build): without the pack every texture is rasterized
-// on first use, which shows as a slowdown, not as an error.
-#ifdef CC_XBOX_DRIVER
-#define CC_BAKE_NOTE DbgPrint
-#define CC_BAKE_FAIL DbgPrint
-#else
-#define CC_BAKE_NOTE cc_log
-#define CC_BAKE_FAIL cc_elog
-#endif
 static void cc_bake_load() {
   if (g_bake_loaded) return;
   g_bake_loaded = true;
@@ -9117,17 +9281,31 @@ static void cc_bake_load() {
     return;
   }
   uint8_t head[8];
-  if (std::fread(head, 1, 8, f) != 8 || std::memcmp(head, "TXB1", 4)) {
+  if (std::fread(head, 1, 8, f) != 8 || (std::memcmp(head, "TXB1", 4) && std::memcmp(head, "TXB2", 4))) {
     CC_BAKE_FAIL("TEXBAKE pack %s: not a texture pack; textures are rasterized on first use%c", path, 10);
     std::fclose(f);
     return;
   }
+  g_bake_packed = std::memcmp(head, "TXB2", 4) == 0;
   const uint32_t count = uint32_t(head[4]) | uint32_t(head[5]) << 8 | uint32_t(head[6]) << 16 | uint32_t(head[7]) << 24;
-  g_bake_index.resize(count);
-  if (std::fread(g_bake_index.data(), sizeof(CcBakeEntry), count, f) != count) {
-    CC_BAKE_FAIL("TEXBAKE pack %s: index of %u entries cut short; textures are rasterized on first use%c", path,
-                 count, 10);
-    g_bake_index.clear(); std::fclose(f); return;
+  const uint32_t rec = g_bake_packed ? 28u : 24u;  // index entry bytes
+  uint32_t max_csize = 0;
+  {
+    std::vector<uint8_t> raw(size_t(count) * rec);
+    if (std::fread(raw.data(), 1, raw.size(), f) != raw.size()) {
+      CC_BAKE_FAIL("TEXBAKE pack %s: index of %u entries cut short; textures are rasterized on first use%c", path,
+                   count, 10);
+      std::fclose(f); return;
+    }
+    g_bake_index.resize(count);
+    for (uint32_t i = 0; i < count; ++i) {
+      const uint8_t* r = raw.data() + size_t(i) * rec;
+      auto rd = [r](uint32_t k) { return uint32_t(r[k]) | uint32_t(r[k + 1]) << 8 | uint32_t(r[k + 2]) << 16 | uint32_t(r[k + 3]) << 24; };
+      CcBakeEntry& e = g_bake_index[i];
+      e.key0 = rd(0); e.full = rd(4); e.len = rd(8); e.w = rd(12); e.h = rd(16); e.offset = rd(20);
+      e.csize = g_bake_packed ? rd(24) : e.w * e.h;
+      if (e.csize > max_csize) max_csize = e.csize;
+    }
   }
 #ifdef CC_XBOX_DRIVER
   std::fclose(f);
@@ -9154,27 +9332,39 @@ static void cc_bake_load() {
     g_bake_seen.assign(count, 0);
   }
 #ifdef CC_XBOX_DRIVER
-  const uint32_t ra_kb = CC_BAKE_READAHEAD_KB;
-  if (ra_kb) {
-    PVOID b = nullptr;
-    SIZE_T s = SIZE_T(ra_kb) << 10;
-    if (NT_SUCCESS(NtAllocateVirtualMemory(&b, 0, &s, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE))) {
-      g_bake_buf = static_cast<uint8_t*>(b);
-      g_bake_buf_size = ra_kb << 10;
-    }
-  }
+  uint32_t ra_kb = g_bake_packed ? uint32_t(CC_BAKE_PACKED_READAHEAD_KB) : uint32_t(CC_BAKE_READAHEAD_KB);
+  const uint32_t ram_kb = g_bake_packed ? uint32_t(CC_BAKE_RAM_KB) : 0u;
 #else
   const char* ra_env = std::getenv("CC_BAKE_READAHEAD_KB");
-  const uint32_t ra_kb = ra_env ? uint32_t(std::strtoul(ra_env, nullptr, 10)) : uint32_t(CC_BAKE_READAHEAD_KB);
-  if (ra_kb) {
-    static std::vector<uint8_t> storage;
-    storage.assign(size_t(ra_kb) << 10, 0);
-    g_bake_buf = storage.data();
-    g_bake_buf_size = ra_kb << 10;
-  }
+  uint32_t ra_kb = ra_env ? uint32_t(std::strtoul(ra_env, nullptr, 10))
+                          : (g_bake_packed ? uint32_t(CC_BAKE_PACKED_READAHEAD_KB) : uint32_t(CC_BAKE_READAHEAD_KB));
+  const char* ram_env = std::getenv("CC_BAKE_RAM_KB");
+  const uint32_t ram_kb = !g_bake_packed ? 0u : ram_env ? uint32_t(std::strtoul(ram_env, nullptr, 10)) : uint32_t(CC_BAKE_RAM_KB);
 #endif
-  CC_BAKE_NOTE("TEXBAKE pack %s: %u textures, read-ahead %uK%s%c", path, count, unsigned(g_bake_buf_size >> 10),
-               ra_kb && !g_bake_buf ? " (allocation failed: off)" : "", 10);
+  // A TXB2 read-ahead holds at least the largest entry (an entry is read
+  // through it when it has no RAM copy).
+  if (ra_kb && g_bake_packed && (ra_kb << 10) < max_csize) ra_kb = (max_csize + 1023u) >> 10;
+  auto alloc = [](uint32_t kb) -> uint8_t* {
+    if (!kb) return nullptr;
+#ifdef CC_XBOX_DRIVER
+    PVOID b = nullptr;
+    SIZE_T s = SIZE_T(kb) << 10;
+    if (!NT_SUCCESS(NtAllocateVirtualMemory(&b, 0, &s, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE))) return nullptr;
+    return static_cast<uint8_t*>(b);
+#else
+    return static_cast<uint8_t*>(std::calloc(size_t(kb) << 10, 1));
+#endif
+  };
+  if ((g_bake_buf = alloc(ra_kb)) != nullptr) g_bake_buf_size = ra_kb << 10;
+  if ((g_bake_ram = alloc(ram_kb)) != nullptr) {
+    g_bake_ram_size = ram_kb << 10;
+    g_bake_ram_q.assign(4096u, CcBakeRamRec{});
+  }
+  g_bake_ram_at.assign(g_bake_packed ? count : 0u, 0u);
+  CC_BAKE_NOTE("TEXBAKE pack %s: %u textures%s, read-ahead %uK%s, RAM copies %uK%s%c", path, count,
+               g_bake_packed ? " (compressed)" : "", unsigned(g_bake_buf_size >> 10),
+               ra_kb && !g_bake_buf ? " (allocation failed: off)" : "", unsigned(g_bake_ram_size >> 10),
+               ram_kb && !g_bake_ram ? " (allocation failed: off)" : "", 10);
 }
 // Look the job up in the pack (the shape stream must be resident, so this
 // is done when the texture is registered): the entry index, or -1.
@@ -9197,17 +9387,44 @@ static int32_t cc_bake_find(Machine& base, const uint8_t* job, uint32_t w, uint3
   }
   return -1;
 }
+#ifdef CC_SPIKE_REPORT
+// Texture bursts (test builds): this frame's pack reads (entry, file offset,
+// bytes, first read / from the read-ahead buffer, microseconds), printed as
+// TEXBURST lines for a frame with 8 or more (cc_tex_burst_report).
+struct CcBurstRead { uint32_t entry, offset, bytes, us; uint8_t first, buffered; };
+static CcBurstRead g_burst[64];
+static uint32_t g_burst_n = 0;
+static void cc_tex_burst_report() {
+  if (g_burst_n >= 8u) {
+    for (uint32_t i = 0; i < g_burst_n && i < 64u; ++i) {
+      const CcBurstRead& b = g_burst[i];
+      ::DbgPrint("TEXBURST n=%u entry=%u off=%u bytes=%u first=%u buf=%u us=%u\n", unsigned(g_burst_n), unsigned(b.entry),
+                 unsigned(b.offset), unsigned(b.bytes), unsigned(b.first), unsigned(b.buffered), unsigned(b.us));
+    }
+  }
+  g_burst_n = 0;
+}
+#endif
 // Read a pack entry's DXT5 pixels into a new cache block (0 on failure).
 static uint32_t cc_bake_read(Machine& base, int32_t entry, uint32_t w, uint32_t h, uint32_t keep) {
   if (entry < 0 || size_t(entry) >= g_bake_index.size() || !g_bake_ready) { ++g_bake_misses; return 0; }
   const uint32_t cache = cc_texzone_alloc(base, w * h, keep);
   uint8_t* q = base.memory.contiguous(cache, size_t(w) * h, 3);
   bool first = false, buffered = false;
+#ifdef CC_SPIKE_REPORT
+  const unsigned long long burst_t0 = cc_monotonic_ns();
+#endif
   if (!q || !cc_bake_fetch(size_t(entry), q, w * h, first, buffered)) {
     cc_texzone_free(cache);
     ++g_bake_misses;
     return 0;
   }
+#ifdef CC_SPIKE_REPORT
+  if (g_burst_n < 64u)
+    g_burst[g_burst_n] = {uint32_t(entry), g_bake_index[size_t(entry)].offset, w * h,
+                          uint32_t((cc_monotonic_ns() - burst_t0) / 1000u), uint8_t(first), uint8_t(buffered)};
+  ++g_burst_n;
+#endif
 #ifndef CC_XBOX_DRIVER
   cc_bake_note_read(size_t(entry), first, buffered);
 #endif

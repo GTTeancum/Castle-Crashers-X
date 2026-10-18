@@ -17,6 +17,13 @@ if (what == "patchxbe") {
   Console.WriteLine($"patched {args[2]}");
   return;
 }
+if (what == "packz") {
+  // packz <TXB1 texbake.pak> <out TXB2 pack>: an existing pack rewritten
+  // compressed (TexPack.cs), every texture checked by decoding it again.
+  var (raw, packed) = TexPack.Compress(args[1], args[2]);
+  Console.WriteLine($"packz: {raw >> 20} MiB of pixels -> {packed >> 20} MiB ({(double)raw / packed:F2}x), {sw.Elapsed.TotalSeconds:F1}s");
+  return;
+}
 if (what == "install") {
   var outDir = args[1];
   var last = "";
