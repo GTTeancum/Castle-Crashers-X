@@ -1,2 +1,0 @@
-struct Input {float4 col:COLOR;float2 uv:TEXCOORD0;};
-float4 main(Input i,uniform sampler2D atlas):COLOR {return tex2D(atlas,i.uv)*i.col;}

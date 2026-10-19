@@ -1,4 +1,0 @@
-../port009/mode.cpp:7:?query_license@mode009@cc@@YAIAAVAddressSpace@xbox@2@II@Z	8	static
-../port009/mode.cpp:74:?query_full_game@mode009@cc@@YA?AUResult@12@AAUContext@quad@2@AAVAddressSpace@xbox@2@@Z	44	static
-../port009/mode.cpp:84:?self_test@mode009@cc@@YA?AUSelfTest@12@XZ	2188	static
-../port009/generated/sub_820A0F88.inc:1:?sub_820A0F88@?A0x61AA176C@mode009@cc@@YAXAAUContext@quad@2@AAUMachine@?A0x61AA176C@12@@Z	36	static
