@@ -1,5 +1,0 @@
-../renderer011/live_frame.cpp:155:?frame@widget011@cc@@YA?AUResult@12@ABUFixtures@tree@2@AAUWorkspace@52@AAVScene@stream@2@AAUResident@12@_NPAUVertex@replay@2@I@Z	6636	static
-../renderer011/live_frame.cpp:133:?bind_texture@widget011@cc@@YA_NPAXIQBI@Z	16	static
-../renderer011/live_frame.cpp:46:?submit@widget011@cc@@YA_NPAXABUDraw@quad@2@@Z	700	static
-../renderer011/live_frame.cpp:212:?__invoke@<lambda_0>@?0??frame@widget011@cc@@YA?AUResult@34@ABUFixtures@tree@4@AAUWorkspace@74@AAVScene@stream@4@AAUResident@34@_NPAUVertex@replay@4@I@Z@CA?A?<auto>@@PAXIPBI@Z	0	static
-../renderer011/live_frame.cpp:213:?__invoke@<lambda_1>@?0??frame@widget011@cc@@YA?AUResult@34@ABUFixtures@tree@4@AAUWorkspace@74@AAVScene@stream@4@AAUResident@34@_NPAUVertex@replay@4@I@Z@CA?A?<auto>@@PAXABUDraw@quad@4@@Z	0	static

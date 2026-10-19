@@ -85,3 +85,10 @@ game-data/installer-check/
 game-data/installer-out/
 game-data/texrecipes/
 game-data/packz/
+
+# Working area: run logs, console screenshots, test builds and scratch tools
+# (files already tracked here stay tracked)
+/logs/
+
+# Game content archives (DLC package)
+*.rar
