@@ -36,6 +36,9 @@ static CC_HOT_FN bool cc_as_exact_fn(const char* name) {
 #define CC_AS_SWITCH(name) do { \
     static const bool cc_as_ex = cc_as_exact_fn(#name); \
     if (cc_as_ex) { name##_exact(ctx, base); return; } } while (0)
+#elif defined(CC_AS_EXACT_BUILD)
+// Xbox bisect build (make ASEXACT=1): every recompiled body in this file.
+#define CC_AS_SWITCH(name) do { name##_exact(ctx, base); return; } while (0)
 #else
 #define CC_AS_SWITCH(name) static_cast<void>(&name##_exact)
 #endif
@@ -349,6 +352,8 @@ static CC_HOT_FN void cc_as_init_switches(Machine& base) {
     std::snprintf(hex, sizeof(hex), "%02X", op);
     if (all || (l && std::strstr(l, hex) != nullptr)) g_as_fn[op] = nullptr;
   }
+#elif defined(CC_AS_EXACT_BUILD)
+  for (unsigned op = 0; op < 256u; ++op) g_as_fn[op] = nullptr;  // every opcode through its guest handler
 #endif
 }
 static CC_AS_INL bool cc_as_no_handler_entry(Machine& base, uint32_t op) {

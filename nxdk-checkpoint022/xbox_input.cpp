@@ -108,8 +108,13 @@ void cc_xbox_audio_stop();
 [[noreturn]] void cc_xbox_return_to_dashboard();
 namespace {
 bool g_igr_held[4] = {true, true, true, true};
+bool g_triggers_held = false;
 void igr_check() {
+  g_triggers_held = false;
   for (int s = 0; s < 4; ++s) {
+    if (g_pad[s] && SDL_GameControllerGetAxis(g_pad[s], SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 20000 &&
+        SDL_GameControllerGetAxis(g_pad[s], SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 20000)
+      g_triggers_held = true;
     SDL_Joystick* joy = g_pad[s] ? SDL_GameControllerGetJoystick(g_pad[s]) : nullptr;
     const bool all = joy && SDL_JoystickGetAxis(joy, 2) > 16384 && SDL_JoystickGetAxis(joy, 5) > 16384 &&
                      SDL_JoystickGetButton(joy, 6) && SDL_JoystickGetButton(joy, 5);
@@ -122,6 +127,8 @@ void igr_check() {
   }
 }
 }  // namespace
+// Both triggers held on some pad at the last input read (draw dump trigger).
+bool cc_xbox_triggers_held() { return g_triggers_held; }
 // The failure screen's loop: pads refreshed and the reset combination
 // checked (the game no longer reads input there).
 void cc_xbox_igr_poll() {

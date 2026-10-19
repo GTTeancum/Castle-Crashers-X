@@ -17,6 +17,7 @@
 #include <xboxkrnl/xboxkrnl.h>
 #include <cstdint>
 #include <cstring>
+#include <cstdio>
 #include <vector>
 
 void cc_xbox_audio_stats(unsigned* started, unsigned* submitted, unsigned* callbacks,
@@ -211,6 +212,10 @@ static bool gpu_strict_idle() {
 // while queued work remained (WEAKIDLE builds), gpb = frames that began with
 // the previous frame's draws still queued.
 unsigned g_gpu_premature = 0, g_gpu_busy_at_begin = 0;
+// Frames whose drawing began in the buffer the screen was showing
+// (PCRTC_START, 0xFD600800): drawn while scanned out, partly drawn pictures
+// reach the TV (ONSCR line).
+unsigned g_draw_on_screen = 0;
 // Idle epoch: bumped each time the GPU has been seen fully idle, so
 // everything queued before that point is drawn. A texture last bound at
 // epoch E is no longer sampled once the epoch has moved past E (runtime021's
@@ -240,6 +245,10 @@ uint64_t g_frame_begin_wait_us = 0, g_frame_tex_wait_us = 0;
 unsigned g_frame_tex_waits = 0, g_tex_waits = 0;
 uint64_t g_tex_wait_us = 0;
 
+#ifdef CC_WRAP_TEST
+void pb_fill_quad(int x, int y, int w, int h, DWORD color);
+void flush_overlay();
+#endif
 void begin_frame() {
   g_ps = PushedState();
   g_mask_id = 0;
@@ -253,6 +262,7 @@ void begin_frame() {
   gpu_wait_idle();
   g_frame_begin_wait_us += now_us() - w0;
   pb_target_back_buffer();
+  if ((reinterpret_cast<uintptr_t>(pb_back_buffer()) & 0x03FFFFFFu) == (nv_reg(0x600800) & 0x03FFFFFFu)) ++g_draw_on_screen;
   pb_erase_depth_stencil_buffer(0, 0, 640, 480);
   pb_fill(0, 0, 640, 480, 0xff000000);
   upload_shaders();
@@ -271,6 +281,17 @@ void begin_frame() {
   xr_end(p);
   g_vb_used = 0;
   g_in_frame = true;
+#ifdef CC_WRAP_TEST
+  // Off-screen quads first: does a quad wholly outside the 640x480 surface
+  // disturb the draws after it? (They themselves must not show.)
+  // Every other second (as the Quaff menu's scrolling tiles do), two extra
+  // quads ahead of the frame's sprites shift every later sprite 8 vertices.
+  if ((g_frames / 30u) & 1u) {
+    pb_fill_quad(800, 100, 200, 200, 0xFFFF0000);   // fully right of the surface
+    pb_fill_quad(886, -34, 170, 280, 0xFFFF0000);   // where the Quaff tiles sit
+    flush_overlay();
+  }
+#endif
 }
 
 // Xenos blend factor (0 zero, 1 one, 4/5 src colour, 6/7 src alpha, 8/9 dst
@@ -611,7 +632,167 @@ void cc_xr_bind(uint32_t key, const void* data, uint32_t w, uint32_t h, int kind
 // quad emitter's effect modes (stride 32), {x, y, z, u, v, u2, v2, argb}
 // whose second coordinate pair feeds the 360 effect shaders (not drawn
 // here).
+#ifdef CC_DRAW_DIAG
+// Draw diagnostics (make DRAWDIAG=1): per frame, draws per material (quads
+// through cc_xr_quad, others through cc_xr_draw) and every primitive whose
+// corners span over 600 px, with its first four corners, printed as DRAW
+// lines for frames that have a material other than 0/1/3/5/7/8/9/12/16 or a
+// big primitive (cc_draw_diag_frame).
+unsigned g_dd_mat[32], g_dd_big = 0;
+struct DdBig { uint32_t mat, path, count; float xy[8]; };
+DdBig g_dd_samples[6];
+void dd_note(uint32_t path, uint32_t count, const float* xy, unsigned n) {
+  ++g_dd_mat[g_material < 31u ? g_material : 31u];
+  float x0 = 1e30f, x1 = -1e30f, y0 = 1e30f, y1 = -1e30f;
+  for (unsigned i = 0; i < n; ++i) {
+    const float x = xy[2 * i], y = xy[2 * i + 1];
+    if (!(x == x) || !(y == y)) { x0 = -1e30f; x1 = 1e30f; break; }  // NaN: counts as big
+    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  if (x1 - x0 > 600.0f || y1 - y0 > 600.0f) {
+    if (g_dd_big < 6u) {
+      DdBig& b = g_dd_samples[g_dd_big];
+      b.mat = g_material; b.path = path; b.count = count;
+      for (unsigned i = 0; i < 8; ++i) b.xy[i] = i < 2 * n ? xy[i] : 0.0f;
+    }
+    ++g_dd_big;
+  }
+}
+void cc_draw_diag_frame() {
+  static unsigned frame = 0;
+  ++frame;
+  bool odd = g_dd_big != 0;
+  for (unsigned m = 0; m < 32; ++m)
+    if (g_dd_mat[m] && !(m == 0 || m == 1 || m == 3 || m == 5 || m == 7 || m == 8 || m == 9 || m == 12 || m == 16)) odd = true;
+  if (odd) {
+    DbgPrint("DRAW f=%u m0=%u m2=%u m6=%u m10=%u m11=%u m14=%u m15=%u other=%u big=%u\n", frame, g_dd_mat[0], g_dd_mat[2],
+             g_dd_mat[6], g_dd_mat[10], g_dd_mat[11], g_dd_mat[14], g_dd_mat[15],
+             g_dd_mat[1] + g_dd_mat[3] + g_dd_mat[5] + g_dd_mat[7] + g_dd_mat[8] + g_dd_mat[9] + g_dd_mat[12] + g_dd_mat[16],
+             g_dd_big);
+    for (unsigned i = 0; i < g_dd_big && i < 6u; ++i) {
+      const DdBig& b = g_dd_samples[i];
+      DbgPrint("DRAW big f=%u mat=%u path=%u n=%u (%d,%d) (%d,%d) (%d,%d) (%d,%d)\n", frame, b.mat, b.path, b.count,
+               int(b.xy[0]), int(b.xy[1]), int(b.xy[2]), int(b.xy[3]), int(b.xy[4]), int(b.xy[5]), int(b.xy[6]), int(b.xy[7]));
+    }
+  }
+  __builtin_memset(g_dd_mat, 0, sizeof(g_dd_mat));
+  g_dd_big = 0;
+}
+#endif
+#ifdef CC_DRAW_DUMP
+// Draw dump (make DRAWDUMP=1): holding LT+RT starts a dump of every draw of
+// the next 70 frames to D:\drawdump.txt, one line per draw: frame, index,
+// path (q = quad batch entry, d = cc_xr_draw), material, blend word, texture
+// key / size / gpu address, vertex count, bounding box of the positions and
+// the first vertex's uv and colour.
+bool cc_xbox_triggers_held();
+std::FILE* g_dump = nullptr;
+unsigned g_dump_frames = 0, g_dump_frame = 0, g_dump_index = 0;
+bool g_dump_was_held = false;
+// (nxdk's printf has no %f: positions are whole pixels, uv and colour in
+// thousandths.) hash: a sample of the texture's pixels (every 61st word).
+int dump_i(float f) { return f != f ? -999999 : f > 1e6f ? 999999 : f < -1e6f ? -999999 : int(f); }
+void dump_draw(char path, uint32_t blend, uint32_t n, const GpuVertex* v) {
+  if (!g_dump) return;
+  uint32_t hash = 2166136261u;
+  if (g_have_tex && g_cur.gpu) {
+    const uint32_t* w = static_cast<const uint32_t*>(g_cur.gpu);
+    const uint32_t words = g_cur.w * g_cur.h / 4u;  // DXT5: one byte per pixel
+    for (uint32_t i = 0; i < words; i += 61u) hash = (hash ^ w[i]) * 16777619u;
+  }
+  std::fprintf(g_dump, "%u %u %c m%u b%08x tex %08x %ux%u g%08x h%08x n%u", g_dump_frame, g_dump_index++, path,
+               unsigned(g_material), unsigned(blend), g_have_tex ? unsigned(g_cur.key) : 0u, g_have_tex ? unsigned(g_cur.w) : 0u,
+               g_have_tex ? unsigned(g_cur.h) : 0u, unsigned(reinterpret_cast<uintptr_t>(g_have_tex ? g_cur.gpu : nullptr)),
+               unsigned(hash), unsigned(n));
+  for (uint32_t i = 0; i < n && i < 4u; ++i)
+    std::fprintf(g_dump, " (%d,%d uv%d,%d)", dump_i(v[i].pos[0]), dump_i(v[i].pos[1]), dump_i(v[i].uv[0] * 1000.0f),
+                 dump_i(v[i].uv[1] * 1000.0f));
+  std::fprintf(g_dump, " a%d\n", dump_i(v[0].col[3] * 1000.0f));
+}
+// Armed by the runtime when the game opens a given file (quoff.pak):
+// the dump starts that many frames later.
+int g_dump_arm = -1;
+void cc_xr_dump_arm(int frames) { if (g_dump_arm < 0) g_dump_arm = frames; }
+void dump_frame_end() {
+  const bool held = cc_xbox_triggers_held();
+  const bool armed = g_dump_arm == 0;
+  if (g_dump_arm > 0) --g_dump_arm;
+  if (armed) g_dump_arm = -2;  // once
+  if (((held && !g_dump_was_held) || armed) && !g_dump) {
+    g_dump = std::fopen("D:\\drawdump.txt", "w");
+    g_dump_frames = 0;
+    DbgPrint("DRAWDUMP start %s\n", g_dump ? "D:\\drawdump.txt" : "(cannot open)");
+  } else if (g_dump && ++g_dump_frames >= 240u) {
+    std::fclose(g_dump);
+    g_dump = nullptr;
+    DbgPrint("DRAWDUMP done\n");
+  }
+  g_dump_was_held = held;
+  ++g_dump_frame;
+  g_dump_index = 0;
+}
+#endif
+#ifdef CC_REPLAY_QUAFF
+#include "replay_quaff.inl"
+bool g_replaying = false;
+void cc_xr_quad(const uint32_t* v, uint32_t blend);
+// Replays list A or B (alternating each second): per draw a plain 4x4 white
+// texture standing in for the recorded one (a texture change wherever the
+// recorded key changes, so batches split as in the game) and one colour per
+// draw index.
+void replay_quaff() {
+  const bool a = ((g_frames / 30u) & 1u) != 0u;
+  const ReplayDraw* d = a ? kReplayA : kReplayB;
+  const unsigned n = a ? sizeof(kReplayA) / sizeof(kReplayA[0]) : sizeof(kReplayB) / sizeof(kReplayB[0]);
+  g_replaying = true;
+  uint32_t last_key = 0;
+  for (unsigned i = 0; i < n; ++i) {
+    if (d[i].key != last_key) {
+      flush_batch();
+      // One DXT5 texture per recorded key, of the recorded size, filled
+      // with a solid colour of its own (as the game's textures, distinct
+      // addresses and formats, so the texture state changes as in the game).
+      static struct { uint32_t key; void* gpu; } tex[16];
+      static unsigned ntex = 0;
+      void* gpu = nullptr;
+      for (unsigned t = 0; t < ntex; ++t) if (tex[t].key == d[i].key) gpu = tex[t].gpu;
+      if (!gpu && ntex < 16u) {
+        gpu = MmAllocateContiguousMemoryEx(d[i].w * d[i].h, 0, kMaxGpuAddress, 4096, PAGE_READWRITE | PAGE_WRITECOMBINE);
+        static const uint16_t kRgb565[8] = {0xF800u, 0x07E0u, 0x001Fu, 0xFFE0u, 0xF81Fu, 0x07FFu, 0x8410u, 0xFC00u};
+        const uint16_t c = kRgb565[ntex & 7u];
+        uint8_t blk[16] = {0xFF, 0xFF, 0, 0, 0, 0, 0, 0, uint8_t(c), uint8_t(c >> 8), uint8_t(c), uint8_t(c >> 8), 0, 0, 0, 0};
+        uint8_t* q = static_cast<uint8_t*>(gpu);
+        if (q) for (uint32_t o = 0; o < d[i].w * d[i].h; o += 16) std::memcpy(q + o, blk, 16);
+        tex[ntex].key = d[i].key; tex[ntex].gpu = gpu; ++ntex;
+        DbgPrint("REPLAY texture %08x %ux%u colour %u at %08x\n", unsigned(d[i].key), unsigned(d[i].w), unsigned(d[i].h), ntex - 1u, unsigned(reinterpret_cast<uintptr_t>(gpu)));
+      }
+      g_cur = Texture();
+      g_cur.key = d[i].key; g_cur.w = d[i].w; g_cur.h = d[i].h; g_cur.gpu = gpu; g_cur.normalized = true;
+      g_cur.format = 0x0000002Au | (NV097_SET_TEXTURE_FORMAT_COLOR_L_DXT45_A8R8G8B8 << 8) |
+                     (1u << 16) | (log2u(d[i].w) << 20) | (log2u(d[i].h) << 24);
+      g_have_tex = gpu != nullptr;
+      last_key = d[i].key;
+    }
+    static const uint32_t kColours[8] = {0xFFFF4040u, 0xFF40FF40u, 0xFF4040FFu, 0xFFFFFF40u,
+                                         0xFFFF40FFu, 0xFF40FFFFu, 0xFFFFFFFFu, 0xFF808080u};
+    uint32_t q[24];
+    for (unsigned k = 0; k < 4; ++k) {
+      const float x = float(d[i].v[k][0]), y = float(d[i].v[k][1]), u = float(d[i].v[k][2]) / 1000.0f, w = float(d[i].v[k][3]) / 1000.0f;
+      std::memcpy(&q[k * 6 + 0], &x, 4); std::memcpy(&q[k * 6 + 1], &y, 4); q[k * 6 + 2] = 0u;
+      std::memcpy(&q[k * 6 + 3], &u, 4); std::memcpy(&q[k * 6 + 4], &w, 4); q[k * 6 + 5] = 0xFFFFFFFFu; (void)kColours;
+    }
+    cc_xr_quad(q, d[i].blend);
+  }
+  flush_batch();
+  g_replaying = false;
+  if (a) pb_fill_quad(600, 440, 30, 30, 0xFFFF0000);  // marker: list A frames show a red square
+  flush_overlay();
+}
+#endif
 void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t stride, uint32_t blend) {
+#ifdef CC_REPLAY_QUAFF
+  if (!g_replaying) return;
+#endif
   if (!init() || !vertices || stride < 24 || !count) return;
   struct Tally { uint64_t t0; ~Tally() { g_draw_cycles += cycles() - t0; } } tally{cycles()};
   uint32_t op;
@@ -633,6 +814,17 @@ void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t st
 #endif
   for (uint32_t i = 0; i < count; ++i, v += stride)
     put_vertex(out[i], bef(v), bef(v + 4), bef(v + 12), bef(v + 16), be32(v + at), su, sv);
+#ifdef CC_DRAW_DUMP
+  dump_draw('d', blend, count, out);
+#endif
+#ifdef CC_DRAW_DIAG
+  {
+    float xy[8];
+    const unsigned n = count < 4u ? count : 4u;
+    for (unsigned i = 0; i < n; ++i) { xy[2 * i] = out[i].pos[0]; xy[2 * i + 1] = out[i].pos[1]; }
+    dd_note(1u, count, xy, n);
+  }
+#endif
   emit_draw(op, g_vb_used, count, blend);
   g_vb_used += count;
 }
@@ -642,6 +834,9 @@ void cc_xr_draw(uint32_t prim, uint32_t count, const void* vertices, uint32_t st
 // written to its vertex ring), drawn like cc_xr_draw(13, 4, ...) with the
 // same blend word, through the open batch.
 void cc_xr_quad(const uint32_t* v, uint32_t blend) {
+#ifdef CC_REPLAY_QUAFF
+  if (!g_replaying) return;
+#endif
   if (!init()) return;
   struct Tally { uint64_t t0; ~Tally() { g_draw_cycles += cycles() - t0; } } tally{cycles()};
   if (g_batch_n && ((blend ^ g_batch_blend) & 0x1F1Fu)) flush_batch();
@@ -653,6 +848,16 @@ void cc_xr_quad(const uint32_t* v, uint32_t blend) {
   auto f = [](uint32_t b) { float x; std::memcpy(&x, &b, 4); return x; };
   GpuVertex* out = g_vb + g_vb_used;
   for (uint32_t i = 0; i < 4; ++i, v += 6) put_vertex(out[i], f(v[0]), f(v[1]), f(v[3]), f(v[4]), v[5], su, sv);
+#ifdef CC_DRAW_DUMP
+  dump_draw('q', blend, 4u, out);
+#endif
+#ifdef CC_DRAW_DIAG
+  {
+    float xy[8];
+    for (unsigned i = 0; i < 4; ++i) { xy[2 * i] = out[i].pos[0]; xy[2 * i + 1] = out[i].pos[1]; }
+    dd_note(0u, 4u, xy, 4u);
+  }
+#endif
   g_vb_used += 4;
   g_batch_n += 4;
 }
@@ -733,7 +938,16 @@ void cc_xr_bench(unsigned window, unsigned frames, unsigned frame_us, unsigned u
   g_bench_done[window] = true;
 }
 void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
+#ifdef CC_REPLAY_QUAFF
+  if (init() && !g_in_frame) begin_frame();  // the game draws nothing in replay builds
+#endif
   if (!g_in_frame) return;
+#ifdef CC_DRAW_DUMP
+  dump_frame_end();
+#endif
+#ifdef CC_DRAW_DIAG
+  cc_draw_diag_frame();
+#endif
   // On-screen counters, averaged over each second of real time. Top row:
   // frames per second, ms per frame, audio buffers mixed/s, silent/s.
   // Bottom row, ms per frame: game update, game render (includes the
@@ -809,6 +1023,9 @@ void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
       // pack in that frame and pkt their disk time, gr / gk / grt the game's
       // own file reads in that frame, their KiB and time. tw / twt:
       // texture-eviction GPU waits in the second and their total time.
+      static unsigned last_onscr = 0;
+      DbgPrint("ONSCR t=%u n=%u\n", unsigned(now), g_draw_on_screen - last_onscr);
+      last_onscr = g_draw_on_screen;
       DbgPrint("SLOW t=%u u=%u r=%u b=%u t=%u n=%u v=%u q=%u o=%u pk=%u pkt=%u gr=%u gk=%u grt=%u tw=%u twt=%u\n",
                unsigned(now), unsigned(slow[0] / 100u), unsigned(slow[1] / 100u), unsigned(slow[2] / 100u),
                unsigned(slow[3] / 100u), unsigned(slow[4]), unsigned(slow[5] / 100u), unsigned(slow[6] / 100u),
@@ -886,6 +1103,17 @@ void cc_xr_frame_end(uint32_t update_us, uint32_t render_us) {
   // as the menu's button labels); the overlay used to flush it as a side
   // effect, so without the overlay those labels were never drawn.
   flush_batch();
+#ifdef CC_DRAW_DUMP
+  if (g_dump) {  // the dump's frame number, bottom left, so a screenshot names its frame
+    pb_fill_quad(8, 440, 90, 30, 0xFF000000);
+    draw_number(12, 445, g_dump_frame, 0xFFFFFFFF);
+    flush_overlay();
+  }
+#endif
+#ifdef CC_REPLAY_QUAFF
+  replay_quaff();
+#endif
+
   const uint64_t w0 = now_us();
   // No wait for the GPU here: the flip is queued behind this frame's draws,
   // and the next frame's begin_frame (pb_reset jumps the push buffer back

@@ -710,7 +710,11 @@ static inline void cc_dl_flush() {
 #ifdef CC_SPIKE_REPORT
   ++g_dl_flushes;
 #endif
+#ifdef CC_DL_FLUSH_MEMSET_BUILD
+  __builtin_memset(g_dl_cache, 0, sizeof(g_dl_cache));  // A/B build: the old whole-table clear
+#else
   g_dl_flush_ver = cc_dl_new_version();
+#endif
 }
 static inline void cc_dl_list_changed(uint32_t list) { CC_DL_STAT(list_bumps); cc_dl_lv(list) = cc_dl_new_version(); }
 static inline void cc_dl_name_changed(uint32_t id) { CC_DL_STAT(name_bumps); cc_dl_iv(id & 0xFFFFu) = cc_dl_new_version(); }
@@ -1006,6 +1010,37 @@ static inline bool cc_walk_classes_ok(Machine& base) {
 static inline __attribute__((always_inline)) uint32_t cc_walk_mgr(Machine& base, uint32_t n) {
   return REX_LOAD_U32(REX_LOAD_U32(REX_LOAD_U32(n + 156u) + 76u) + 156u);
 }
+#ifdef CC_TIMELINE_TRACE
+// Timeline trace (make TLTRACE=1): TL lines for clip wraps (WRAP), changes
+// of the playing bit seen at a clip's advance (PLAY / STOP) and seeks
+// (SEEK a = from, b = to), with the clip's instance name (u16 +100 in the
+// VM's string table, +10316), current frame +146 and frame count +148; at
+// most 80 lines per 33 ms (ms: the console clock).
+static uint32_t g_tl_lines = 0, g_tl_frame = 0;
+struct CcTlState { uint32_t node; uint8_t playing; };
+static CcTlState g_tl_state[2048];
+static void cc_tl_log(Machine& base, const char* what, uint32_t node, uint32_t a, uint32_t b) {
+  const uint32_t ms = uint32_t(::cc_xbox_clock(1000u));
+  if (g_tl_frame != ms / 33u) { g_tl_frame = ms / 33u; g_tl_lines = 0; }
+  if (++g_tl_lines > 80u) return;
+  char nm[40] = "-";
+  const uint32_t id = REX_LOAD_U16(node + 100u);
+  const uint32_t names = REX_LOAD_U32(cc_walk_mgr(base, node) + 10316u);
+  if (id && names) {
+    const uint32_t str = REX_LOAD_U32(REX_LOAD_U32(names + 28u) + id * 4u);
+    uint32_t c = 0;
+    for (; c + 1u < sizeof(nm); ++c) { const uint32_t ch = REX_LOAD_U8(str + c); if (!ch) break; nm[c] = char(ch); }
+    nm[c] = 0;
+  }
+  ::DbgPrint("TL ms=%u %s clip=%08x name=%s cur=%u total=%u a=%u b=%u%c", unsigned(ms), what, unsigned(node), nm,
+             unsigned(REX_LOAD_U16(node + 146u)), unsigned(REX_LOAD_U16(node + 148u)), unsigned(a), unsigned(b), 10);
+}
+static void cc_tl_playing(Machine& base, uint32_t node, uint32_t playing) {
+  CcTlState& s = g_tl_state[(node >> 4) & 2047u];
+  if (s.node != node) { s.node = node; s.playing = uint8_t(playing); return; }
+  if (s.playing != playing) { cc_tl_log(base, playing ? "PLAY" : "STOP", node, s.playing, playing); s.playing = uint8_t(playing); }
+}
+#endif
 #define sub_82088A08 sub_82088A08_exact
 #endif
 #include "generated/sub_82088A08.inc"
@@ -1056,10 +1091,16 @@ static CC_HOT_FN void sub_82088A08(Context& ctx, Machine& base) {
   } else {
     playing = cc_vcall(ctx, base, node, 124u, 0x82088A64u) & 0xFFu;
   }
+#ifdef CC_TIMELINE_TRACE
+  cc_tl_playing(base, node, playing);
+#endif
   if (playing != 0u) {
     const uint32_t f = (REX_LOAD_U16(node + 146u) + 1u) & 0xFFFFu;
     REX_STORE_U16(node + 146u, uint16_t(f));
     if (f > REX_LOAD_U16(node + 148u)) {
+#ifdef CC_TIMELINE_TRACE
+      cc_tl_log(base, "WRAP", node, f, REX_LOAD_U16(node + 148u));
+#endif
       wrapped = true;
       REX_STORE_U16(node + 146u, 1u);
       uint32_t ch = REX_LOAD_U32(node + 104u);
@@ -4828,7 +4869,13 @@ static void __imp__KeResumeThread(Context& ctx, Machine& base) {
 #include "generated/sub_8206AA08.inc"
 #include "generated/sub_8206AAD0.inc"
 #include "generated/sub_8206AB50.inc"
+#ifdef CC_FAST
+#define sub_8206B5D0 sub_8206B5D0_exact
+#endif
 #include "generated/sub_8206B5D0.inc"
+#ifdef CC_FAST
+#undef sub_8206B5D0
+#endif
 #include "generated/sub_8206BAB0.inc"
 #include "generated/sub_8206BB60.inc"
 #include "generated/sub_8206BBD8.inc"
@@ -6853,7 +6900,13 @@ static void sub_82077BC0(Context& ctx, Machine& base) {
 #include "generated/sub_82063C00.inc"
 #include "generated/sub_82063F18.inc"
 #include "generated/sub_82063DC8.inc"
+#ifdef CC_FAST
+#define sub_82063758 sub_82063758_exact
+#endif
 #include "generated/sub_82063758.inc"
+#ifdef CC_FAST
+#undef sub_82063758
+#endif
 #include "generated/sub_82054490.inc"
 #include "generated/sub_82064048.inc"
 #include "generated/sub_82067AF0.inc"
@@ -6877,7 +6930,95 @@ static void sub_82062990(Context& ctx, Machine& base) {
 #endif
 #include "generated/sub_82065DF0.inc"
 #include "generated/sub_820657B0.inc"
+#ifdef CC_FAST
+#define sub_820655E0 sub_820655E0_exact
+#endif
 #include "generated/sub_820655E0.inc"
+#ifdef CC_FAST
+#undef sub_820655E0
+// Mode-select book without All You Can Quaff (user, 2026-10-18; the Quaff
+// menu draws wrongly on the Xbox). The book's update (sub_82063758 for
+// Local Game, sub_8206B5D0 for the online book; [menu+384], run every frame
+// with the screen in r3) has three options in the u16 at [screen+48]+8:
+// Castle Crashers 0 (right page), Arena 1 (bottom left), Quaff 2 (top
+// left). Quaff is reached only by UP on Arena: sub_820655E0(menu, -2) (any
+// pad's UP; on a press it stores the pad at menu+10 and returns 1) called
+// from 0x82063978 / 0x8206B7F8. The play build answers 0 there.
+//
+// The left page's Quaff label is the text field txt1 (the clip script sets
+// its text to string 389); it is hidden through its class's visibility
+// setter (slot 236: text fields byte +102). The picture beside it is a
+// shape at depth 15, five below txt1's 20 (char 448 in menu.pak's
+// "modemenu" clip); shapes have no visibility (their slot 236 is the log
+// stub), so it is taken out of the clip's list as RemoveObject does
+// (sub_82084C78, list and depth). Both run before each update, the way the
+// update itself finds "hand": clip [[menu+276]+56], names through the
+// screen's table [screen+8] (sub_8209D948), the clip's list from slot 100.
+// The update reads the screen's current menu as the book; should another
+// menu be current (a transition), the hide waits for the next frame (what
+// it did before persists) and the first such frame is logged.
+static void sub_820655E0(Context& ctx, Machine& base) {
+  if (uint32_t(ctx.lr) == 0x82063978u || uint32_t(ctx.lr) == 0x8206B7F8u) { ctx.r3.u64 = 0; return; }
+  sub_820655E0_exact(ctx, base);
+}
+static void cc_book_hide_quaff(Context& ctx, Machine& base, uint32_t update) {
+  static bool s_other_logged = false;
+  const uint32_t screen = ctx.r3.u32;
+  const uint32_t menu = REX_LOAD_U32(screen + 48u);
+  if (REX_LOAD_U32(menu + 384u) != update) {
+    if (!s_other_logged)
+      ::DbgPrint("WARN mode book: update %08x ran with menu %08x current (its update %08x); Quaff hide skipped\n",
+                 unsigned(update), unsigned(menu), unsigned(REX_LOAD_U32(menu + 384u)));
+    s_other_logged = true;
+    return;
+  }
+  s_other_logged = false;
+  const uint32_t clip = REX_LOAD_U32(REX_LOAD_U32(menu + 276u) + 56u);
+  CcFrame frame(ctx, base, 112u);
+  ctx.r3.u64 = REX_LOAD_U32(screen + 8u);
+  ctx.r4.u64 = 0x82012534u;  // "txt1"
+  ctx.lr = update + 0x30u;
+  sub_8209D948(ctx, base);
+  const uint32_t id = ctx.r3.u32;
+  const uint32_t list = cc_vcall(ctx, base, clip, 100u, update + 0x48u);
+  ctx.r3.u64 = list; ctx.r4.u64 = id; ctx.lr = update + 0x50u;
+  sub_82085078(ctx, base);
+  const uint32_t txt = ctx.r3.u32;
+  if (txt == 0u || REX_LOAD_U32(txt) != 0x8203F680u) {
+    ::DbgPrint("FAIL mode book: Quaff label txt1 is %08x (class %08x)\n", unsigned(txt),
+               unsigned(txt ? REX_LOAD_U32(txt) : 0u));
+    base.fail(Error::unsupported, update);
+    return;
+  }
+  ctx.r4.u64 = 0u;
+  cc_vcall(ctx, base, txt, 236u, update + 0x54u);  // visible = false
+  const int32_t depth = int32_t(REX_LOAD_U32(txt + 28u)) - 5;
+  for (uint32_t n = REX_LOAD_U32(list); n != 0u; n = REX_LOAD_U32(n + 88u)) {
+    if (int32_t(REX_LOAD_U32(n + 28u)) != depth) continue;
+    if (REX_LOAD_U32(n) != 0x8203ECA0u) {
+      ::DbgPrint("FAIL mode book: depth %d holds class %08x, not the Quaff picture's shape\n", int(depth),
+                 unsigned(REX_LOAD_U32(n)));
+      base.fail(Error::unsupported, update);
+      return;
+    }
+    ctx.r3.u64 = list; ctx.r4.u64 = uint64_t(int64_t(depth)); ctx.lr = update + 0x58u;
+    sub_82084C78(ctx, base);
+    break;
+  }
+}
+static void sub_82063758(Context& ctx, Machine& base) {
+  const uint64_t screen = ctx.r3.u64, lr = ctx.lr;
+  cc_book_hide_quaff(ctx, base, 0x82063758u);
+  ctx.r3.u64 = screen; ctx.lr = lr;
+  sub_82063758_exact(ctx, base);
+}
+static void sub_8206B5D0(Context& ctx, Machine& base) {
+  const uint64_t screen = ctx.r3.u64, lr = ctx.lr;
+  cc_book_hide_quaff(ctx, base, 0x8206B5D0u);
+  ctx.r3.u64 = screen; ctx.lr = lr;
+  sub_8206B5D0_exact(ctx, base);
+}
+#endif
 #include "generated/sub_82065D08.inc"
 #include "generated/sub_820656C8.inc"
 #include "generated/sub_82065B38.inc"
@@ -10266,7 +10407,7 @@ static uint32_t g_input_packet_number = 0;
 // and plays into level 1 until a real pad is used) exists on the Xbox only in
 // test builds: make FOURP=1, LEVEL=..., BENCH=1 or SCRIPT=quit|book. The play
 // build answers to real pads only. Host harness runs always have it.
-#if !defined(CC_XBOX_DRIVER) || defined(CC_SCRIPT_4P) || defined(CC_DIRECT_LEVEL) || defined(CC_BENCH) || defined(CC_SCRIPT_QUIT) || defined(CC_SCRIPT_BOOK)
+#if !defined(CC_XBOX_DRIVER) || defined(CC_SCRIPT_4P) || defined(CC_DIRECT_LEVEL) || defined(CC_BENCH) || defined(CC_SCRIPT_QUIT) || defined(CC_SCRIPT_BOOK) || defined(CC_SCRIPT_QUAFF)
 #define CC_SCRIPTED_INPUT 1
 #endif
 // Four-player diagnostic (Xbox: make FOURP=1, host: CC_4P=1): ports 1-3 are
@@ -10398,6 +10539,12 @@ static void __imp__XamInputGetState(Context& ctx, Machine& base) {
     {2800,2805,0x0002,0,0},{2850,2855,0x0002,0,0},{2900,2905,0x0002,0,0},
 #endif
     {3000,3011,0x1000,0,0},
+#ifdef CC_SCRIPT_QUAFF
+    // Book check: the book is up by frame ~2700; LEFT (Arena), then UP,
+    // which the play build ignores there (no Quaff), and the script stops
+    // on the book (the A at 3000 is dropped below).
+    {2800,2805,0x0004,0,0},{2900,2905,0x0001,0,0},
+#endif
     {4000,4011,0x1000,0,0},{4500,4511,0x0002,0,0},{5000,5011,0x1000,0,0},
     {6000,6011,0x0010,0,0},{7000,7011,0x1000,0,0},{7600,7899,0,30000,0},
     {8000,8011,0x1000,0,0},{8100,8104,0x4000,0,0},{8130,8134,0x4000,0,0},
@@ -10411,6 +10558,9 @@ static void __imp__XamInputGetState(Context& ctx, Machine& base) {
 #ifdef CC_SCRIPT_BOOK
     // Test build that stays on the mode-select book (after Local Game).
     if (row.first >= 3000u) continue;
+#endif
+#ifdef CC_SCRIPT_QUAFF
+    if (row.first >= 3000u) continue;  // stays on the book
 #endif
     if (cc_direct_level() && row.first >= 6500u) continue;  // level-1 walk-through rows
     // The DOWN and A that landed on the notice (no effect there; on the

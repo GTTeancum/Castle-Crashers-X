@@ -34,6 +34,10 @@ endif
 ifneq ($(WEAKIDLE),)
 CXXFLAGS += -DCC_XR_WEAK_IDLE
 endif
+# Input script into the All You Can Quaff menu (book: LEFT, UP, A): make SCRIPT=quaff
+ifeq ($(SCRIPT),quaff)
+CXXFLAGS += -DCC_SCRIPT_QUAFF
+endif
 # Input script that stops on the mode-select book (graphics checks): make SCRIPT=book
 ifeq ($(SCRIPT),book)
 CXXFLAGS += -DCC_SCRIPT_BOOK
@@ -120,6 +124,28 @@ TEXPACK ?= $(CURDIR)/../game-data/converted/texbake.pak
 ifneq ($(SLOWSTATS),)
 CXXFLAGS += -DCC_SLOW_STATS
 endif
+# Draw diagnostics (DRAW lines: draws per material, sprites spanning over
+# 600 px with their corners): make DRAWDIAG=1
+ifneq ($(DRAWDIAG),)
+CXXFLAGS += -DCC_DRAW_DIAG
+endif
+# Draw dump: DRAWDUMP=1 (hold LT+RT: every draw of the next 70 frames to
+# D:\drawdump.txt)
+ifneq ($(DRAWDUMP),)
+CXXFLAGS += -DCC_DRAW_DUMP
+endif
+# Off-screen clip test: WRAPTEST=1 (a red quad at x 800-1000 and a green one
+# at x -300..-100 drawn every frame; any of their colour on screen means
+# pixels outside the 640-wide surface wrap back onto it)
+ifneq ($(WRAPTEST),)
+CXXFLAGS += -DCC_WRAP_TEST
+endif
+# Bench replay: REPLAYQUAFF=1 (the game's draws suppressed; two recorded
+# All You Can Quaff frames replayed alternately each second, one colour per
+# draw, plain texture: replay_quaff.inl)
+ifneq ($(REPLAYQUAFF),)
+CXXFLAGS += -DCC_REPLAY_QUAFF
+endif
 # Console op census: make OPSTATS=1
 ifneq ($(OPSTATS),)
 CXXFLAGS += -DCC_OP_STATS
@@ -181,6 +207,19 @@ endif
 # Depth set bisect: DEPTHEXACT=1 (recompiled sub_820878E0)
 ifneq ($(DEPTHEXACT),)
 CXXFLAGS += -DCC_DEPTH_EXACT_BUILD
+endif
+# Script interpreter bisect: ASEXACT=1 (every recompiled ActionScript body
+# and opcode handler instead of the native ones, as_native.inc)
+ifneq ($(ASEXACT),)
+CXXFLAGS += -DCC_AS_EXACT_BUILD
+endif
+# Timeline trace: TLTRACE=1 (TL lines: clip wraps, play/stop changes, seeks)
+ifneq ($(TLTRACE),)
+CXXFLAGS += -DCC_TIMELINE_TRACE
+endif
+# Name-cache flush A/B: DLFLUSHMEMSET=1 (clear the whole table at each flush, as before)
+ifneq ($(DLFLUSHMEMSET),)
+CXXFLAGS += -DCC_DL_FLUSH_MEMSET_BUILD
 endif
 # Timeline seek bisect: SEEKEXACT=1 (recompiled sub_82087F70, runtime021/seek.inc)
 ifneq ($(SEEKEXACT),)

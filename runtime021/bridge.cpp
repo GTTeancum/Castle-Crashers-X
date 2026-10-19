@@ -27,6 +27,7 @@ void cc_xr_quad(const uint32_t* v, uint32_t blend);
 void cc_xr_frame_end(uint32_t update_us, uint32_t render_us);
 void cc_xr_bench(unsigned window, unsigned frames, unsigned frame_us, unsigned update_us, unsigned render_us);
 void cc_xr_gpu_idle();
+void cc_xr_dump_arm(int frames);  // DRAWDUMP builds
 uint32_t cc_xr_gpu_epoch();
 void cc_xr_set_material(uint32_t material);
 void cc_xr_mask_begin();
@@ -2447,6 +2448,9 @@ static void dispatch_impl(uint32_t address, Context &ctx, Machine &base) {
     std::snprintf(host,sizeof(host),"%s%s%s",g_game_root,host_dir,fname);
 #ifdef CC_SPIKE_REPORT
     ::DbgPrint("FOPEN %s\n", host);  // test builds: the game's own file opens
+#endif
+#ifdef CC_DRAW_DUMP
+    if (std::strstr(host, "QUOFF") || std::strstr(host, "quoff")) ::cc_xr_dump_arm(90);
 #endif
 #ifdef CC_XBOX_DRIVER
     for (char* p=host; *p; ++p) if (*p=='/') *p='\\';

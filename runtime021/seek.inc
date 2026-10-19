@@ -604,6 +604,9 @@ static CC_HOT_FN void cc_seek_native(Context& ctx, Machine& base) {
 
 static CC_HOT_FN void sub_82087F70(Context& ctx, Machine& base) {
   CC_FPROF_SCOPE(sub_82087F70_native);
+#ifdef CC_TIMELINE_TRACE
+  cc_tl_log(base, "SEEK", ctx.r3.u32, REX_LOAD_U16(ctx.r3.u32 + 146u), ctx.r4.u32 & 0xFFFFu);
+#endif
 #ifndef CC_XBOX_DRIVER
   const bool timed = g_seek_stats && g_sample_on.load(std::memory_order_relaxed);
   const bool outer = !g_seek_counting;
