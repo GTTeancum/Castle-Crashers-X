@@ -16,7 +16,7 @@ Target: a stock 64 MB retail console at 30 FPS.
 - Fights mostly hold 30 FPS; level loads and area changes still dip briefly.
 - Saving, music, sound effects and the in-game reset (LT + RT + Back + Black) work.
 - Xbox Live features (leaderboards, achievements, online play, DLC) are removed.
-- All You Can Quaff is removed from the mode book (its screen draws incorrectly).
+- All You Can Quaff is removed.
 
 ## Installing
 
