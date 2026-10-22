@@ -1,6 +1,6 @@
-# TODO
+# Developer notes
 
-Deferred until the port is fully playable.
+Plans, constraints and open work (formerly TODO.md).
 
 ## Rewrite plan (direction set 2026-10-02)
 

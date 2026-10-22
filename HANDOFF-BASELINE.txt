@@ -1,7 +1,0 @@
-Sealed baseline: CastleCrashers-Checkpoint-020.zip
-SHA-256: d61b2ed0329abaed1a5dbe9661227e279f6864ee4af8508face7c07289e411eb
-
-Applied WIP overlay: CastleCrashers-WIP-021-85e8.zip
-SHA-256: 7f950085e0911ae002c809507c0353a3b7cd934f0c0ad15002b0447150e4f67c
-
-Overlay is self-contained relative to Checkpoint 020.
